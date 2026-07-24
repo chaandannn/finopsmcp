@@ -143,10 +143,25 @@ CLOUDFORMATION_TEMPLATE: dict[str, Any] = {
             "Type": "String",
             "Default": "",
             "Description": (
-                "AWS account ID allowed to assume this role (leave blank "
-                "for same-account key-based access)"
+                "AWS account ID allowed to assume this role cross-account (nable's "
+                "hosting account for the managed offering). Leave blank for "
+                "same-account instance-profile access."
             ),
         },
+        "ExternalId": {
+            "Type": "String",
+            "Default": "",
+            "Description": (
+                "Optional external ID required on the cross-account assume-role "
+                "(confused-deputy protection). Recommended for the managed offering."
+            ),
+        },
+    },
+    "Conditions": {
+        # Cross-account trust when a TrustedAccountId is supplied; otherwise the role
+        # trusts the EC2 service (same-account instance profile) as before.
+        "HasTrustedAccount": {"Fn::Not": [{"Fn::Equals": [{"Ref": "TrustedAccountId"}, ""]}]},
+        "HasExternalId": {"Fn::Not": [{"Fn::Equals": [{"Ref": "ExternalId"}, ""]}]},
     },
     "Resources": {
         "NableReadOnlyPolicy": {
@@ -176,9 +191,31 @@ CLOUDFORMATION_TEMPLATE: dict[str, Any] = {
                     "Version": "2012-10-17",
                     "Statement": [
                         {
-                            "Effect": "Allow",
-                            "Principal": {"Service": "ec2.amazonaws.com"},
-                            "Action": "sts:AssumeRole",
+                            "Fn::If": [
+                                "HasTrustedAccount",
+                                # Managed offering: only nable's hosting account may
+                                # assume this role, optionally gated by an external ID.
+                                {
+                                    "Effect": "Allow",
+                                    "Principal": {
+                                        "AWS": {"Fn::Sub": "arn:aws:iam::${TrustedAccountId}:root"}
+                                    },
+                                    "Action": "sts:AssumeRole",
+                                    "Condition": {
+                                        "Fn::If": [
+                                            "HasExternalId",
+                                            {"StringEquals": {"sts:ExternalId": {"Ref": "ExternalId"}}},
+                                            {"Ref": "AWS::NoValue"},
+                                        ]
+                                    },
+                                },
+                                # Same-account fallback: instance-profile access.
+                                {
+                                    "Effect": "Allow",
+                                    "Principal": {"Service": "ec2.amazonaws.com"},
+                                    "Action": "sts:AssumeRole",
+                                },
+                            ]
                         }
                     ],
                 },

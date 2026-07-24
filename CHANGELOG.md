@@ -2,6 +2,10 @@
 
 All notable changes to finops-mcp (nable).
 
+## 0.8.190
+
+- **`nable iam-template` now produces cross-account trust for the managed offering.** When `TrustedAccountId` is set (nable's hosting account), the read-only role trusts that account to assume it, with an optional `ExternalId` for confused-deputy protection; left blank it keeps the same-account instance-profile trust. This is what lets nable host a customer's single-tenant box and read their bill through a persistent role they own and can revoke, no expiring keys, no re-setup.
+
 ## 0.8.189
 
 - **`ai-budget` no longer tells you to set a budget you just set.** After configuring a plan with no agent usage yet (no Claude Code logs, or early in the month), the status hid the plan row and printed "Run `finops ai-budget` to set a budget", reading as if nothing saved. It now always confirms the configured plan or spend cap and says usage will fill in as the agent runs. Found by dogfooding the interactive first run.
