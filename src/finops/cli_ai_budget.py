@@ -154,9 +154,12 @@ def run(args) -> int:
     if mode == "metered" and b["spend_cap"] > 0:
         row("spend cap", f"~${st['est_usd_mtd_list_price']:,.0f} est of ${b['spend_cap']:,.0f}  ·  "
                          f"{_c(verdict.upper(), vcolor)} ({pct:.0f}%)")
-    elif mode == "flat" and sub and sub["multiple"]:
-        row("your plan", f"${sub['plan_cost_usd']:,.0f}/mo flat  ·  "
-                         f"~{sub['multiple']:g}x value pulled {_c('(subsidized)', _OK)}")
+    elif mode == "flat" and b["plan_cost"] > 0:
+        # Always confirm the configured plan, even with no usage yet. The subsidy
+        # multiple only appears once there is usage to value against it.
+        extra = (f"  ·  ~{sub['multiple']:g}x value pulled {_c('(subsidized)', _OK)}"
+                 if sub and sub.get("multiple") else "")
+        row("your plan", f"${b['plan_cost']:,.0f}/mo flat{extra}")
     if b["monthly_tokens"] > 0:
         row("usage cap", f"{_tok(st['billable_tokens_mtd'])} of {_tok(b['monthly_tokens'])} tokens  ·  "
                          f"{_c(verdict.upper() if st['verdict_basis'] == 'tokens' else 'tracking', vcolor if st['verdict_basis'] == 'tokens' else _DIM)}"

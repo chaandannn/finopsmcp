@@ -301,6 +301,17 @@ def _summary_line(verdict, basis, mode, tokens_mtd, est_usd, budget, subsidy, wi
         return (f"You pay ${subsidy['plan_cost_usd']:,.0f}/mo and have pulled "
                 f"~${est_usd:,.0f} of compute (estimated at list price), "
                 f"~{subsidy['multiple']:g}x your plan.{extra} The provider covers the rest.")
+    # A budget IS configured but there is no usage to measure against yet. Confirm
+    # it, never tell someone to set a budget they just set (found dogfooding).
+    if mode == "flat" and budget["plan_cost"] > 0:
+        return (f"Your ${budget['plan_cost']:,.0f}/mo plan is set. No agent usage recorded yet "
+                f"this month; the numbers fill in as your agent runs.")
+    if mode == "metered" and budget["spend_cap"] > 0:
+        return (f"Your ${budget['spend_cap']:,.0f}/mo spend cap is set. No agent usage recorded "
+                f"yet this month.")
+    if budget["monthly_tokens"] > 0:
+        return (f"Usage cap of {budget['monthly_tokens']:,} tokens/mo is set. No agent usage "
+                f"recorded yet this month.")
     return (f"{window['billable_tokens']:,} tokens in the last {_WINDOW_HOURS:g}h "
             f"(~${window['usd_equivalent']:,.0f} at list price). "
             f"Run `finops ai-budget` to set a budget.")

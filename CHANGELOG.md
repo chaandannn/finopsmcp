@@ -2,6 +2,10 @@
 
 All notable changes to finops-mcp (nable).
 
+## 0.8.189
+
+- **`ai-budget` no longer tells you to set a budget you just set.** After configuring a plan with no agent usage yet (no Claude Code logs, or early in the month), the status hid the plan row and printed "Run `finops ai-budget` to set a budget", reading as if nothing saved. It now always confirms the configured plan or spend cap and says usage will fill in as the agent runs. Found by dogfooding the interactive first run.
+
 ## 0.8.188
 
 - **Fixed a first-run crash when accepting the budget guardrail on an upgraded install.** Old databases had a `budgets.block_at_pct` column (NOT NULL, no default) that the current model no longer sets, so onboarding's "set a monthly budget" step hit a NOT NULL constraint and dumped a full traceback. A migration now drops that orphaned column so the budget saves cleanly, and if a save ever does fail it degrades to a one-line message instead of a stack trace. Fresh installs were unaffected; this only bit people upgrading from an older schema.
