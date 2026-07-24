@@ -95,3 +95,38 @@ def test_no_op_without_a_scanned_total(monkeypatch, isolated_db):
     monkeypatch.setattr(builtins, "input", lambda *a, **k: calls.__setitem__("n", calls["n"] + 1) or "")
     w._offer_budget_guardrail()
     assert calls["n"] == 0 and _totals() == []
+
+
+def test_legacy_block_at_pct_column_is_migrated_away(tmp_path, monkeypatch):
+    """Regression: old DBs had budgets.block_at_pct NOT NULL (no default). The current
+    model dropped it, so onboarding's create_budget INSERT hit the NOT NULL constraint
+    and dumped a traceback on a fresh `nable` run for anyone who upgraded. The engine's
+    migrations must drop the orphan so create_budget works."""
+    import sqlite3
+    monkeypatch.setenv("FINOPS_DATA_DIR", str(tmp_path))
+    dbp = tmp_path / "finops.db"
+    con = sqlite3.connect(dbp)
+    con.execute(
+        "CREATE TABLE budgets ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, scope_type TEXT NOT NULL,"
+        "scope_value TEXT NOT NULL DEFAULT '*', period TEXT NOT NULL DEFAULT 'monthly',"
+        "limit_usd REAL NOT NULL, block_at_pct REAL NOT NULL, created_at TEXT NOT NULL,"
+        "updated_at TEXT NOT NULL, created_by TEXT NOT NULL DEFAULT '', is_active INTEGER NOT NULL DEFAULT 1)"
+    )
+    con.commit()
+    con.close()
+
+    # Fresh engine per test dir: import lazily and reset the module-level singleton.
+    import importlib
+    from finops.storage import db as _db
+    importlib.reload(_db)
+    from sqlalchemy import text
+    eng = _db.get_engine()  # runs migrations, must drop the orphan column
+    with eng.connect() as c:
+        cols = {r[1] for r in c.execute(text("PRAGMA table_info(budgets)")).fetchall()}
+    assert "block_at_pct" not in cols, "legacy block_at_pct must be dropped by migration"
+
+    from finops.budget.enforcer import create_budget
+    b = create_budget(name="Monthly budget", scope_type="total", limit_usd=20000.0,
+                      period="monthly", created_by="onboarding")
+    assert b["limit_usd"] == 20000.0

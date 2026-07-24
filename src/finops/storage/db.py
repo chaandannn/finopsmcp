@@ -668,6 +668,24 @@ def _run_sqlite_migrations(engine: Engine) -> None:
             except Exception as exc:
                 log.warning("Migration skipped (%s.%s): %s", table, column, exc)
 
+        # Legacy cleanup, not additive: old schemas defined budgets.block_at_pct as
+        # NOT NULL with no default. The current model dropped that column (it folded
+        # into critical_at_pct), so every INSERT through the model omits it and dies
+        # on the NOT NULL constraint, crashing `nable`'s first-run budget step for
+        # anyone who upgraded from an old DB. Drop the orphan if present. SQLite
+        # >= 3.35 (bundled with Python >= 3.11, which is nable's floor) supports
+        # DROP COLUMN; on anything older this warns and the onboarding budget step
+        # degrades to a clean one-line message instead of a traceback.
+        for _tbl, _col in (("budgets", "block_at_pct"),):
+            try:
+                rows = conn.execute(text(f"PRAGMA table_info({_tbl})")).fetchall()
+                if any(r[1] == _col for r in rows):
+                    conn.execute(text(f"ALTER TABLE {_tbl} DROP COLUMN {_col}"))
+                    conn.commit()
+                    log.info("Migration: dropped legacy %s.%s", _tbl, _col)
+            except Exception as exc:
+                log.warning("legacy %s.%s drop skipped: %s", _tbl, _col, exc)
+
 
 def archive_old_snapshots(days_to_keep: int = 365) -> int:
     """Move cost_snapshots older than days_to_keep to cost_snapshots_archive.

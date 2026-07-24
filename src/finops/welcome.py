@@ -684,8 +684,9 @@ def _offer_budget_guardrail() -> None:
             critical_at_pct=100.0,
             created_by="onboarding",
         )
-    except Exception:
-        log.error("onboarding budget save failed (limit_usd=%s)", amount, exc_info=True)
+    except Exception as exc:
+        # Never dump a traceback into the friendly first-run flow; degrade to a line.
+        log.debug("onboarding budget save failed (limit_usd=%s): %s", amount, exc)
         _blank()
         _line(dim("  Could not save the budget just now. Set one later from your editor."))
         return

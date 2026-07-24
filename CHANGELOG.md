@@ -2,6 +2,10 @@
 
 All notable changes to finops-mcp (nable).
 
+## 0.8.188
+
+- **Fixed a first-run crash when accepting the budget guardrail on an upgraded install.** Old databases had a `budgets.block_at_pct` column (NOT NULL, no default) that the current model no longer sets, so onboarding's "set a monthly budget" step hit a NOT NULL constraint and dumped a full traceback. A migration now drops that orphaned column so the budget saves cleanly, and if a save ever does fail it degrades to a one-line message instead of a stack trace. Fresh installs were unaffected; this only bit people upgrading from an older schema.
+
 ## 0.8.187
 
 - **Connect is now as few keystrokes as `gh auth login`.** When you have no AWS credentials, nable no longer just tells you to open a second terminal and run `aws configure sso`. It offers to run it for you, right there, sharing the terminal so the interactive prompts and the SSO browser sign-in work exactly as if you had run it by hand, then the credential watcher connects the instant the login lands. One flow, one place: run `nable`, answer the browser prompt, you're connected. Consent-gated (a clear `[Y/n]`), TTY-only, and declining falls straight through to watching so nothing is forced.
