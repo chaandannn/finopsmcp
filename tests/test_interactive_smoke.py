@@ -130,6 +130,42 @@ def test_ai_budget_interactive_first_run(sandbox_env):
     assert "Run `finops ai-budget` to set a budget" not in out
 
 
+def _seed_legacy_budgets_db(path: Path) -> None:
+    """A pre-current budgets table with the orphaned block_at_pct NOT NULL column,
+    the shape that crashed the onboarding budget step before 0.8.188."""
+    import sqlite3
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(path)
+    con.execute(
+        "CREATE TABLE budgets ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, scope_type TEXT NOT NULL,"
+        "scope_value TEXT NOT NULL DEFAULT '*', period TEXT NOT NULL DEFAULT 'monthly',"
+        "limit_usd REAL NOT NULL, block_at_pct REAL NOT NULL, created_at TEXT NOT NULL,"
+        "updated_at TEXT NOT NULL, created_by TEXT NOT NULL DEFAULT '', is_active INTEGER NOT NULL DEFAULT 1)"
+    )
+    con.commit()
+    con.close()
+
+
+def test_welcome_full_flow_reaches_and_saves_the_budget(sandbox_env, tmp_path):
+    """The full welcome -> budget step, the one that dumped a traceback on an upgraded
+    DB. Seed the legacy schema and drive `finops welcome` to the budget prompt (via the
+    test seam that stands in for the live-scan total). It must save cleanly and confirm,
+    never crash. This gates the exact regression a human found by dogfooding."""
+    _seed_legacy_budgets_db(tmp_path / "data" / "finops.db")
+    env = {**sandbox_env, "FINOPS_TEST_ONBOARDING_TOTAL": "17073"}
+    out, exited = _drive(
+        [FINOPS, "welcome"],
+        [("Monthly budget in USD", "\n")],   # accept the suggested amount
+        env,
+        timeout=30,
+    )
+    assert "Traceback" not in out, f"traceback in welcome budget step:\n{out[-900:]}"
+    assert exited, f"welcome did not exit (hang?):\n{out[-900:]}"
+    assert "Budget set" in out, f"budget was not saved cleanly:\n{out[-900:]}"
+
+
 def test_setup_aws_no_creds_screen_renders_without_crash(sandbox_env):
     """The no-credentials guided screen (which once died on a NameError before it ever
     watched). Decline the offer to run the login; assert the screen rendered and no

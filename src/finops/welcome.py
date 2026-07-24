@@ -706,6 +706,19 @@ def run_welcome_flow(demo: bool = False) -> None:
     """
     _print_header()
 
+    # Test seam (inert unless set): the budget step is gated on a live-scan total, so
+    # it cannot be driven through the real binary hermetically. This lets the interactive
+    # smoke gate seed that total and exercise welcome -> budget end to end. Never set in
+    # normal use; nothing here runs otherwise.
+    _test_total = os.environ.get("FINOPS_TEST_ONBOARDING_TOTAL")
+    if _test_total:
+        try:
+            _LAST_TOTAL[0] = float(_test_total)
+        except ValueError:
+            _LAST_TOTAL[0] = 0.0
+        _offer_budget_guardrail()
+        return
+
     if demo:
         _line(bold("Demo mode") + dim("  ·  nable on sample data, no account needed"))
         _show_value_moment(demo=True)
