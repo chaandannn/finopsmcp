@@ -3,7 +3,7 @@
   "name": "io.github.getnable/finops-mcp",
   "title": "nable",
   "description": "See where your cloud and AI bills go, and spend less. Local-first, in your terminal or editor.",
-  "version": "0.8.192",
+  "version": "0.8.193",
   "repository": {
     "url": "https://github.com/getnable/finopsmcp",
     "source": "github"
@@ -30,7 +30,7 @@
       "registryType": "pypi",
       "registryBaseUrl": "https://pypi.org",
       "identifier": "finops-mcp",
-      "version": "0.8.192",
+      "version": "0.8.193",
       "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"

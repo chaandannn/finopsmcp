@@ -2,6 +2,14 @@
 
 All notable changes to finops-mcp (nable).
 
+## 0.8.193
+
+- **`nable scan` now tells you why it failed and what to do.** Telemetry showed every external machine that ran a scan on 2026-07-24/25 failing instantly, three attempts each, then giving up. Two of the failure paths printed a raw AWS library string with no fix line at all: an `AWS_PROFILE` that does not resolve, and an unparseable `~/.aws/config`. Both are now named, and the missing-profile message lists the profiles nable can actually see and offers `--profile <name>`. Since `AWS_PROFILE` is exported in the shell of just about anyone with more than one AWS account, this was the most likely reason a first run went nowhere.
+- **Credentials that AWS rejects are no longer reported as expired.** An unknown or revoked access key used to send you to `aws sso login` on a profile that is not SSO. Re-authenticating does not conjure a key AWS has never heard of, so it now says the key is rejected and points at `aws configure`.
+- **New exit code 7** for local AWS config that does not resolve, distinct from 6 (no credentials found). A broken profile means the machine has a setup, it is just wrong, and sending that user to `aws configure` when the fix is one word in an environment variable is the wrong advice.
+- **Fixed: schema migrations never ran on PostgreSQL.** Column detection used a SQLite-only `PRAGMA`, so on a shared-team Postgres database the error was swallowed and the `ALTER TABLE` silently never happened. Any column added since that database was created stayed missing, and the savings ledger stopped working. Detection is now backend-agnostic and the DDL is generated for whichever database you are on.
+- The MCP server is now covered by a smoke test that launches the real process and speaks the actual protocol to it, rather than importing the server in-process. That is the difference between catching "the MCP server will not start" before a release and hearing about it from a user.
+
 ## 0.8.192
 
 - **nable now tells you which savings it measured and which it only suspects.** Every deep-audit finding is classified by the strength of the evidence behind it. Something we observed directly (an unattached volume, a Compute Optimizer finding) is a recommendation and keeps its exact dollar figure. Something resting on a single-signal heuristic or an assumed price becomes an investigation: no precise number, an order-of-magnitude band instead, and the steps to confirm it. The audit headline splits accordingly, so instead of one total you get what nable stands behind plus a separate work queue. On a representative account that turned "$1,681/mo of waste found" into "$394/mo measured, $1,288/mo to confirm". The measured number is smaller on purpose. It is the one you can take to a change review.
