@@ -18,7 +18,7 @@ from pathlib import Path
 
 from sqlalchemy import (
     Boolean, Column, DateTime, Float, Index, Integer, JSON, MetaData,
-    String, Table, Text, create_engine, event, text, select, delete,
+    String, Table, Text, create_engine, delete, event, inspect, select, text,
 )
 from sqlalchemy.engine import Engine
 
@@ -633,47 +633,76 @@ def get_engine() -> Engine:
     return _ENGINE
 
 
-def _run_sqlite_migrations(engine: Engine) -> None:
-    """Apply additive schema migrations for SQLite.
+def _add_column_ddl(engine: Engine, table: str, column: str) -> str:
+    """ADD COLUMN statement for `column`, rendered for THIS engine's dialect.
 
-    SQLite does not support ALTER TABLE DROP COLUMN or ALTER TABLE MODIFY.
-    Only ADD COLUMN is safe. Each migration is idempotent — if the column
-    already exists, the PRAGMA check skips it.
+    Derived from the model rather than hand-written, for two reasons. The type
+    names differ per backend (a DATETIME column is TIMESTAMP on PostgreSQL, and a
+    REAL is DOUBLE PRECISION), so a hardcoded string that works on SQLite is a
+    syntax error on Postgres. And a hand-written DDL can drift from the Table
+    definition it is supposed to mirror; deriving it means they cannot disagree.
     """
-    migrations: list[tuple[str, str, str]] = [
-        # (table, column, ALTER TABLE statement)
-        ("anomalies",  "metadata",        "ALTER TABLE anomalies ADD COLUMN metadata TEXT"),
-        ("budgets",    "critical_at_pct", "ALTER TABLE budgets ADD COLUMN critical_at_pct REAL NOT NULL DEFAULT 100.0"),
-        ("budgets",    "alert_at_pct",    "ALTER TABLE budgets ADD COLUMN alert_at_pct REAL NOT NULL DEFAULT 80.0"),
+    col = metadata.tables[table].c[column]
+    ddl = f"ALTER TABLE {table} ADD COLUMN {column} {col.type.compile(engine.dialect)}"
+    if not col.nullable:
+        # A NOT NULL column added to a table with existing rows needs a default,
+        # or the ALTER is rejected outright.
+        default = getattr(col.default, "arg", None)
+        if default is None:
+            return ddl + " NOT NULL"
+        rendered = f"'{default}'" if isinstance(default, str) else str(default)
+        return f"{ddl} NOT NULL DEFAULT {rendered}"
+    return ddl
+
+
+def _run_sqlite_migrations(engine: Engine) -> None:
+    """Apply additive schema migrations. Runs for SQLite AND PostgreSQL.
+
+    Only ADD COLUMN is portable (SQLite supports neither DROP COLUMN before 3.35
+    nor MODIFY), so every entry here is additive and idempotent: an existing
+    column is detected and skipped.
+
+    Detection goes through SQLAlchemy's inspector, not `PRAGMA table_info`. PRAGMA
+    is SQLite-only, so on a shared-team Postgres deployment it raised, the error
+    was swallowed as a warning, and the ALTER never ran. `metadata.create_all`
+    does not repair that: it creates missing TABLES, never missing columns on a
+    table that already exists. The result was that every column added here after
+    a Postgres database was first created stayed missing, and any query naming it
+    (`select(savings_recommendations)`) failed with an undefined-column error.
+    """
+    migrations: list[tuple[str, str]] = [
+        # (table, column) — the DDL is derived from the model by _add_column_ddl.
+        ("anomalies", "metadata"),
+        ("budgets", "critical_at_pct"),
+        ("budgets", "alert_at_pct"),
         # Runway inputs (Phase 1 business-context layer)
-        ("business_metrics", "cash_on_hand_usd",      "ALTER TABLE business_metrics ADD COLUMN cash_on_hand_usd REAL"),
-        ("business_metrics", "last_raise_amount_usd", "ALTER TABLE business_metrics ADD COLUMN last_raise_amount_usd REAL"),
-        ("business_metrics", "last_raise_date",       "ALTER TABLE business_metrics ADD COLUMN last_raise_date TEXT"),
-        ("business_metrics", "monthly_opex_usd",      "ALTER TABLE business_metrics ADD COLUMN monthly_opex_usd REAL"),
+        ("business_metrics", "cash_on_hand_usd"),
+        ("business_metrics", "last_raise_amount_usd"),
+        ("business_metrics", "last_raise_date"),
+        ("business_metrics", "monthly_opex_usd"),
         # Learning loop: per-(source, bucket) signal
-        ("savings_recommendations", "environment_bucket", "ALTER TABLE savings_recommendations ADD COLUMN environment_bucket VARCHAR(64)"),
+        ("savings_recommendations", "environment_bucket"),
         # Learning loop: canonical dismiss category, so business-reason dismissals don't
         # count against a source's act-rate the way a quality miss does.
-        ("savings_recommendations", "dismiss_reason_category", "ALTER TABLE savings_recommendations ADD COLUMN dismiss_reason_category VARCHAR(32)"),
+        ("savings_recommendations", "dismiss_reason_category"),
         # Verified-savings loop: how the verified dollar figure was obtained
         # (bill_measured | effective_rate | list_price).
-        ("savings_recommendations", "verified_basis", "ALTER TABLE savings_recommendations ADD COLUMN verified_basis VARCHAR(24)"),
+        ("savings_recommendations", "verified_basis"),
         # Drift loop: a fix that was applied and then came undone. Nothing stays
         # optimized, and a regression is the one signal a point-in-time scanner
         # cannot produce, so it is worth its own columns rather than being
         # inferred from a re-opened row.
-        ("savings_recommendations", "regressed_at", "ALTER TABLE savings_recommendations ADD COLUMN regressed_at DATETIME"),
-        ("savings_recommendations", "regression_count", "ALTER TABLE savings_recommendations ADD COLUMN regression_count INTEGER NOT NULL DEFAULT 0"),
+        ("savings_recommendations", "regressed_at"),
+        ("savings_recommendations", "regression_count"),
     ]
 
+    inspector = inspect(engine)
     with engine.connect() as conn:
-        for table, column, stmt in migrations:
+        for table, column in migrations:
             try:
-                # Check existing columns via PRAGMA
-                rows = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
-                existing = {row[1] for row in rows}  # row[1] = column name
+                existing = {c["name"] for c in inspector.get_columns(table)}
                 if column not in existing:
-                    conn.execute(text(stmt))
+                    conn.execute(text(_add_column_ddl(engine, table, column)))
                     conn.commit()
                     log.info("Migration applied: %s.%s", table, column)
             except Exception as exc:
@@ -689,8 +718,11 @@ def _run_sqlite_migrations(engine: Engine) -> None:
         # degrades to a clean one-line message instead of a traceback.
         for _tbl, _col in (("budgets", "block_at_pct"),):
             try:
-                rows = conn.execute(text(f"PRAGMA table_info({_tbl})")).fetchall()
-                if any(r[1] == _col for r in rows):
+                # Inspector, not PRAGMA: same reason as above. This orphan-column
+                # drop was silently skipped on PostgreSQL too, so a team that
+                # upgraded a shared database still had the NOT NULL orphan and
+                # still crashed on the first-run budget step.
+                if _col in {c["name"] for c in inspect(engine).get_columns(_tbl)}:
                     conn.execute(text(f"ALTER TABLE {_tbl} DROP COLUMN {_col}"))
                     conn.commit()
                     log.info("Migration: dropped legacy %s.%s", _tbl, _col)
