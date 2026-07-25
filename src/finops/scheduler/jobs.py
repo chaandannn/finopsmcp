@@ -214,6 +214,13 @@ async def _detect_and_alert() -> list[dict]:
             "current_amount": anomaly.current_amount,
             "detected_at": str(date.today()),
         }
+        # Attach the dollar impact and a concrete next question. Pure arithmetic
+        # over fields we already have, no provider call and no LLM, so it is safe
+        # to run for every alerted anomaly. An alert with a percentage and no
+        # dollars leaves the reader to work out whether +180% is noise or a budget
+        # event.
+        from ..anomaly.impact import enrich as _enrich_impact
+        anomaly_dict = _enrich_impact(anomaly_dict)
         # Send alerts (fire-and-forget, don't crash on failure)
         notified = False
         if slack.is_configured():
