@@ -31,7 +31,9 @@ Exit codes (pinned contract; argparse owns 2 for usage errors):
     3  credentials expired (prints the exact refresh command)
     4  permission denied everywhere (prints the IAM actions needed)
     5  partial with no usable results
-    6  no credentials found
+    6  no credentials found, or AWS rejected the ones it found
+    7  local AWS config does not resolve (unknown profile, unparseable config,
+       no region). Distinct from 6: the machine HAS a setup, it just is wrong.
 
 Failure states never stack-trace; every one ends with a docs link. Telemetry
 events (cli_scan_started / _completed / _failed) carry only event name, error
@@ -61,6 +63,9 @@ EXIT_EXPIRED = 3
 EXIT_DENIED = 4
 EXIT_PARTIAL_EMPTY = 5
 EXIT_NO_CREDS = 6
+# Local AWS config is wrong (missing profile, unparseable config, no region).
+# Distinct from no-creds: the machine HAS a setup, it just does not resolve.
+EXIT_CONFIG = 7
 
 
 # ── tiny ANSI layer (self-contained: importing wizard helpers would be a cycle) ──
@@ -142,8 +147,22 @@ def _finish(code: int, lingering: bool) -> int:
 
 
 def _classify_boto_error(exc: Exception) -> str:
-    """Map a botocore exception to one of our typed failure classes."""
+    """Map a botocore exception to one of our typed failure classes.
+
+    Every class here has to earn a distinct FIX line. A class that cannot tell the
+    user what to do next is worth nothing, and "other" is the bucket we are trying
+    to empty: it was 100% of observed scan failures while covering four unrelated
+    causes, which made the telemetry useless for diagnosing any of them.
+    """
     name = type(exc).__name__
+    # Local config problems. These fail instantly, before any network, and used to
+    # fall through to "other" with a raw botocore string and no fix line.
+    if name == "ProfileNotFound":
+        return "profile-missing"
+    if name in ("ConfigParseError", "ConfigNotFound"):
+        return "config-broken"
+    if name in ("NoRegionError",):
+        return "no-region"
     if name in ("NoCredentialsError", "CredentialRetrievalError", "PartialCredentialsError"):
         return "no-creds"
     if name in ("SSOTokenLoadError", "UnauthorizedSSOTokenError", "TokenRetrievalError"):
@@ -152,11 +171,34 @@ def _classify_boto_error(exc: Exception) -> str:
     resp = getattr(exc, "response", None)
     if isinstance(resp, dict):
         code = (resp.get("Error") or {}).get("Code", "")
-    if code in ("ExpiredToken", "ExpiredTokenException", "RequestExpired", "InvalidClientTokenId"):
+    if code in ("ExpiredToken", "ExpiredTokenException", "RequestExpired"):
         return "expired"
+    # NOT expired. InvalidClientTokenId means the access key ID does not exist and
+    # SignatureDoesNotMatch means the secret is wrong; neither is fixed by
+    # re-authenticating, so sending the user to `aws sso login` wastes their time
+    # and hides a typo'd or revoked key.
+    if code in ("InvalidClientTokenId", "SignatureDoesNotMatch", "AuthFailure",
+                "UnrecognizedClientException", "InvalidAccessKeyId"):
+        return "bad-creds"
     if code in ("AccessDenied", "AccessDeniedException", "UnauthorizedOperation"):
         return "denied"
     return "other"
+
+
+def _available_profiles() -> list[str]:
+    """Profiles boto3 can actually see, for the "you meant one of these" hint.
+    Best-effort: a broken config is one of the cases we are reporting on, and it
+    makes this raise too."""
+    try:
+        # Parse the config files directly. boto3.Session().available_profiles
+        # cannot be used here: constructing the session honors AWS_PROFILE, so on
+        # the exact failure we are reporting (that profile does not exist) it
+        # raises ProfileNotFound and we would tell the user they have no profiles
+        # while staring at the one they meant.
+        import botocore.session
+        return sorted(botocore.session.Session().full_config.get("profiles", {}))
+    except Exception:
+        return []
 
 
 # ── Cost Explorer: at most 2 queries, one page each (CE bills $0.01/request) ──
@@ -589,7 +631,47 @@ def run(args) -> int:
                 "this AWS identity cannot call sts:GetCallerIdentity",
                 "  fix: `nable iam-template` prints the read-only policy nable needs",
             ], "permission", t0)
-        return _fail(out, 1, [f"could not reach AWS: {exc}"], "other", t0)
+        if klass == "profile-missing":
+            # The single most common instant failure: AWS_PROFILE is exported in
+            # the user's shell (normal for anyone with more than one account) and
+            # does not resolve. This used to print a raw botocore string with no
+            # fix line at all, which is why people retried and left.
+            env_profile = os.environ.get("AWS_PROFILE") or os.environ.get("AWS_DEFAULT_PROFILE")
+            found = _available_profiles()
+            lines = [f"AWS profile {profile!r} is not configured on this machine"]
+            if env_profile == profile:
+                lines.append(f"  AWS_PROFILE={env_profile} is set in your environment")
+            if found:
+                lines.append(f"  profiles nable can see: {', '.join(found)}")
+                lines.append(f"  fix: `nable scan --profile {found[0]}`, or unset AWS_PROFILE")
+            else:
+                lines.append("  nable cannot see any configured profiles")
+                lines.append("  fix: `aws configure sso` (company SSO) or `aws configure` (access key)")
+            return _fail(out, EXIT_CONFIG, lines, "profile-missing", t0)
+        if klass == "config-broken":
+            return _fail(out, EXIT_CONFIG, [
+                "your AWS config could not be parsed",
+                f"  {exc}",
+                "  fix: open that file and check for an unclosed [section] header or a stray line",
+            ], "config-broken", t0)
+        if klass == "no-region":
+            return _fail(out, EXIT_CONFIG, [
+                "no AWS region is configured",
+                "  fix: `export AWS_DEFAULT_REGION=us-east-1` (or set `region` in ~/.aws/config)",
+            ], "no-region", t0)
+        if klass == "bad-creds":
+            return _fail(out, EXIT_NO_CREDS, [
+                "AWS rejected these credentials",
+                f"  profile {profile!r}: the access key is unknown, revoked, or the secret does not match",
+                "  fix: `aws sts get-caller-identity` to confirm, then `aws configure` to replace them",
+            ], "bad-creds", t0)
+        # Genuinely unclassified. Keep the engine string so it is at least
+        # reportable, and say what to do with it.
+        return _fail(out, 1, [
+            f"could not reach AWS: {exc}",
+            "  fix: `nable scan --debug` prints the full traceback",
+            "  if that does not explain it, please open an issue with the output",
+        ], "other", t0)
 
     # Scope is always labeled, never detected: no organizations API, no
     # permission trap, never wrong. Org-aware payer detection waits for CUR.
