@@ -104,8 +104,9 @@ def test_available_profiles_works_when_aws_profile_is_broken(tmp_path, monkeypat
     """
     aws = tmp_path / ".aws"
     aws.mkdir()
+    # AWS's own published example key pair (docs.aws.amazon.com), not a credential.
     (aws / "credentials").write_text(
-        "[work]\naws_access_key_id = AKIAIOSFODNN7EXAMPLE\n"
+        "[work]\naws_access_key_id = AKIAIOSFODNN7EXAMPLE\n"  # pragma: allowlist secret
         "aws_secret_access_key = wJalrXUtnFEMIbK7MDENGbPxRfiCYEXAMPLEKEY\n"  # pragma: allowlist secret
     )
     monkeypatch.setenv("HOME", str(tmp_path))
