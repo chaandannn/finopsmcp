@@ -335,6 +335,27 @@ _RIGHTSIZING_FAMILY: dict[str, str] = {
 }
 
 
+def _annotate_evidence(findings: list[dict]) -> list[dict]:
+    """Tag each finding measured/inferred. Imported lazily to keep analyzers free of
+    a module-level dependency on recommendations (which imports back this way).
+    Best-effort: a classification failure must never lose a finding."""
+    try:
+        from .waste_evidence import annotate
+        return annotate(findings)
+    except Exception as exc:  # pragma: no cover - defensive
+        log.warning("evidence classification skipped: %s", exc)
+        return findings
+
+
+def _split_evidence_totals(findings: list[dict]) -> dict:
+    try:
+        from .waste_evidence import split_totals
+        return split_totals(findings)
+    except Exception as exc:  # pragma: no cover - defensive
+        log.warning("evidence totals skipped: %s", exc)
+        return {}
+
+
 def _dedup_findings(findings: list[dict]) -> list[dict]:
     """
     Deduplicate findings so a resource is never counted twice.
@@ -576,6 +597,13 @@ def run_deep_audit(
     all_findings = _dedup_findings(all_findings)
     all_findings.sort(key=lambda f: f.get("estimated_monthly_savings", 0), reverse=True)
 
+    # ── Evidence classification ───────────────────────────────────────────────
+    # Runs AFTER dedup so it annotates only the findings that survive, and after
+    # the sort so ranking still uses the raw figure. Additive: the per-finding
+    # savings number is untouched, only the claim we make about it changes.
+    all_findings = _annotate_evidence(all_findings)
+    evidence_totals = _split_evidence_totals(all_findings)
+
     # ── Aggregations ──────────────────────────────────────────────────────────
     total_savings = sum(f.get("estimated_monthly_savings", 0) for f in all_findings)
 
@@ -616,6 +644,11 @@ def run_deep_audit(
         "total_findings": len(all_findings),
         "total_estimated_monthly_savings": round(total_savings, 2),
         "total_estimated_annual_savings": round(total_savings * 12, 2),
+        # The honest split of that same total. `measured_monthly_savings` is what we
+        # observed and will stand behind; `unconfirmed_monthly_opportunity` is a work
+        # queue, and every finding in it carries confirm_steps. Report the two
+        # separately rather than adding them into one headline nobody believes.
+        **evidence_totals,
         "findings": all_findings,
         "by_category": by_category,
         "by_severity": by_severity,
