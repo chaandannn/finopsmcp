@@ -153,10 +153,10 @@ def get_ec2_utilization(
             "instance_type": str | None,
             "state": str | None,
             "cpu": {average, maximum, p95, p99},
-            "network_in_bytes": {average, maximum},
-            "network_out_bytes": {average, maximum},
-            "disk_read_ops": {average, maximum},
-            "disk_write_ops": {average, maximum},
+            "network_in_bytes":  {average_per_day, maximum_per_day},
+            "network_out_bytes": {average_per_day, maximum_per_day},
+            "disk_read_ops":     {average_per_day, maximum_per_day},
+            "disk_write_ops":    {average_per_day, maximum_per_day},
             "period_days": int,
         }
     """

@@ -694,27 +694,15 @@ def get_instance_deep_analysis(
     cpu_avg = utilization.get("cpu", {}).get("average") or 0.0
     cpu_p99 = utilization.get("cpu", {}).get("p99") or 0.0
 
-    our_recommendation = None
-    if cpu_avg < 5.0:
-        our_recommendation = {
-            "action": "stop_or_terminate",
-            "reason": f"Average CPU {cpu_avg:.1f}% over {lookback_days}d (< 5% threshold)",
-            "estimated_monthly_savings": "high — check instance type for exact figure",
-        }
-    elif cpu_avg < 20.0 and cpu_p99 < 50.0:
-        our_recommendation = {
-            "action": "downsize",
-            "reason": (
-                f"Average CPU {cpu_avg:.1f}%, p99 CPU {cpu_p99:.1f}% over {lookback_days}d. "
-                f"Instance is over-provisioned."
-            ),
-            "estimated_monthly_savings": "medium — run Compute Optimizer for exact recommendation",
-        }
-    else:
-        our_recommendation = {
-            "action": "none",
-            "reason": f"CPU utilization looks reasonable (avg={cpu_avg:.1f}%, p99={cpu_p99:.1f}%)",
-        }
+    # Network and disk are already fetched by get_ec2_utilization and used to be
+    # thrown away, leaving a CPU-only verdict. They cannot prove an instance is
+    # right-sized, but they can prove it is NOT idle: a box moving a gigabyte a day
+    # or doing sustained disk IO is working, whatever its CPU says. Cheapest
+    # available correction to the classic "low CPU means unused" false positive,
+    # and it costs no extra API calls.
+    activity = _non_cpu_activity(utilization)
+
+    our_recommendation = _cpu_verdict(cpu_avg, cpu_p99, lookback_days, activity)
 
     # Fetch Compute Optimizer recommendation for this specific instance
     co_recommendation = None
@@ -753,7 +741,118 @@ def get_instance_deep_analysis(
         "utilization": utilization,
         "nable_recommendation": our_recommendation,
         "compute_optimizer_recommendation": co_recommendation,
+        # ONE answer, so the caller never has to reconcile two recommendations that
+        # disagree. Compute Optimizer wins when it has an opinion: it weighs CPU,
+        # memory, network and disk and supplies its own dollar figure, which is
+        # measured evidence. Our CPU heuristic is the fallback and says so.
+        "verdict": _deep_analysis_verdict(our_recommendation, co_recommendation),
     }
+
+
+# Thresholds for "this instance is doing something that is not CPU". Deliberately
+# conservative: they exist to STOP a confident idle call, never to make one.
+#   1 GB/day combined network is ~12 KB/s sustained. An idle box does far less.
+#   100k disk ops/day is ~1.2 ops/s sustained. Also well clear of noise.
+_ACTIVE_NET_BYTES_PER_DAY = 1_000_000_000
+_ACTIVE_DISK_OPS_PER_DAY = 100_000
+
+
+def _non_cpu_activity(utilization: dict) -> list[str]:
+    """Evidence the instance is working even if its CPU looks idle."""
+    def _avg(key: str) -> float:
+        try:
+            return float(utilization.get(key, {}).get("average_per_day") or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    signals: list[str] = []
+    net = _avg("network_in_bytes") + _avg("network_out_bytes")
+    if net > _ACTIVE_NET_BYTES_PER_DAY:
+        signals.append(f"moving ~{net / 1_000_000_000:.1f} GB/day of network traffic")
+    disk = _avg("disk_read_ops") + _avg("disk_write_ops")
+    if disk > _ACTIVE_DISK_OPS_PER_DAY:
+        signals.append(f"doing ~{disk:,.0f} disk ops/day")
+    return signals
+
+
+# What this analysis cannot see, stated once so every verdict can carry it.
+_NO_MEMORY_DATA = (
+    "This verdict is CPU plus network and disk. Memory is not here: EC2 does not "
+    "publish it without the CloudWatch agent, and memory is the single most common "
+    "reason a low-CPU instance cannot actually be downsized."
+)
+_CONFIRM_STEPS = (
+    "Check memory utilization (CloudWatch agent, or the host's own metrics).",
+    "Compare average against p99 CPU. A wide gap means bursty, not idle.",
+    "Ask the workload owner what runs here before resizing or stopping it.",
+)
+
+
+def _cpu_verdict(cpu_avg: float, cpu_p99: float, lookback_days: int,
+                 activity: list[str]) -> dict:
+    """Our own read on the instance. Always an INVESTIGATION: it is a heuristic on
+    partial signals, so it never carries a dollar figure. The previous version put
+    the strings "high — check instance type for exact figure" and "medium — run
+    Compute Optimizer" in an estimated_monthly_savings field, which is neither a
+    number nor an honest absence of one."""
+    base = {
+        "evidence": "inferred",
+        "kind": "investigation",
+        "why_unsure": _NO_MEMORY_DATA,
+        "confirm_steps": list(_CONFIRM_STEPS),
+        # No estimated_monthly_savings key at all. We did not measure one.
+    }
+    if activity:
+        joined = " and ".join(activity)
+        if cpu_avg < 20.0:
+            return {**base, "action": "none", "confidence": "low",
+                    "reason": (
+                        f"CPU is low (avg {cpu_avg:.1f}%, p99 {cpu_p99:.1f}% over "
+                        f"{lookback_days}d) but this instance is {joined}. Low CPU on a "
+                        f"box that is moving data is not an idle box; it is a workload "
+                        f"that is not CPU-bound."
+                    )}
+    if cpu_avg < 5.0:
+        return {**base, "action": "investigate_for_stop", "confidence": "medium",
+                "reason": (
+                    f"Average CPU {cpu_avg:.1f}% over {lookback_days}d (< 5%), with no "
+                    f"significant network or disk activity. Looks unused."
+                )}
+    if cpu_avg < 20.0 and cpu_p99 < 50.0:
+        return {**base, "action": "investigate_for_downsize", "confidence": "medium",
+                "reason": (
+                    f"Average CPU {cpu_avg:.1f}%, p99 CPU {cpu_p99:.1f}% over "
+                    f"{lookback_days}d. Headroom at both average and peak."
+                )}
+    return {"action": "none", "evidence": "inferred", "kind": "investigation",
+            "confidence": "medium",
+            "reason": (
+                f"CPU utilization looks reasonable (avg {cpu_avg:.1f}%, "
+                f"p99 {cpu_p99:.1f}%)."
+            )}
+
+
+def _deep_analysis_verdict(ours: dict, co: dict | None) -> dict:
+    """Collapse the two opinions into the single answer a caller should act on."""
+    options = (co or {}).get("options") or []
+    best = options[0] if options else None
+    savings = (best or {}).get("estimated_monthly_savings")
+    if best and savings is not None:
+        return {
+            "source": "aws_compute_optimizer",
+            "evidence": "measured",
+            "kind": "recommendation",
+            "action": "downsize",
+            "recommended_instance_type": best.get("instance_type"),
+            "estimated_monthly_savings": savings,
+            "performance_risk": best.get("performance_risk"),
+            "reason": (
+                f"AWS Compute Optimizer rates this instance "
+                f"{(co or {}).get('finding')} using CPU, memory, network and disk, "
+                f"and sizes the saving itself."
+            ),
+        }
+    return {"source": "nable_cpu_heuristic", **ours}
 
 
 # ── CloudWatch Log Group scan (standalone for MCP tool) ──────────────────────
