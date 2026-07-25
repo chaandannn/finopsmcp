@@ -998,6 +998,14 @@ async def open_rightsizing_pr(
     if err := _srv.require_role("analyst"):
         return err
 
+    # Opening a PR pushes a branch to the customer's repo: gate it behind the
+    # opt-in switch. dry_run (diff only) and patch_only (local files, no git)
+    # touch nothing outside the box, so they stay available while disabled.
+    if not dry_run and not patch_only:
+        from ..remediation.gate import remediation_pr_enabled, disabled_response
+        if not remediation_pr_enabled():
+            return disabled_response(dry_run_hint=True)
+
     safe_dir = _srv._resolve_safe_path(tf_dir, must_exist=True)
     if isinstance(safe_dir, dict):
         return safe_dir

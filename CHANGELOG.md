@@ -2,6 +2,10 @@
 
 All notable changes to finops-mcp (nable).
 
+## 0.8.191
+
+- **Opening pull requests in your repos is now opt-in, off by default.** `open_rightsizing_pr` and `open_terraform_tag_pr` are the only paths that write anything outside nable, and they now refuse to push a branch until you explicitly turn them on with `FINOPS_REMEDIATION_ENABLED=true` or `remediation: {open_prs: true}` in `nable.policy.yaml`. Preview modes are unaffected: `dry_run=True` still shows the diff and `patch_only=True` still writes the `.tf` files locally for your own git flow. A security review can now assert "nable cannot open PRs here" as declared config instead of relying on the absence of a GitHub token. Mirrors the existing `FINOPS_CLEANUP_ENABLED` gate, and fails closed on a missing or malformed policy file.
+
 ## 0.8.190
 
 - **`nable iam-template` now produces cross-account trust for the managed offering.** When `TrustedAccountId` is set (nable's hosting account), the read-only role trusts that account to assume it, with an optional `ExternalId` for confused-deputy protection; left blank it keeps the same-account instance-profile trust. This is what lets nable host a customer's single-tenant box and read their bill through a persistent role they own and can revoke, no expiring keys, no re-setup.

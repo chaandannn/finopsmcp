@@ -759,6 +759,11 @@ async def open_terraform_tag_pr(
     if err := _srv.require_role("analyst"):
         return err
 
+    from ..remediation.gate import remediation_pr_enabled, disabled_response
+    if not remediation_pr_enabled():
+        # This tool only opens a PR; there is no local-only mode to fall back to.
+        return disabled_response(dry_run_hint=False)
+
     safe_dir = _srv._resolve_safe_path(tf_dir, must_exist=True)
     if isinstance(safe_dir, dict):
         return safe_dir
