@@ -390,6 +390,11 @@ savings_recommendations = Table(
     # learning signal can tell a quality miss ("estimate is wrong") apart from a
     # business reason ("reserved for peak") without re-parsing free text on every query.
     Column("dismiss_reason_category", String(32), nullable=True),
+    # Drift: the fix was applied, then the resource came back. Nothing stays
+    # optimized, and a scanner that only reports current state can never say
+    # "you already fixed this once". regression_count is how many times.
+    Column("regressed_at", DateTime, nullable=True),
+    Column("regression_count", Integer, nullable=False, default=0),
     # Dedup
     Column("dedup_key", String(64), nullable=False),   # SHA256 of source+resource_id+recommended_config
     # Learning loop: coarse env/workload bucket so the signal can roll up per
@@ -653,6 +658,12 @@ def _run_sqlite_migrations(engine: Engine) -> None:
         # Verified-savings loop: how the verified dollar figure was obtained
         # (bill_measured | effective_rate | list_price).
         ("savings_recommendations", "verified_basis", "ALTER TABLE savings_recommendations ADD COLUMN verified_basis VARCHAR(24)"),
+        # Drift loop: a fix that was applied and then came undone. Nothing stays
+        # optimized, and a regression is the one signal a point-in-time scanner
+        # cannot produce, so it is worth its own columns rather than being
+        # inferred from a re-opened row.
+        ("savings_recommendations", "regressed_at", "ALTER TABLE savings_recommendations ADD COLUMN regressed_at DATETIME"),
+        ("savings_recommendations", "regression_count", "ALTER TABLE savings_recommendations ADD COLUMN regression_count INTEGER NOT NULL DEFAULT 0"),
     ]
 
     with engine.connect() as conn:
