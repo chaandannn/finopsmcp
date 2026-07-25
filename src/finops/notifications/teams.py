@@ -45,6 +45,16 @@ def anomaly_card(anomaly: dict[str, Any]) -> dict:
     pct = abs(anomaly["pct_change"])
     sign = "+" if anomaly["direction"] == "spike" else "-"
 
+    # Dollar impact and the next question, added by anomaly.impact.enrich before
+    # dispatch. Optional so a bare anomaly still renders.
+    extra: list[dict] = []
+    if anomaly.get("impact_summary"):
+        extra.append({"type": "TextBlock", "text": f"**Impact** {anomaly['impact_summary']}",
+                      "wrap": True})
+    if anomaly.get("next_step"):
+        extra.append({"type": "TextBlock", "text": f"**Next** {anomaly['next_step']}",
+                      "wrap": True, "isSubtle": True})
+
     return {
         "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
         "type": "AdaptiveCard",
@@ -69,6 +79,7 @@ def anomaly_card(anomaly: dict[str, Any]) -> dict:
                     {"title": "Account", "value": anomaly.get("account_id", "")},
                 ],
             },
+            *extra,
             {
                 "type": "TextBlock",
                 "text": f"Detected: {anomaly.get('detected_at', '')}",

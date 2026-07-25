@@ -64,6 +64,21 @@ def anomaly_blocks(anomaly: dict[str, Any]) -> list[dict]:
     pct = abs(anomaly["pct_change"])
     sign = "+" if anomaly["direction"] == "spike" else "-"
 
+    # Dollar impact and the next question. Added by anomaly.impact.enrich before
+    # dispatch; absent when a caller builds blocks from a bare anomaly, so both
+    # are optional and the alert renders without them.
+    impact_blocks: list[dict] = []
+    if anomaly.get("impact_summary"):
+        impact_blocks.append(
+            {"type": "section",
+             "text": {"type": "mrkdwn", "text": f"*Impact*\n{anomaly['impact_summary']}"}}
+        )
+    if anomaly.get("next_step"):
+        impact_blocks.append(
+            {"type": "section",
+             "text": {"type": "mrkdwn", "text": f"*Next*\n{anomaly['next_step']}"}}
+        )
+
     return [
         {"type": "header", "text": {"type": "plain_text", "text": f"{emoji} Cost Anomaly — {anomaly['severity'].upper()} severity"}},
         {"type": "section", "fields": [
@@ -74,6 +89,7 @@ def anomaly_blocks(anomaly: dict[str, Any]) -> list[dict]:
             {"type": "mrkdwn", "text": f"*Baseline avg*\n${anomaly['baseline_mean']:,.2f}"},
             {"type": "mrkdwn", "text": f"*Z-score*\n{anomaly['z_score']:.2f}"},
         ]},
+        *impact_blocks,
         {"type": "context", "elements": [
             {"type": "mrkdwn", "text": f"Detected {anomaly.get('detected_at', '')} · Account: {anomaly.get('account_id', '')}"}
         ]},

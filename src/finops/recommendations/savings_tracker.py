@@ -93,6 +93,64 @@ def _bucket(resource_type: str | None, environment: str | None) -> str | None:
         return None
 
 
+# A change takes time to land: you mark a rightsizing acted-on, the resize happens
+# in the next maintenance window, and CloudWatch needs a few days of post-change
+# data before the detector stops seeing the old shape. Re-flagging inside that
+# window is the pipeline catching up, not the fix coming undone. Only past it do we
+# call it a regression, so "you already fixed this once" stays a claim worth
+# trusting.
+_REGRESSION_GRACE_DAYS = 7
+
+
+def _is_regression(conn, rec_id: int) -> bool:
+    """True when an acted-on/verified recommendation is old enough that the
+    detector seeing it again means the change was reverted."""
+    row = conn.execute(
+        select(
+            savings_recommendations.c.acted_on_at,
+            savings_recommendations.c.verified_at,
+        ).where(savings_recommendations.c.id == rec_id)
+    ).first()
+    if row is None:
+        return False
+    marker = row.verified_at or row.acted_on_at
+    if marker is None:
+        # Status says acted_on but no timestamp: cannot date it, so do not accuse.
+        return False
+    if marker.tzinfo is None:
+        marker = marker.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - marker) > timedelta(days=_REGRESSION_GRACE_DAYS)
+
+
+def list_regressions(limit: int = 50) -> list[dict[str, Any]]:
+    """Fixes that came undone, newest first.
+
+    This is the answer to "nothing stays optimized": a point-in-time scanner can
+    only tell you the resource is wrong right now. Because the recommendation
+    survives across scans, we can also say you already fixed it, when, and how
+    many times it has come back. A resource with a rising regression_count is not
+    a savings opportunity, it is a process problem, and reporting it as a fresh
+    finding every quarter is how a FinOps tool trains people to ignore it.
+    """
+    engine = get_engine()
+    with engine.begin() as conn:
+        rows = conn.execute(
+            select(savings_recommendations)
+            .where(savings_recommendations.c.regression_count > 0)
+            .order_by(savings_recommendations.c.regressed_at.desc())
+            .limit(limit)
+        ).mappings().all()
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        d = dict(r)
+        d["headline"] = (
+            f"Fixed before, back again ({d['regression_count']}x): "
+            f"{d.get('resource_name') or d.get('resource_id')}"
+        )
+        out.append(d)
+    return out
+
+
 # ── Upsert a recommendation ───────────────────────────────────────────────────
 
 def record_recommendation(
@@ -123,6 +181,34 @@ def record_recommendation(
         ).first()
 
         if existing:
+            # The fix was applied (or measured) and the detector is flagging the
+            # same resource again: it came undone. This is the drift case, and it
+            # is the one thing a point-in-time scanner cannot tell you. Every other
+            # tool re-reports it as a brand new finding.
+            if existing.status in ("acted_on", "verified"):
+                if _is_regression(conn, existing.id):
+                    conn.execute(
+                        update(savings_recommendations)
+                        .where(savings_recommendations.c.id == existing.id)
+                        .values(
+                            status="open",
+                            regressed_at=datetime.now(timezone.utc),
+                            regression_count=(
+                                savings_recommendations.c.regression_count + 1
+                            ),
+                            estimated_monthly_savings_usd=estimated_monthly_savings_usd,
+                            description=description,
+                            current_config=json.dumps(current_config),
+                            generated_at=datetime.now(timezone.utc),
+                            # The previous verification described a state that no
+                            # longer holds, so it cannot stand as a current saving.
+                            verified_at=None,
+                            verified_monthly_savings_usd=None,
+                            verified_basis=None,
+                        )
+                    )
+                return existing.id
+
             # If previously dismissed/expired, re-open it (resource regressed)
             if existing.status in ("dismissed", "expired"):
                 conn.execute(
@@ -469,6 +555,14 @@ def get_recommendation(rec_id: int) -> dict[str, Any] | None:
         "estimated_monthly_savings_usd": r.estimated_monthly_savings_usd,
         "status": r.status,
         "environment_bucket": getattr(r, "environment_bucket", None),
+        # Verification state, so a caller can tell a measured saving from an
+        # estimate, and can see when a measured one was invalidated by a regression.
+        "verified_monthly_savings_usd": getattr(r, "verified_monthly_savings_usd", None),
+        "verified_at": getattr(r, "verified_at", None),
+        "verified_basis": getattr(r, "verified_basis", None),
+        # Drift: this fix was applied before and came undone.
+        "regressed_at": getattr(r, "regressed_at", None),
+        "regression_count": getattr(r, "regression_count", 0) or 0,
     }
 
 
