@@ -127,7 +127,7 @@ def test_ai_budget_interactive_first_run(sandbox_env):
     assert "Traceback" not in out, f"traceback in ai-budget first run:\n{out[-800:]}"
     assert exited, f"ai-budget did not exit (hang?):\n{out[-800:]}"
     assert "$100/mo flat" in out                          # the plan is confirmed
-    assert "Run `finops ai-budget` to set a budget" not in out
+    assert "to set a budget" not in out          # wording-independent: no nag after setting one
 
 
 def _seed_legacy_budgets_db(path: Path) -> None:

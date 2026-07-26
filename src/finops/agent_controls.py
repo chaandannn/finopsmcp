@@ -162,7 +162,7 @@ def agent_team_status() -> dict[str, Any]:
         except Exception:
             hook = False
         if not hook:
-            guard_setup.append("finops guard install  (auto-checks agent commands in Claude Code)")
+            guard_setup.append("nable guard install  (auto-checks agent commands in Claude Code)")
         try:
             from .budget.enforcer import list_budgets
             if not list_budgets():

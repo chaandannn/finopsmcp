@@ -165,7 +165,7 @@ def run(args) -> int:
                          f"{_c(verdict.upper() if st['verdict_basis'] == 'tokens' else 'tracking', vcolor if st['verdict_basis'] == 'tokens' else _DIM)}"
                          f" ({st['billable_tokens_mtd']/b['monthly_tokens']*100:.0f}%)")
     if not mode:
-        row("budget", _c("not set — run `finops ai-budget` to set one", _DIM))
+        row("budget", _c("not set · run `nable ai-budget` to set one", _DIM))
     row("burn rate", f"~{_tok(st['burn_tokens_per_hour'])} tokens/hour")
 
     print(file=out)

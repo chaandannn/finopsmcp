@@ -2218,7 +2218,7 @@ def _run_guard(parsed) -> None:
         print()
         print(dim("  Policy knobs: FINOPS_POLICY_MAX_AUTO_USD, FINOPS_POLICY_ALLOWED_ACTIONS"))
         print(dim("  Strict mode (also confirm terraform apply / helm upgrade): FINOPS_GUARD_STRICT=1"))
-        print(dim(f"  Remove any time: finops guard uninstall{' --global' if global_scope else ''}"))
+        print(dim(f"  Remove any time: nable guard uninstall{' --global' if global_scope else ''}"))
         print(dim("  Restart Claude Code to pick up the hook."))
         print()
         return
@@ -2236,7 +2236,7 @@ def _run_guard(parsed) -> None:
     if action == "check":
         cmd = getattr(parsed, "guard_command", "")
         if not cmd:
-            print("\n  Usage: finops guard check --command \"terraform destroy ...\"\n")
+            print("\n  Usage: nable guard check --command \"terraform destroy ...\"\n")
             return
         verdict = guard.gate_command(cmd)
         print()
@@ -2258,8 +2258,8 @@ def _run_guard(parsed) -> None:
         state = green("installed") if guard.is_installed(p) else dim("not installed")
         print(f"  {scope:<8} {state}   {dim(str(p))}")
     print()
-    print(dim("  Install:  finops guard install            (this project)"))
-    print(dim("            finops guard install --global    (all projects)"))
+    print(dim("  Install:  nable guard install            (this project)"))
+    print(dim("            nable guard install --global    (all projects)"))
     print(dim("  The hook is Claude Code. Other MCP agents (Cursor, etc.) get the same"))
     print(dim("  gate as a tool: the agent calls check_action_policy before acting."))
     print()

@@ -123,7 +123,7 @@ monthly and annual dollar impact, and a spot alternative when the change is comp
 One-way doors (delete, terminate, buy a commitment) and over-budget changes always
 escalate to a human.
 
-**And a budget for the agent itself.** Run `finops ai-budget` once, it asks whether
+**And a budget for the agent itself.** Run `nable ai-budget` once, it asks whether
 you are on a flat plan or a metered API and what you pay, then remembers. On a flat
 plan it tracks how much subsidized compute you pull for your fixed fee and warns
 before you run low; on metered it gates on a dollar spend cap. `check_ai_budget` does

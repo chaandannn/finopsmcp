@@ -2,6 +2,11 @@
 
 All notable changes to finops-mcp (nable).
 
+## 0.8.194
+
+- **The CLI now tells you to run `nable`, not `finops`.** The site teaches `uvx nable`, and `nable ai-budget` is the first command a lot of people run, but its own output pointed at `finops ai-budget`, a name they have never seen and do not have a reason to trust. Same leak in `nable guard`'s install, uninstall and usage lines, and in the agent-team setup steps. All of them say `nable` now. The hook command written into `settings.json` still resolves through the `finops` entry point, which is correct: that one is machinery, not instruction.
+- Two regression tests that pinned this copy asserted on the full sentence, so renaming the command inside it would have made them pass without checking anything. They now assert on the wording-independent part.
+
 ## 0.8.193
 
 - **`nable scan` now tells you why it failed and what to do.** Telemetry showed every external machine that ran a scan on 2026-07-24/25 failing instantly, three attempts each, then giving up. Two of the failure paths printed a raw AWS library string with no fix line at all: an `AWS_PROFILE` that does not resolve, and an unparseable `~/.aws/config`. Both are now named, and the missing-profile message lists the profiles nable can actually see and offers `--profile <name>`. Since `AWS_PROFILE` is exported in the shell of just about anyone with more than one AWS account, this was the most likely reason a first run went nowhere.
