@@ -69,8 +69,15 @@ def get_budget() -> dict[str, Any]:
     mode: 'flat' (a subscription, budget = plan_cost + optional usage cap) or
     'metered' (pay-per-token, budget = spend_cap). monthly_tokens is a usage cap
     that works in either mode ("warn before I burn N tokens")."""
+    # on_breach: what the guard does when usage crosses the budget.
+    #   "notify" (default) -> the agent asks the human before continuing
+    #   "stop"             -> the agent is denied outright
+    # Asked once at `nable guard install`. Default is notify because a tool that
+    # silently halts your agent gets uninstalled before anyone finds the setting
+    # that caused it; stopping has to be a thing you chose.
     default = {"mode": "", "plan_cost": 0.0, "spend_cap": 0.0,
-               "monthly_tokens": 0, "plan_label": "", "set_at": 0.0}
+               "monthly_tokens": 0, "plan_label": "", "set_at": 0.0,
+               "on_breach": "notify"}
     try:
         data = json.loads(_budget_path().read_text())
         if isinstance(data, dict):
@@ -82,7 +89,8 @@ def get_budget() -> dict[str, Any]:
 
 def set_budget(mode: str | None = None, plan_cost: float | None = None,
                spend_cap: float | None = None, monthly_tokens: int | None = None,
-               plan_label: str | None = None) -> dict[str, Any]:
+               plan_label: str | None = None,
+               on_breach: str | None = None) -> dict[str, Any]:
     """Set the AI budget. `mode` is 'flat' (subscription: pass plan_cost) or
     'metered' (pay-per-token: pass spend_cap). Passing plan_cost/spend_cap infers
     the mode. monthly_tokens is an optional usage cap for either. Any subset."""
@@ -101,6 +109,8 @@ def set_budget(mode: str | None = None, plan_cost: float | None = None,
         b["monthly_tokens"] = max(0, int(monthly_tokens))
     if plan_label is not None:
         b["plan_label"] = plan_label
+    if on_breach in ("stop", "notify"):
+        b["on_breach"] = on_breach
     b["set_at"] = time.time()
     fd = os.open(_budget_path(), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as fh:

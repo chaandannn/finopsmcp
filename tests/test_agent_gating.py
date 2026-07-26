@@ -58,8 +58,15 @@ def _assert_upgrade_payload(r, feature):
     assert r["feature"] == feature
     assert r["upgrade_url"]
     assert r["activate_command"]
-    # The pitch names the agent team, not just a generic "upgrade".
-    assert "Budget Guard" in r["message"]
+    # The pitch names concrete capabilities, not a generic "upgrade". It used to
+    # assert "Budget Guard"; the guard left the Pro list (free forever, it is the
+    # front door), so the upsell must sell what is actually behind the paywall.
+    assert "Budget Guard" not in r["message"], (
+        "the upsell is offering the guard, which is free; that is a broken promise"
+    )
+    assert any(k in r["message"] for k in ("pull request", "Ledger", "verified")), (
+        f"upgrade copy names no concrete Pro capability: {r['message']!r}"
+    )
 
 
 # ── Under the temporary AI ungate (2026-07-10): the agent team runs for free ────
@@ -92,12 +99,18 @@ def test_free_ledger_and_remediation_run_under_hold(free):
 
 # ── Re-gate proof: flip the hold off and the upgrade payload returns ───────────
 
-def test_regated_check_action_policy_returns_upgrade(regated):
+def test_check_action_policy_stays_free_even_after_pricing_ships(regated):
+    """Inverted deliberately. The policy gate is the same capability as the
+    `nable guard` hook reached through MCP, and the hook is free forever, so
+    gating this surface would be incoherent. `regated` lifts the temporary AI
+    ungate, i.e. it simulates the day the paid model launches."""
     r = _run(server.check_action_policy(action_type="rightsizing", monthly_delta_usd=-100.0))
-    _assert_upgrade_payload(r, "agent_gate")
+    assert r.get("error") != "pro_required"
+    assert "gate" in r
 
 
 def test_regated_ledger_and_remediation_gate(regated):
+    # agent_gate is intentionally absent here: the guard left PRO_FEATURES.
     _assert_upgrade_payload(_run(server.mark_recommendation_acted_on(1)), "agent_learning")
     _assert_upgrade_payload(_run(server.verify_savings()), "agent_learning")
     _assert_upgrade_payload(_run(server.get_recommendation_learning()), "agent_learning")
@@ -134,10 +147,19 @@ def test_agent_team_free_under_hold_is_available(free, monkeypatch):
 
 
 def test_agent_team_regated_shows_unlock_path(regated):
+    """After pricing ships, the two Pro agents ask for an upgrade and Budget
+    Guard does NOT: it is free forever, so its status reflects setup state, not
+    licensing."""
     r = _run(server.get_agent_team())
     assert r["plan"] == "free"
     assert len(r["agents"]) == 3
-    for a in r["agents"]:
+    by_name = {a["agent"]: a for a in r["agents"]}
+    guard = by_name["Budget Guard"]
+    assert guard["status"] != "pro_required", (
+        "the guard is the front door; it must never ask for a license"
+    )
+    for name in ("Savings Analyst", "the Ledger"):
+        a = by_name[name]
         assert a["status"] == "pro_required"
         assert any("activate_pro" in s or "login" in s for s in a["setup"])
     assert "Propose-only" in r["note"]

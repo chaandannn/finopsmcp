@@ -102,7 +102,14 @@ PRO_FEATURES: set[str] = {
     "ai_unit_economics",         # cost per PR by model, AI KPIs, the GitHub engineering-attribution report
     "remediation",               # drafting the fix: open rightsizing / terraform-tag PRs
     # ── The agent team (watch, act, coordinate with agents) ──────────────────────
-    "agent_gate",                # Budget Guard: check_action_policy allow/block/escalate + the guard hook
+    # NOTE: "agent_gate" is deliberately NOT here. The guard is the front door:
+    # it needs no cloud account, no credentials and no license, which makes it the
+    # one surface that can reach someone before they have connected anything. It
+    # was previously Pro-but-ungated by the temporary _HOLD_AI_UNGATE flag below,
+    # which meant the day pricing shipped the gate would have gone SILENT for every
+    # free user, failing open with no message. Free forever is a commitment, not a
+    # hold. The paid line for guard is team-shaped (shared policy, audit trail,
+    # fleet enforcement), never the individual's ability to stop their own agent.
     "agent_learning",            # the Ledger: mark acted-on, verify savings landed, learned approval profile
     # Cost queries, anomaly detection, rightsizing findings, and the full
     # multi-cloud normalized view (compare_providers, total-spend-all-sources) are
@@ -121,7 +128,6 @@ PRO_FEATURES: set[str] = {
 # PRO_FEATURES so the upgrade copy and the eventual re-gate stay one edit away.
 _HOLD_AI_UNGATE = True
 _UNGATED_AI_FEATURES: frozenset[str] = frozenset({
-    "agent_gate",                 # Budget Guard: policy gate + guard hook
     "agent_learning",             # the Ledger: verify savings, learn approvals
     "remediation",                # the fix as a pull request
     "ai_unit_economics",          # AI cost per PR, AI KPIs
@@ -684,7 +690,6 @@ def require_pro(feature: str) -> dict | None:
 
     # Build a concise FOMO block showing everything Team unlocks
     _TEAM_FEATURES = [
-        ("agent_gate",                 "🛡️  Budget Guard: your agents check cost, budget, and policy before they act"),
         ("remediation",                "🔧 The fix as a pull request: rightsizing and tag PRs you approve"),
         ("agent_learning",             "🧠 The Ledger: verified savings + a gate that learns what you approve"),
         ("ticket_creation",            "🎫 Auto-create Jira / Linear / GitHub Issues from anomalies & rightsizing"),
