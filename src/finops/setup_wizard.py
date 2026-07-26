@@ -2179,7 +2179,7 @@ def _run_guard(parsed) -> None:
     Advisory and propose-only: it asks or denies, it never executes.
     """
     from . import guard
-    from .welcome import bold, cyan, dim, green
+    from .welcome import amber, bold, cyan, dim, green
 
     action = getattr(parsed, "guard_action", "status")
     global_scope = getattr(parsed, "guard_global", False)
@@ -2190,20 +2190,23 @@ def _run_guard(parsed) -> None:
         raise SystemExit(guard.run_hook())
 
     if action == "install":
-        # Budget Guard is part of the Pro agent team. Install the hook either way
-        # (it is inert plumbing that fails open on the free tier), but be straight
-        # about what activates it so nobody thinks they wired up a dead switch.
-        from .license import feature_available
-        pro_active = feature_available("agent_gate")
+        # No license check here on purpose. The guard is free forever (see the
+        # note on "agent_gate" in license.py): it is the one surface that works
+        # with no cloud account, so gating it would silence it for exactly the
+        # people it should reach. This used to print a "part of nable Pro" notice
+        # gated on feature_available("agent_gate"), which is now permanently True
+        # and so was dead code promising a paywall that does not exist.
         already = guard.is_installed(guard._settings_path(global_scope))
-        path = guard.install(global_scope)
+        try:
+            path = guard.install(global_scope)
+        except OSError as e:
+            # Writing someone's editor config can fail for ordinary reasons (a
+            # read-only file, a root-owned .claude). A traceback here reads as
+            # "nable is broken" when the fix is one chmod.
+            raise SystemExit(
+                f"\n  Could not write {guard._settings_path(global_scope)}: {e.strerror or e}.\n"
+                f"  Check the file's permissions, then run the install again.\n")
         print()
-        if not pro_active:
-            print(f"  {bold('Heads up:')} the Budget Guard is part of nable Pro.")
-            print("  The hook is installed but stays silent on the free tier.")
-            print(f"  Activate: {cyan('finops login')}  (or ask your AI to run activate_pro)")
-            print(dim("  7-day free trial included, no card: https://getnable.com/pricing"))
-            print()
         if already:
             print(f"  {green('✓')} Guard already installed in {path}")
         else:
@@ -2253,11 +2256,29 @@ def _run_guard(parsed) -> None:
 
     # status (default)
     print()
+    stale = False
     for scope, is_global in (("project", False), ("global", True)):
         p = guard._settings_path(is_global)
-        state = green("installed") if guard.is_installed(p) else dim("not installed")
+        if guard.is_installed(p):
+            # "Installed" must mean "will actually run". A hook whose binary has
+            # been removed (a deleted venv, a pruned uv cache) fails open in
+            # Claude Code, so reporting a plain "installed" here would tell
+            # someone they are guarded at the moment they stopped being.
+            broken = guard.broken_hook_command(p)
+            if broken:
+                stale = True
+                state = amber("installed, but broken")
+            else:
+                state = green("installed")
+        else:
+            state = dim("not installed")
         print(f"  {scope:<8} {state}   {dim(str(p))}")
     print()
+    if stale:
+        print(f"  {amber('The hooked command no longer exists, so the guard is not running.')}")
+        print(dim("  Claude Code skips a hook it cannot execute, silently. Re-run:"))
+        print(f"  {cyan('nable guard install')}")
+        print()
     print(dim("  Install:  nable guard install            (this project)"))
     print(dim("            nable guard install --global    (all projects)"))
     print(dim("  The hook is Claude Code. Other MCP agents (Cursor, etc.) get the same"))

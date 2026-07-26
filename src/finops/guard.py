@@ -270,19 +270,54 @@ _HOOK_MARKER = "guard hook"
 _HOOK_CMD = "finops guard hook"
 
 
+_UVX_HOOK_CMD = "uvx --from finops-mcp finops guard hook"
+
+
+def _is_ephemeral(path: str) -> bool:
+    """True when `path` lives somewhere that is not ours to depend on.
+
+    `uvx nable guard install` runs from uv's content-addressed archive cache
+    (…/uv/archive-v0/<hash>/bin/finops). That path is real while the command is
+    running and is a trap to persist: uv garbage-collects it on `uv cache clean`
+    or `uv cache prune`, and the hash changes on the next release. Baking it into
+    settings.json produces a hook that works today, dies silently later (Claude
+    Code fails open on a hook that cannot execute), and still reports itself as
+    installed. The user believes they are guarded and they are not.
+    """
+    import tempfile
+    p = Path(path)
+    if "archive-v0" in p.parts:          # uv's content-addressed store
+        return True
+    roots = [os.getenv("UV_CACHE_DIR"),
+             str(Path.home() / ".cache" / "uv"),
+             str(Path.home() / "Library" / "Caches" / "uv"),
+             tempfile.gettempdir()]
+    for r in roots:
+        if not r:
+            continue
+        try:
+            if p.resolve().is_relative_to(Path(r).resolve()):
+                return True
+        except (OSError, ValueError):
+            continue
+    return False
+
+
 def _hook_command() -> str:
     """The command Claude Code should run for the hook, resolved to something
-    that exists OUTSIDE this process. A uvx user has no `finops` on PATH, so the
-    bare command would fail with command-not-found on every single Bash call and
-    spam the agent with hook errors. Prefer a persistent binary; fall back to a
-    uvx invocation (uv is guaranteed present for anyone who installed via uvx)."""
+    that will still exist tomorrow.
+
+    A uvx user has no `finops` on PATH afterwards, so a bare command would fail
+    with command-not-found on every Bash call. A persistent binary is best. An
+    ephemeral one is worse than none, because it fails open and lies about it, so
+    those fall through to the uvx form, which re-resolves at run time."""
     import shutil
     found = shutil.which("finops")
-    if found:
+    if found and not _is_ephemeral(found):
         # Quote in case the path has spaces (framework installs on macOS do not,
         # but user venvs can).
         return f'"{found}" guard hook' if " " in found else f"{found} guard hook"
-    return "uvx --from finops-mcp finops guard hook"
+    return _UVX_HOOK_CMD
 
 
 def _settings_path(global_scope: bool) -> Path:
@@ -291,27 +326,91 @@ def _settings_path(global_scope: bool) -> Path:
     return Path.cwd() / ".claude" / "settings.json"
 
 
+def _refuse(path: Path, what: str):
+    """Never guess at a settings file we do not understand. Someone's editor
+    config is not ours to repair, and a wrong repair silently breaks their agent."""
+    return SystemExit(f"  {path} {what}; fix it first, nothing was changed.")
+
+
 def _load_settings(path: Path) -> dict:
     if path.exists():
         try:
-            return json.loads(path.read_text())
+            data = json.loads(path.read_text())
         except Exception:
-            raise SystemExit(
-                f"  {path} exists but is not valid JSON; fix it first, nothing was changed.")
+            raise _refuse(path, "exists but is not valid JSON")
+        # Valid JSON is not the same as the shape we expect. A top-level array or
+        # string parses fine and then blows up on .setdefault deeper in, after we
+        # may already have decided to write.
+        if not isinstance(data, dict):
+            raise _refuse(path, f"contains a JSON {type(data).__name__}, not an object")
+        return data
     return {}
 
 
+def _hook_list(settings: dict, path: Path, *, create: bool):
+    """The PreToolUse list, or None when there is not one and we are not creating.
+
+    Tolerates the keys being absent or explicitly null (a real state: some tools
+    write "hooks": null). Refuses when they hold a value of the wrong type, for
+    the same reason _load_settings does."""
+    hooks = settings.get("hooks")
+    if hooks is None:
+        if not create:
+            return None
+        hooks = settings["hooks"] = {}
+    elif not isinstance(hooks, dict):
+        raise _refuse(path, f"has a 'hooks' value that is a {type(hooks).__name__}, not an object")
+
+    pre = hooks.get("PreToolUse")
+    if pre is None:
+        if not create:
+            return None
+        pre = hooks["PreToolUse"] = []
+    elif not isinstance(pre, list):
+        raise _refuse(path, f"has a 'hooks.PreToolUse' value that is a "
+                            f"{type(pre).__name__}, not an array")
+    return pre
+
+
 def is_installed(path: Path) -> bool:
+    """Read-only predicate, so any structural surprise means "not installed"
+    rather than a traceback. Answering False on a file we cannot parse is safe:
+    the caller's next move is to install, which refuses loudly on the same file."""
     try:
         s = json.loads(path.read_text())
+        for entry in (s.get("hooks") or {}).get("PreToolUse") or []:
+            for h in entry.get("hooks") or []:
+                cmd = h.get("command") or ""
+                if _HOOK_MARKER in cmd and "finops" in cmd:
+                    return True
     except Exception:
         return False
-    for entry in (s.get("hooks", {}).get("PreToolUse") or []):
-        for h in entry.get("hooks", []):
-            cmd = h.get("command") or ""
-            if _HOOK_MARKER in cmd and "finops" in cmd:
-                return True
     return False
+
+
+def broken_hook_command(path: Path) -> str | None:
+    """Our installed hook command, when the thing it invokes is not runnable.
+
+    Returns None when the hook is absent or healthy. A hook Claude Code cannot
+    execute is skipped silently and fails open, so "installed" on its own is not
+    a safe thing to report."""
+    import shutil
+    try:
+        s = json.loads(path.read_text())
+        for entry in (s.get("hooks") or {}).get("PreToolUse") or []:
+            for h in entry.get("hooks") or []:
+                cmd = h.get("command") or ""
+                if not (_HOOK_MARKER in cmd and "finops" in cmd):
+                    continue
+                exe = cmd[1:cmd.index('"', 1)] if cmd.startswith('"') else cmd.split()[0]
+                # The uvx form re-resolves at run time; it is healthy if uv exists.
+                probe = "uvx" if exe == "uvx" else exe
+                if shutil.which(probe) or Path(probe).exists():
+                    return None
+                return cmd
+    except Exception:
+        return None
+    return None
 
 
 def install(global_scope: bool = False) -> Path:
@@ -320,8 +419,7 @@ def install(global_scope: bool = False) -> Path:
     settings = _load_settings(path)
     if is_installed(path):
         return path
-    hooks = settings.setdefault("hooks", {})
-    pre = hooks.setdefault("PreToolUse", [])
+    pre = _hook_list(settings, path, create=True)
     cmd = _hook_command()
     pre.append({
         "matcher": "Bash",
@@ -339,16 +437,20 @@ def uninstall(global_scope: bool = False) -> bool:
     """Remove the guard hook. Returns True when something was removed."""
     path = _settings_path(global_scope)
     settings = _load_settings(path)
-    pre = settings.get("hooks", {}).get("PreToolUse")
+    pre = _hook_list(settings, path, create=False)
     if not pre:
         return False
     removed = False
     kept = []
     for entry in pre:
-        inner = [h for h in entry.get("hooks", [])
-                 if not (_HOOK_MARKER in (h.get("command") or "")
+        if not isinstance(entry, dict):
+            kept.append(entry)          # not ours; leave it exactly as found
+            continue
+        inner = [h for h in (entry.get("hooks") or [])
+                 if not (isinstance(h, dict)
+                         and _HOOK_MARKER in (h.get("command") or "")
                          and "finops" in (h.get("command") or ""))]
-        if len(inner) != len(entry.get("hooks", [])):
+        if len(inner) != len(entry.get("hooks") or []):
             removed = True
         if inner or not entry.get("hooks"):
             entry["hooks"] = inner

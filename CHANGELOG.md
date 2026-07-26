@@ -2,6 +2,13 @@
 
 All notable changes to finops-mcp (nable).
 
+## 0.8.195
+
+- **Fixed: `uvx nable guard install` installed a guard that stopped working without telling you.** The hook command was resolved with `shutil.which("finops")`, and under `uvx` that points inside uv's content-addressed archive cache (`.../uv/archive-v0/<hash>/bin/finops`). That path is real while the install is running and is a trap to write down: uv reclaims it on `uv cache clean` or `uv cache prune`, and the hash changes on the next release. After either, Claude Code could no longer execute the hook, and a hook that cannot run is skipped silently, so the agent went unguarded on `terraform destroy` and every other one-way door while `nable guard` still reported "installed". An ephemeral path now loses to `uvx --from finops-mcp finops guard hook`, which re-resolves each time it runs. If you installed the guard with `uvx`, run `nable guard install` once more to repair it.
+- **`nable guard` now says when the hook is present but broken.** "Installed" used to mean "the entry is in the file", which is not the same as "this will run". It now checks that the hooked command still resolves and reports `installed, but broken` with the fix when it does not.
+- **`nable guard install` no longer crashes on an unusual `settings.json`.** A top-level JSON array, a `"hooks": null`, or a `hooks` key holding the wrong type each raised a raw `AttributeError` from inside the installer. Your Claude Code settings hold your model choice, your permissions, and other tools' hooks, so nable now refuses and changes nothing rather than guessing at a repair. A settings file it cannot write reports the path and the reason instead of a traceback.
+- Removed a dead "the Budget Guard is part of nable Pro" notice from `guard install`. The guard has been free since 0.8.194 and the branch could no longer fire, but it was one flag flip away from promising a paywall that does not exist.
+
 ## 0.8.194
 
 - **The CLI now tells you to run `nable`, not `finops`.** The site teaches `uvx nable`, and `nable ai-budget` is the first command a lot of people run, but its own output pointed at `finops ai-budget`, a name they have never seen and do not have a reason to trust. Same leak in `nable guard`'s install, uninstall and usage lines, and in the agent-team setup steps. All of them say `nable` now. The hook command written into `settings.json` still resolves through the `finops` entry point, which is correct: that one is machinery, not instruction.
