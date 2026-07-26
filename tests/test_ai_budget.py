@@ -163,15 +163,17 @@ def test_no_logs_is_graceful(tmp_path):
 
 def test_configured_budget_confirms_even_with_zero_usage(tmp_path):
     # DevEx regression: after setting a budget with no agent usage yet, the status
-    # must confirm the budget, never say "Run finops ai-budget to set a budget".
+    # must confirm the budget, never nag you to set the budget you just set.
+    # Asserted on the wording-independent core ("to set a budget") so rebranding
+    # the command in the copy cannot turn this into a vacuous pass.
     ab.set_budget(mode="flat", plan_cost=100)
     st = ab.status()
     assert st["billable_tokens_mtd"] == 0
-    assert "Run `finops ai-budget` to set a budget" not in st["summary"]
+    assert "to set a budget" not in st["summary"]
     assert "$100/mo plan is set" in st["summary"]
 
     ab.reset_budget()
     ab.set_budget(mode="metered", spend_cap=2500)
     # metered already confirms via the spend-cap branch (never said "set a budget")
     smy = ab.status()["summary"]
-    assert "$2,500 spend cap" in smy and "Run `finops ai-budget` to set a budget" not in smy
+    assert "$2,500 spend cap" in smy and "to set a budget" not in smy

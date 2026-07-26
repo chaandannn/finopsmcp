@@ -324,7 +324,7 @@ def _summary_line(verdict, basis, mode, tokens_mtd, est_usd, budget, subsidy, wi
                 f"recorded yet this month.")
     return (f"{window['billable_tokens']:,} tokens in the last {_WINDOW_HOURS:g}h "
             f"(~${window['usd_equivalent']:,.0f} at list price). "
-            f"Run `finops ai-budget` to set a budget.")
+            f"Run `nable ai-budget` to set a budget.")
 
 
 def check(estimated_next_tokens: int = 0) -> dict[str, Any]:
