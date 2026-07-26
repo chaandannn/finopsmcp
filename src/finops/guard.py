@@ -109,21 +109,82 @@ def _prod_context(command: str) -> bool:
     return False
 
 
+def _stop_on_budget() -> bool:
+    """Whether a blown AI budget HARD-STOPS the agent (deny) or just asks.
+
+    The user is asked once, at `nable guard install`, and the answer is stored on
+    the budget as `on_breach`. The env var overrides it for a single session or a
+    CI run. Default is notify: a tool that silently halts your agent gets
+    uninstalled before anyone finds the setting that caused it, so stopping has
+    to be something you chose.
+    """
+    env = os.getenv("FINOPS_GUARD_STOP_ON_BUDGET", "").strip().lower()
+    if env in ("1", "true", "yes"):
+        return True
+    if env in ("0", "false", "no"):
+        return False
+    try:
+        from .ai_budget import get_budget
+        return (get_budget().get("on_breach") or "notify") == "stop"
+    except Exception:
+        return False
+
+
+def check_budget_gate() -> dict[str, Any] | None:
+    """Stop the agent when its own token spend is over the budget the user set.
+
+    This runs BEFORE command classification and applies to every tool call, not
+    just infrastructure ones. "Stop the agent because it is spending too much"
+    means stop it, not stop it from touching Terraform.
+
+    Reads the local Claude Code session logs (ai_budget), so it needs no cloud
+    account, no API key and no network. Returns None when no budget is set, when
+    usage is under it, or on ANY error: a guard that cannot read its own budget
+    must not take a position.
+    """
+    try:
+        from .ai_budget import BUDGET_OVER, status
+        st = status()
+        if st.get("verdict") != BUDGET_OVER:
+            return None
+        budget = st.get("budget") or {}
+        pct = st.get("pct_of_budget")
+        over = f"{pct * 100:.0f}% of" if isinstance(pct, (int, float)) else "over"
+        if st.get("verdict_basis") == "spend":
+            detail = (f"~${st.get('est_usd_mtd_list_price', 0):,.0f} estimated this month, "
+                      f"{over} your ${budget.get('spend_cap', 0):,.0f} cap")
+        else:
+            detail = (f"{st.get('billable_tokens_mtd', 0):,} tokens this month, "
+                      f"{over} your {budget.get('monthly_tokens', 0):,} budget")
+        hard = _stop_on_budget()
+        return {
+            "decision": "deny" if hard else "ask",
+            "action_type": "ai_budget",
+            "reason": (
+                f"nable guard: your agent is over its AI budget. {detail}. "
+                + ("Stopped because FINOPS_GUARD_STOP_ON_BUDGET is on. "
+                   "Raise it with `nable ai-budget set`, or unset that variable to "
+                   "downgrade this to a confirmation."
+                   if hard else
+                   "Confirm to continue, or raise it with `nable ai-budget set`. "
+                   "Set FINOPS_GUARD_STOP_ON_BUDGET=1 to make this a hard stop.")
+            ),
+        }
+    except Exception:
+        return None  # unreadable budget is not a reason to block anyone
+
+
 def gate_command(command: str) -> dict[str, Any] | None:
     """Evaluate a shell command against the policy gate.
 
     Returns None when the guard has no opinion (not infra, or an in-policy
     reversible action), else {decision: "ask"|"deny", reason, action_type}.
     """
-    # Budget Guard is a Pro agent. On the free tier the hook stays silent (fail
-    # open): a lapsed or missing license must never block someone's terminal. A
-    # license-check error counts as "unknown", and unknown also fails open.
-    try:
-        from .license import feature_available
-        if not feature_available("agent_gate"):
-            return None
-    except Exception:
-        return None
+    # The AI budget stop comes first and is not conditioned on the command: an
+    # agent burning through its budget should be stopped whatever it is doing.
+    budget_hit = check_budget_gate()
+    if budget_hit is not None:
+        return budget_hit
 
     hit = classify_command(command)
     if hit is None:

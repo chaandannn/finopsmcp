@@ -135,18 +135,26 @@ def agent_team_status() -> dict[str, Any]:
         plan = get_status().mode
     except Exception:
         plan = "free"
-    is_pro = False
-    try:
-        is_pro = feature_available("agent_gate")
-    except Exception:
-        pass
+    # Per-agent, not one shared flag. This used to read feature_available(
+    # "agent_gate") once and apply it to all three, which silently coupled the
+    # Analyst and the Ledger to a feature that has nothing to do with them. When
+    # the guard became free-forever that coupling would have un-gated both.
+    def _has(feature: str) -> bool:
+        try:
+            return feature_available(feature)
+        except Exception:
+            return False
+
+    guard_free = True                      # the guard is the front door, never gated
+    analyst_pro = _has("remediation")
+    ledger_pro = _has("agent_learning")
 
     unlock = ("Unlock the agent team: finops login in a terminal, or ask your AI "
               "to run activate_pro. 7-day free trial at getnable.com/pricing.")
 
     # ── Budget Guard ────────────────────────────────────────────────────────────
     guard_setup: list[str] = []
-    if is_pro:
+    if guard_free:
         try:
             from . import guard as _guard
             hook = (_guard.is_installed(_guard._settings_path(False))
@@ -164,15 +172,16 @@ def agent_team_status() -> dict[str, Any]:
     budget_guard = {
         "agent": "Budget Guard",
         "does": "Your agents ask it before they act: cost + budget + policy + what you approve, as allow/block/escalate.",
-        "status": ("active" if is_pro and not guard_setup
-                   else "needs_setup" if is_pro else "pro_required"),
-        "setup": guard_setup if is_pro else [unlock],
+        # No "pro_required" branch: the guard works without a license, so its
+        # status can only be active or needs_setup.
+        "status": "active" if not guard_setup else "needs_setup",
+        "setup": guard_setup,
         "try": 'ask: "check this terraform plan against our cost guardrails"',
     }
 
     # ── Savings Analyst ─────────────────────────────────────────────────────────
     analyst_setup: list[str] = []
-    if is_pro:
+    if analyst_pro:
         try:
             from .demo_data import _real_provider_connected
             if not _real_provider_connected():
@@ -182,16 +191,16 @@ def agent_team_status() -> dict[str, Any]:
     savings_analyst = {
         "agent": "Savings Analyst",
         "does": "Finds savings, judges which are genuine on your real rates, and drafts the fix as a PR you approve.",
-        "status": ("active" if is_pro and not analyst_setup
-                   else "needs_setup" if is_pro else "pro_required"),
-        "setup": analyst_setup if is_pro else [unlock],
+        "status": ("active" if analyst_pro and not analyst_setup
+                   else "needs_setup" if analyst_pro else "pro_required"),
+        "setup": analyst_setup if analyst_pro else [unlock],
         "try": 'ask: "find our genuine savings and open a PR for the top one"',
     }
 
     # ── the Ledger ──────────────────────────────────────────────────────────────
     warmth = "cold"
     resolved = 0
-    if is_pro:
+    if ledger_pro:
         try:
             from .recommendations.savings_tracker import get_summary
             counts = (get_summary() or {}).get("counts", {}) or {}
@@ -201,16 +210,16 @@ def agent_team_status() -> dict[str, Any]:
         except Exception:
             pass
     ledger_setup = []
-    if is_pro and warmth == "cold":
+    if ledger_pro and warmth == "cold":
         ledger_setup.append("act on a recommendation, then: mark it acted on and run verify_savings; "
                             "the team learns from every decision")
     ledger = {
         "agent": "the Ledger",
         "does": "Records every decision, verifies savings landed on the next bill, and teaches the other two what you approve.",
-        "status": ("active" if is_pro and not ledger_setup
-                   else "needs_setup" if is_pro else "pro_required"),
-        "learning": {"state": warmth.upper(), "decisions_recorded": resolved} if is_pro else None,
-        "setup": ledger_setup if is_pro else [unlock],
+        "status": ("active" if ledger_pro and not ledger_setup
+                   else "needs_setup" if ledger_pro else "pro_required"),
+        "learning": {"state": warmth.upper(), "decisions_recorded": resolved} if ledger_pro else None,
+        "setup": ledger_setup if ledger_pro else [unlock],
         "try": 'ask: "what has nable learned from my decisions?"',
     }
 

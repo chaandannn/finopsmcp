@@ -23,19 +23,26 @@ def _pro_license(monkeypatch):
     monkeypatch.setattr("finops.license.feature_available", lambda f: True)
 
 
-# ── free tier: the guard is silent, never blocks ──────────────────────────────
+# ── free tier: the guard WORKS. It is the front door, not the upsell ──────────
+#
+# These two tests previously asserted the opposite: that a free user got no
+# verdict at all, even on `terraform destroy`. That was the intended design when
+# the guard was part of the Pro agent team, and it made the one surface that
+# needs no cloud account go silent for everyone who had not paid. Inverted
+# deliberately. See the note on "agent_gate" in license.py.
 
-def test_free_tier_gate_is_silent(monkeypatch):
+def test_free_tier_gate_still_guards_one_way_doors(monkeypatch):
     monkeypatch.setattr("finops.license.feature_available", lambda f: False)
-    # Even a one-way door produces no verdict on the free tier: fail open.
-    assert g.gate_command("terraform destroy -auto-approve") is None
+    assert (g.gate_command("terraform destroy -auto-approve") or {}).get("decision") == "ask"
 
 
-def test_license_error_fails_open(monkeypatch):
+def test_license_trouble_cannot_disarm_the_guard(monkeypatch):
+    """A broken keyring, a lapsed key, an offline check: none of them are a
+    reason to stop protecting someone from an irreversible command."""
     def boom(f):
         raise RuntimeError("keyring exploded")
     monkeypatch.setattr("finops.license.feature_available", boom)
-    assert g.gate_command("terraform destroy -auto-approve") is None
+    assert (g.gate_command("terraform destroy -auto-approve") or {}).get("decision") == "ask"
 
 
 # ── classification ─────────────────────────────────────────────────────────────

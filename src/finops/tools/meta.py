@@ -901,10 +901,10 @@ async def check_action_policy(
         - "Check this change against our cost guardrails"
 
     """
-    # Budget Guard is part of the Pro agent team. Free tier is read-only: talk to
-    # your bill, no gate, no PRs, no learning loop.
-    if (err := _srv.require_pro("agent_gate")):
-        return err
+    # Free, permanently. This is the same capability as the `nable guard` hook,
+    # reached through MCP instead of a shell hook, and gating one surface while
+    # the other is open would be incoherent. See the note on "agent_gate" in
+    # license.py: stopping your own agent is the front door, not the upsell.
     from ..policy import evaluate_action_gate, load_policy
 
     cost = None
