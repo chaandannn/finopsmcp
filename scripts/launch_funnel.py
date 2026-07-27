@@ -123,7 +123,8 @@ GROUP BY sub ORDER BY machines DESC LIMIT 12
     else:
         print("    (none)")
 
-    # Shipped 0.8.196+. Empty before that is expected, not a bug.
+    # Shipped in 0.8.196. Empty now means nobody installed the guard today, not
+    # that the event is missing; only machines already on 0.8.196+ report it.
     print(f"\n  guard installs on {day} (UTC):")
     g = query(pid, key, f"""
 SELECT properties.outcome AS outcome, properties.hook_form AS form,
