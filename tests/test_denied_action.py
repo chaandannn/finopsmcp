@@ -5,7 +5,7 @@ from finops.server import _denied_action
 
 
 def test_extracts_the_iam_action():
-    msg = ("User: arn:aws:iam::009160071164:user/Nable-User is not authorized to "
+    msg = ("User: arn:aws:iam::123456789012:user/Nable-User is not authorized to "
            "perform: rds:DescribeDBInstances because no identity-based policy allows "
            "the rds:DescribeDBInstances action")
     assert _denied_action(msg) == "rds:DescribeDBInstances"

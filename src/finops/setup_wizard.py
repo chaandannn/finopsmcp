@@ -2179,10 +2179,11 @@ def _run_guard(parsed) -> None:
     Advisory and propose-only: it asks or denies, it never executes.
     """
     from . import guard
-    from .welcome import amber, bold, cyan, dim, green
+    from .welcome import _fire_telemetry, amber, bold, cyan, dim, green
 
     action = getattr(parsed, "guard_action", "status")
     global_scope = getattr(parsed, "guard_global", False)
+    scope = "global" if global_scope else "project"
     scope_label = "~/.claude/settings.json" if global_scope else ".claude/settings.json (this project)"
 
     if action == "hook":
@@ -2197,15 +2198,28 @@ def _run_guard(parsed) -> None:
         # gated on feature_available("agent_gate"), which is now permanently True
         # and so was dead code promising a paywall that does not exist.
         already = guard.is_installed(guard._settings_path(global_scope))
+        # Was the existing hook one of the dead ones 0.8.194 wrote? Read it before
+        # install() overwrites, so we can count how many people the uv-cache-path
+        # bug actually reached. There was no guard telemetry at all before this.
+        was_broken = bool(guard.broken_hook_command(guard._settings_path(global_scope)))
         try:
             path = guard.install(global_scope)
         except OSError as e:
             # Writing someone's editor config can fail for ordinary reasons (a
             # read-only file, a root-owned .claude). A traceback here reads as
             # "nable is broken" when the fix is one chmod.
+            _fire_telemetry("guard_installed", {"scope": scope, "outcome": "write_failed"})
             raise SystemExit(
                 f"\n  Could not write {guard._settings_path(global_scope)}: {e.strerror or e}.\n"
                 f"  Check the file's permissions, then run the install again.\n")
+        # Anonymous counters only: scope, whether it was already there, whether we
+        # repaired a dead hook, and which command form we wrote. No paths, no
+        # commands, no cost data. Honors NABLE_NO_TELEMETRY like everything else.
+        _fire_telemetry("guard_installed", {
+            "scope": scope,
+            "outcome": "repaired" if was_broken else ("already" if already else "new"),
+            "hook_form": "uvx" if guard._hook_command() == guard._UVX_HOOK_CMD else "binary",
+        })
         print()
         if already:
             print(f"  {green('✓')} Guard already installed in {path}")

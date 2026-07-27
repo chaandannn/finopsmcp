@@ -46,7 +46,7 @@ class AuditLogger:
       {
         "ts": "2026-05-30T21:00:00Z",
         "tool": "get_cost_summary",
-        "account": "009160071164" | null,
+        "account": "123456789012" | null,
         "duration_ms": 234,
         "outcome": "success" | "error" | "denied",
         "user_identity": "local" | "<sha256-prefix>",
