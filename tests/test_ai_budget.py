@@ -177,3 +177,28 @@ def test_configured_budget_confirms_even_with_zero_usage(tmp_path):
     # metered already confirms via the spend-cap branch (never said "set a budget")
     smy = ab.status()["summary"]
     assert "$2,500 spend cap" in smy and "to set a budget" not in smy
+
+
+def test_empty_state_names_a_next_step_for_non_claude_code_users(capsys):
+    """The launch command's empty state must not be a dead end.
+
+    Claude Code is the only provider nable reads without a key, so anyone on
+    Cursor / Windsurf / Zed / a plain API key sees nothing but zeros. With no
+    pointer to `nable connect`, that reads as "this tool does nothing" on the
+    exact command the Product Hunt post tells people to run.
+
+    Drives the real `run()` against the empty sandbox the autouse fixture
+    already provides: no stubs, so it fails if the wiring changes and not just
+    if the string does.
+    """
+    import argparse
+    from finops import cli_ai_budget as cli
+
+    cli.run(argparse.Namespace(plan_cost=None, spend_cap=None, tokens=None,
+                               reset=False, json=False))
+    out = capsys.readouterr().out
+
+    assert "no Claude Code usage found" in out
+    assert "nable connect openai" in out, "empty state offers no next step"
+    for provider in ("anthropic", "openrouter", "litellm", "mistral"):
+        assert provider in out, f"{provider} missing from the connect hint"

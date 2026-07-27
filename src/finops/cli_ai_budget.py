@@ -129,7 +129,13 @@ def run(args) -> int:
         mode, "no budget set")
     print(_c("nable ai-budget", _BOLD) + _c(f"  ·  {label}", _DIM), file=out)
     if not w["source_present"]:
+        # A dead end otherwise. Claude Code is the only provider readable with no
+        # key, so someone on Cursor, Windsurf, Zed or a plain API sees nothing but
+        # zeros here and has no reason to look further. Name the next move.
         print(_c("  no Claude Code usage found yet (looked in ~/.claude/projects).", _DIM), file=out)
+        print(_c("  Not on Claude Code? Meter the provider you pay:", _DIM), file=out)
+        print("  " + _c("nable connect openai", _ACCENT) + _c("   (or anthropic, openrouter,", _DIM), file=out)
+        print(_c("                          litellm, modal, together, replicate, cohere, mistral)", _DIM), file=out)
 
     def row(lbl: str, value: str) -> None:
         print(f"  {_c(lbl.ljust(16), _DIM)}{value}", file=out)
