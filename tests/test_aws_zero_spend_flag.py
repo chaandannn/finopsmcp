@@ -50,7 +50,7 @@ def _connector_with_ce(response: dict) -> AWSConnector:
     fake_ce = MagicMock()
     fake_ce.get_cost_and_usage.return_value = response
     conn._make_client = lambda role_arn=None: fake_ce
-    conn._account_id = lambda role_arn=None: "009160071164"
+    conn._account_id = lambda role_arn=None: "123456789012"
     return conn
 
 

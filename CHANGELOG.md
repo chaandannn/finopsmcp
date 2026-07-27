@@ -2,6 +2,12 @@
 
 All notable changes to finops-mcp (nable).
 
+## 0.8.196
+
+- **Guard installs are now counted.** The guard shipped with no telemetry at all, so when the uv-cache-path bug in 0.8.194 turned up there was no way to answer how many people it reached. `guard_installed` carries three anonymous counters and nothing else: scope (project/global), outcome (new / already / repaired / write_failed), and which command form was written (binary or uvx). `repaired` fires when an install replaced a hook whose command no longer resolves, which is exactly that bug. No paths, no commands, no cost data, and silent under `NABLE_NO_TELEMETRY` like every other event.
+- **Removed a real AWS account ID from the source and tests.** It appeared in an audit-log docstring and three test fixtures, and the repo's own screenshot-redaction script listed it as a string to scrub, so it was already understood to be sensitive in one place and published in plain text in four others. Replaced with AWS's documented `123456789012` placeholder. Account IDs are not credentials, but they make enumeration easier and there is no reason to hand them out.
+- **The screenshot redaction script no longer publishes what it redacts.** Its find-and-replace map named a real customer and account inline, so anyone reading the script learned the strings it exists to hide. The map moved to a gitignored `scripts/redactions.local.json` and the script now fails with instructions when it is missing.
+
 ## 0.8.195
 
 - **Fixed: `uvx nable guard install` installed a guard that stopped working without telling you.** The hook command was resolved with `shutil.which("finops")`, and under `uvx` that points inside uv's content-addressed archive cache (`.../uv/archive-v0/<hash>/bin/finops`). That path is real while the install is running and is a trap to write down: uv reclaims it on `uv cache clean` or `uv cache prune`, and the hash changes on the next release. After either, Claude Code could no longer execute the hook, and a hook that cannot run is skipped silently, so the agent went unguarded on `terraform destroy` and every other one-way door while `nable guard` still reported "installed". An ephemeral path now loses to `uvx --from finops-mcp finops guard hook`, which re-resolves each time it runs. If you installed the guard with `uvx`, run `nable guard install` once more to repair it.

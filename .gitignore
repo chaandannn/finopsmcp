@@ -124,3 +124,7 @@ stripe-env-helper.mjs
 internal/
 shim/dist/
 packaging/mcpb/*.mcpb
+
+# Screenshot redaction map: real names -> placeholders. Never commit; the list
+# discloses exactly what it exists to hide.
+scripts/redactions.local.json

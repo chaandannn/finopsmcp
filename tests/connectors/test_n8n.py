@@ -82,7 +82,7 @@ def test_send_anomaly_includes_required_fields(monkeypatch):
     anomaly = {
         "provider": "aws",
         "service": "Amazon Textract",
-        "account_id": "009160071164",
+        "account_id": "123456789012",
         "severity": "high",
         "direction": "spike",
         "pct_change": 127.0,

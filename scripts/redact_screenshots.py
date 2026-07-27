@@ -7,33 +7,56 @@ Usage:
     python scripts/redact_screenshots.py <screenshot.png>
 
 Replaces sensitive Lambda function names with generic placeholders.
+
+The mapping lives OUTSIDE this repo, in `scripts/redactions.local.json`
+(gitignored). A redaction list committed to a public repo publishes exactly
+the names it exists to hide: anyone reading the script learns the real
+account ID and customer name, which defeats the point of running it.
+
+Create it as {"real string": "placeholder", ...}, for example:
+
+    {
+      "111122223333": "123456789012",
+      "acme-internal-lambda-prd": "acme-textract-lambda-prd"
+    }
 """
 
 from PIL import Image, ImageDraw, ImageFont
+import json
 import sys
 import os
+from pathlib import Path
+
+_MAP_FILE = Path(__file__).resolve().parent / "redactions.local.json"
 
 
-# Text to find and what to replace it with
-REPLACEMENTS = {
-    "esc-fusionai-textract-lambda-prd": "acme-textract-lambda-prd",
-    "esc-fusionai-textract-lambda-qa":  "acme-textract-lambda-qa",
-    "esc-fusionai-textract-lambda-stg": "acme-textract-lambda-stg",
-    "esc-fusionai-textract-lambda-dev": "acme-textract-lambda-dev",
-    "esc-fusionai": "acme-corp",
-    "fusionai": "your-company",
-    # Account ID redaction
-    "009160071164": "123456789012",
-}
+def _load_replacements() -> dict:
+    """Real -> placeholder, read from the gitignored local map."""
+    if not _MAP_FILE.is_file():
+        sys.exit(
+            f"No redaction map at {_MAP_FILE}.\n"
+            "It is deliberately not committed: publishing the list would disclose\n"
+            "the very strings it redacts. Create it as {\"real\": \"placeholder\"}."
+        )
+    try:
+        data = json.loads(_MAP_FILE.read_text())
+    except ValueError as e:
+        sys.exit(f"{_MAP_FILE} is not valid JSON: {e}")
+    if not isinstance(data, dict) or not data:
+        sys.exit(f"{_MAP_FILE} must be a non-empty object of real -> placeholder.")
+    return data
+
+
+REPLACEMENTS = _load_replacements()
 
 # Fallback: manual pixel regions to black out if OCR isn't available
 # Format: (x1, y1, x2, y2) — approximate for a 1512x982 screenshot
 # These cover the four Lambda name bullets in screenshot 2
 MANUAL_REGIONS = [
-    (60, 630, 340, 658),   # esc-fusionai-textract-lambda-prd
-    (60, 660, 340, 688),   # esc-fusionai-textract-lambda-qa
-    (60, 690, 340, 718),   # esc-fusionai-textract-lambda-stg
-    (60, 720, 340, 748),   # esc-fusionai-textract-lambda-dev (inferred)
+    (60, 630, 340, 658),   # lambda name, row 1 (prd)
+    (60, 660, 340, 688),   # lambda name, row 2 (qa)
+    (60, 690, 340, 718),   # lambda name, row 3 (stg)
+    (60, 720, 340, 748),   # lambda name, row 4 (dev, inferred)
 ]
 
 REPLACEMENT_LABELS = [
