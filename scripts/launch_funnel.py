@@ -137,7 +137,7 @@ GROUP BY outcome, form ORDER BY machines DESC
         for outcome, form, n in g:
             print(f"    {str(outcome):14s} {str(form):10s} {n:>4}")
     else:
-        print("    (none yet; the event ships in 0.8.196)")
+        print("    (none — nobody on 0.8.196+ installed the guard today)")
     print()
 
 
