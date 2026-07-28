@@ -1,5 +1,7 @@
 # nable
 
+[![MCP Toplist](https://mcptoplist.com/badge/io.github.getnable%2Ffinops-mcp.svg)](https://mcptoplist.com/server/io.github.getnable%2Ffinops-mcp)
+
 **See where your cloud and AI bills go, and spend less. Runs in your terminal or inside Claude, Cursor, and VS Code.**
 
 [![PyPI](https://img.shields.io/pypi/v/finops-mcp?label=pypi&color=4db8d4)](https://pypi.org/project/finops-mcp/)
