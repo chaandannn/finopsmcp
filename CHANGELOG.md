@@ -2,6 +2,11 @@
 
 All notable changes to finops-mcp (nable).
 
+## 0.8.197
+
+- **Fixed: the MCP server would not start on a fresh install.** The `mcp` SDK released 2.0.0, which removed `mcp.server.fastmcp`. Our requirement had no upper bound, so from that release onward every new install of nable resolved 2.0.0 and `import finops.server` failed with `ModuleNotFoundError`. Anyone installing nable into Claude Desktop, Cursor or any other MCP client got a server that would not launch. The requirement is now `mcp[cli]>=1.28.1,<2`, which keeps the 1.28.1 floor that carries the CVE-2026-59950 fix. **If you installed nable and the MCP server failed to start, upgrade and it will work.** The cap comes off only alongside a port to the 2.x server API.
+- The terminal was unaffected throughout, which is what made this hard to see: `entry.py` never imports the server, so `nable ai-budget`, `nable scan` and `nable guard` all kept working normally while the MCP server was dead. A test now asserts the ceiling exists in the packaging metadata, because that is the only thing governing what a stranger's fresh install resolves to.
+
 ## 0.8.196
 
 - **Guard installs are now counted.** The guard shipped with no telemetry at all, so when the uv-cache-path bug in 0.8.194 turned up there was no way to answer how many people it reached. `guard_installed` carries three anonymous counters and nothing else: scope (project/global), outcome (new / already / repaired / write_failed), and which command form was written (binary or uvx). `repaired` fires when an install replaced a hook whose command no longer resolves, which is exactly that bug. No paths, no commands, no cost data, and silent under `NABLE_NO_TELEMETRY` like every other event.
