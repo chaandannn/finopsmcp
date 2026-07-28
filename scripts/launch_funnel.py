@@ -22,13 +22,28 @@ import urllib.request
 from pathlib import Path
 
 HOST = "https://us.posthog.com"
+REPO = "getnable/finopsmcp"
 
-# The three questions worth asking, in funnel order.
-STAGES = [
-    ("site visitors", "$pageview"),
-    ("ran a command", "setup_wizard_started"),
-    ("connected a provider", "provider_connected"),
+# Anything a crawler will not do. A bot fires a pageview and a pageleave and
+# leaves; it does not scroll a section or click. Counting raw pageviews as
+# "visitors" made a 24-hit sitemap sweep read as a 3.5x launch spike on
+# 2026-07-28, with zero of those 24 scrolling anything. Engagement is the
+# honest denominator; the raw count stays visible so the noise is legible
+# rather than hidden.
+ENGAGED_EVENTS = [
+    "section_viewed", "$autocapture", "nav_clicked",
+    "cta_clicked", "docs_clicked", "announce_clicked", "github_star_clicked",
 ]
+
+_ENGAGED_SQL = " OR ".join(f"event='{e}'" for e in ENGAGED_EVENTS)
+
+# Funnel order. "engaged visitors" is the real top of funnel.
+STAGES = [
+    ("engaged visitors", f"countDistinctIf(distinct_id, {_ENGAGED_SQL})"),
+    ("ran a command", "countDistinctIf(distinct_id, event='setup_wizard_started')"),
+    ("connected a provider", "countDistinctIf(distinct_id, event='provider_connected')"),
+]
+RAW_STAGE = ("raw pageviews", "countDistinctIf(distinct_id, event='$pageview')")
 
 
 def _load_env() -> tuple[str, str]:
@@ -62,10 +77,10 @@ def main() -> None:
     args = ap.parse_args()
     pid, key = _load_env()
 
-    sel = ",\n  ".join(
-        f"countDistinctIf(distinct_id, event='{ev}') AS s{i}"
-        for i, (_, ev) in enumerate(STAGES)
-    )
+    # Raw pageviews ride along as the last column: visible, but never the
+    # denominator for anything.
+    cols = STAGES + [RAW_STAGE]
+    sel = ",\n  ".join(f"{expr} AS s{i}" for i, (_, expr) in enumerate(cols))
     rows = query(pid, key, f"""
 SELECT toDate(timestamp) AS d,
   {sel}
@@ -74,12 +89,14 @@ WHERE timestamp > now() - INTERVAL {args.days} DAY
 GROUP BY d ORDER BY d
 """)
 
-    labels = [lbl for lbl, _ in STAGES]
+    labels = [lbl for lbl, _ in cols]
     width = max(len(x) for x in labels) + 2
     print(f"\n  {'date':12s}" + "".join(f"{l:>{width}s}" for l in labels))
     print("  " + "-" * (12 + width * len(labels)))
     for row in rows:
         print(f"  {str(row[0]):12s}" + "".join(f"{v:>{width}}" for v in row[1:]))
+    print(f"  {'':12s}" + " " * (width * len(STAGES))
+          + f"{'(bots included)':>{width}s}")
 
     if len(rows) >= 2:
         today, prior = rows[-1], rows[:-1]
@@ -138,7 +155,56 @@ GROUP BY outcome, form ORDER BY machines DESC
             print(f"    {str(outcome):14s} {str(form):10s} {n:>4}")
     else:
         print("    (none — nobody on 0.8.196+ installed the guard today)")
+
+    _github()
     print()
+
+
+def _gh(path: str):
+    """One `gh api` call. Returns None when gh is missing or not authenticated,
+    because a broken GitHub section must never take the PostHog one down."""
+    import subprocess
+    try:
+        r = subprocess.run(["gh", "api", path], capture_output=True, text=True, timeout=30)
+        return json.loads(r.stdout) if r.returncode == 0 and r.stdout.strip() else None
+    except Exception:
+        return None
+
+
+def _github() -> None:
+    """The repo, alongside the site.
+
+    Added after 2026-07-28, when the site showed ~2 engaged humans on the same
+    day the repo had 131 unique viewers and a new fork. The audience was on
+    GitHub and the dashboard was pointed at the website.
+    """
+    print(f"\n  github ({REPO}):")
+    repo = _gh(f"repos/{REPO}")
+    if repo is None:
+        print("    (unavailable — needs the `gh` CLI, authenticated)")
+        return
+    print(f"    {'stars':22s} {repo.get('stargazers_count', 0):>5}")
+    print(f"    {'forks':22s} {repo.get('forks_count', 0):>5}")
+    print(f"    {'watchers':22s} {repo.get('subscribers_count', 0):>5}")
+
+    for label, path in (("unique viewers  (14d)", "views"), ("unique cloners  (14d)", "clones")):
+        t = _gh(f"repos/{REPO}/traffic/{path}")
+        if t:
+            # Clones run far ahead of views because CI, mirrors and package
+            # tooling all clone. Treat uniques as an upper bound on humans.
+            print(f"    {label:22s} {t.get('uniques', 0):>5}   ({t.get('count', 0)} total)")
+
+    forks = _gh(f"repos/{REPO}/forks?sort=newest&per_page=3")
+    if forks:
+        print("    newest forks:")
+        for f in forks:
+            print(f"      {f['created_at'][:10]}  {f['owner']['login']}")
+
+    refs = _gh(f"repos/{REPO}/traffic/popular/referrers")
+    if refs:
+        print("    top referrers (14d):")
+        for r in refs[:5]:
+            print(f"      {r['referrer']:26s} {r['uniques']:>4} unique")
 
 
 if __name__ == "__main__":
