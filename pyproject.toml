@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "finops-mcp"
-version = "0.8.196"
+version = "0.8.197"
 description = "Ask Claude about your AWS, Azure, GCP, and SaaS costs. MCP server with anomaly detection, rightsizing, and Jira ticketing."
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -34,7 +34,14 @@ classifiers = [
 ]
 requires-python = ">=3.11"
 dependencies = [
-    "mcp[cli]>=1.28.1",  # 1.28.1 fixes CVE-2026-59950 (WS transport Host/Origin bypass); keep floor here
+    # Floor: 1.28.1 fixes CVE-2026-59950 (WS transport Host/Origin bypass).
+    # Ceiling: mcp 2.0.0 removed mcp.server.fastmcp, so an uncapped resolve
+    # installed 2.0.0 and every fresh install failed to import finops.server
+    # with ModuleNotFoundError. The CLI kept working (entry.py never imports
+    # the server), so this was invisible to `nable ai-budget` and fatal to
+    # every Claude/Cursor user. Lift the cap only alongside a port to the 2.x
+    # server API, never on its own.
+    "mcp[cli]>=1.28.1,<2",
     # cloud providers. AWS ships in core (the common path); the Azure and Google
     # Cloud SDKs are optional extras (finops-mcp[azure] / [gcp]) so the default
     # install stays small and the first cold `uvx` launch is fast. They are imported
