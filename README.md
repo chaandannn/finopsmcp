@@ -6,6 +6,7 @@
 [![PyPI Downloads](https://static.pepy.tech/personalized-badge/finops-mcp?period=total&units=INTERNATIONAL_SYSTEM&left_color=BLACK&right_color=GREEN&left_text=downloads)](https://pepy.tech/projects/finops-mcp)
 [![Tests](https://github.com/getnable/finopsmcp/actions/workflows/test.yml/badge.svg)](https://github.com/getnable/finopsmcp/actions/workflows/test.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-4db8d4)](LICENSE)
+[![MCP Toplist](https://mcptoplist.com/badge/io.github.chaandannn%2Ffinops-mcp.svg)](https://mcptoplist.com/server/io.github.chaandannn%2Ffinops-mcp)
 
 You do not need to be a cloud-cost expert. nable does three things:
 
