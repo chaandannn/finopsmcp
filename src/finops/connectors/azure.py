@@ -19,8 +19,24 @@ class AzureConnector(BaseConnector):
         ]
 
     async def is_configured(self) -> bool:
+        """Any usable Azure credential, not just a service principal.
+
+        This used to require AZURE_CLIENT_ID/SECRET/TENANT_ID plus an explicit
+        AZURE_SUBSCRIPTION_IDS. Someone who had run `az login`, which is the
+        normal state for anyone working in Azure, read as unconfigured and was
+        sent through a manual service principal wizard. AWS meanwhile accepted
+        its whole default credential chain. Same question, same answer, for
+        every cloud now: see finops/ambient.py."""
         required = ["AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET", "AZURE_TENANT_ID"]
-        return all(os.getenv(v) for v in required) and bool(self._subscription_ids)
+        if all(os.getenv(v) for v in required) and self._subscription_ids:
+            return True
+        from ..ambient import detect_azure
+        amb = detect_azure()
+        if amb.usable and not self._subscription_ids:
+            # Adopt what the ambient credential can actually see, so the rest of
+            # the connector has a scope to query without a second setup step.
+            self._subscription_ids = amb.scopes
+        return amb.usable
 
     # ── internal helpers ────────────────────────────────────────────────────
 
