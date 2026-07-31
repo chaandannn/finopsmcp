@@ -128,27 +128,50 @@ def detect_azure() -> Ambient:
         subs = list(env_subs)
         source = "env" if all(os.getenv(v) for v in
                               ("AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET", "AZURE_TENANT_ID")) else "default-chain"
+        why = ""
         if not subs:
+            # ARM REST rather than an SDK. The obvious choice,
+            # azure.mgmt.resource.SubscriptionClient, does not exist: Azure moved
+            # it out of azure-mgmt-resource (26.0.0 ships only `resources`) into a
+            # separate azure-mgmt-resource-subscriptions package that is on 1.0.0.
+            # Pinning either would re-create the packaging fragility this whole
+            # fix exists to remove. azure-identity mints the token and httpx is
+            # already a core dependency, so this needs nothing new and cannot
+            # break on an SDK reorganisation.
             try:
-                from azure.mgmt.resource import SubscriptionClient
-                subs = [s.subscription_id for s in SubscriptionClient(cred).subscriptions.list()
-                        if getattr(s, "subscription_id", None)]
-            except Exception:
-                # A credential that cannot list subscriptions may still be able to
-                # read a subscription named explicitly, so this is not fatal.
-                pass
+                import httpx
+                token = cred.get_token("https://management.azure.com/.default").token
+                resp = httpx.get(
+                    "https://management.azure.com/subscriptions?api-version=2022-12-01",
+                    headers={"Authorization": f"Bearer {token}"}, timeout=5.0)
+                if resp.status_code == 200:
+                    subs = [v["subscriptionId"] for v in resp.json().get("value", [])
+                            if v.get("subscriptionId") and v.get("state") == "Enabled"]
+                else:
+                    why = f"HTTP {resp.status_code}"
+            except Exception as e:
+                # A real failure (expired login, no permission, offline). Keep the
+                # reason: it is the difference between "run az login" and "your
+                # credential cannot list subscriptions". Never swallow it silently,
+                # which is how a packaging bug read as "you have no Azure".
+                why = type(e).__name__
         if not subs and source != "env":
             # Nothing to prove the credential works; do not claim a connection.
-            return None
+            return ("no-subscriptions", None, [], why)
         return (source, cred, subs)
 
     r = _run(probe)
     if not r:
         return Ambient("azure", detail="no Azure credential found (try `az login`)")
-    source, _cred, subs = r
+    source = r[0]
     if source == "missing-sdk":
         return Ambient("azure", detail="azure SDK not installed (pip install 'finops-mcp[azure]')")
-    return Ambient("azure", found=True, source=source, scopes=subs)
+    if source == "no-subscriptions":
+        extra = f" ({r[3]})" if len(r) > 3 and r[3] else ""
+        return Ambient("azure", detail=f"an Azure credential was found but it can see no "
+                                       f"subscriptions{extra}; try `az login` again or set "
+                                       f"AZURE_SUBSCRIPTION_IDS")
+    return Ambient("azure", found=True, source=source, scopes=r[2])
 
 
 # ── GCP ───────────────────────────────────────────────────────────────────────

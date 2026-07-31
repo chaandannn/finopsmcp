@@ -219,3 +219,89 @@ def test_a_gcloud_config_dir_counts_as_a_signal(monkeypatch, tmp_path):
     for k in ("GOOGLE_APPLICATION_CREDENTIALS", "K_SERVICE", "GOOGLE_CLOUD_PROJECT"):
         monkeypatch.delenv(k, raising=False)
     assert ambient._gcp_signals_present() is True
+
+
+# ── the real code path, not a stub ───────────────────────────────────────────
+#
+# Everything above stubs the probes. That is right for testing the contract and
+# wrong as the ONLY coverage: the Azure and GCP probe bodies had never executed
+# once, in tests or by hand, when a packaging bug shipped in them. detect_azure
+# imported azure.mgmt.resource, which was NOT in the [azure] extra, so the import
+# failed even for a user who installed the extra, a bare `except: pass` swallowed
+# it, no subscription was discovered, and the probe reported "no Azure credential
+# found" for exactly the `az login` user it was built to serve.
+#
+# These run the real bodies. They skip when the optional SDK is absent rather
+# than failing, so a default dev install stays green, but on any machine or CI
+# job with the extras they exercise the code a stub cannot.
+
+def _extra_installed(mod: str) -> bool:
+    import importlib.util
+    try:
+        return importlib.util.find_spec(mod) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+@pytest.mark.skipif(not _extra_installed("azure.identity"),
+                    reason="azure extra not installed")
+def test_detect_azure_runs_for_real_without_raising():
+    """The real body, real SDK, no stub. With no Azure credentials this must come
+    back not-found with a reason, never an exception and never a false positive."""
+    r = ambient.detect_azure()
+    assert r.provider == "azure"
+    assert isinstance(r.found, bool)
+    if not r.found:
+        assert r.detail, "a negative result must say why, so a packaging gap is visible"
+
+
+@pytest.mark.skipif(not _extra_installed("google.auth"), reason="gcp extra not installed")
+def test_detect_gcp_runs_for_real_without_raising(monkeypatch):
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "p")   # past the signal pre-check
+    r = ambient.detect_gcp()
+    assert r.provider == "gcp"
+    assert isinstance(r.found, bool)
+    if not r.found:
+        assert r.detail
+
+
+def test_a_credential_that_sees_no_subscriptions_says_so(monkeypatch):
+    """Distinct from 'no credential'. The user needs to know which one they hit."""
+    monkeypatch.setattr(ambient, "_run",
+                        lambda fn, timeout=None: ("no-subscriptions", None, [], "HttpResponseError"))
+    r = ambient.detect_azure()
+    assert r.found is False
+    assert "no subscriptions" in r.detail and "HttpResponseError" in r.detail
+
+
+def test_azure_subscription_discovery_needs_no_extra_sdk():
+    """Discovery goes through the ARM REST endpoint, not an Azure SDK.
+
+    The obvious import, azure.mgmt.resource.SubscriptionClient, does not exist:
+    26.0.0 ships only a `resources` submodule and subscription listing moved to a
+    separate 1.0.0 package. The first attempt at this fix imported it anyway,
+    swallowed the ImportError, discovered no subscriptions, and reported
+    "no Azure credential found" to the exact `az login` user it was written for.
+    Adding the dependency would not have helped, because the symbol is not there.
+
+    So: nothing in ambient.py may import an azure module beyond azure.identity,
+    which is already in the extra and verified present.
+    """
+    import re
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent / "src" / "finops" / "ambient.py").read_text()
+    imported = set(re.findall(r"from (azure[\w.]*) import", src))
+    assert imported <= {"azure.identity"}, (
+        f"ambient.py imports {imported - {'azure.identity'}}; only azure.identity is "
+        f"declared in the [azure] extra, and Azure moves the rest between packages"
+    )
+
+
+def test_a_credential_that_cannot_list_subscriptions_says_why(monkeypatch):
+    """Distinct from 'no credential at all'. The user needs to know which they hit,
+    because the fixes differ: re-login versus grant a role."""
+    monkeypatch.setattr(ambient, "_run",
+                        lambda fn, timeout=None: ("no-subscriptions", None, [], "HTTP 403"))
+    r = ambient.detect_azure()
+    assert r.found is False
+    assert "no subscriptions" in r.detail and "HTTP 403" in r.detail
