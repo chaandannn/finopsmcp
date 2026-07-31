@@ -832,27 +832,58 @@ def _watch_for_aws_creds(have_ids: set, timeout_s: float = 900.0) -> list:
     return []
 
 
-def _offer_run_aws_login(cmd: list[str]) -> None:
+def _aws_cli_major() -> int | None:
+    """Major version of the `aws` CLI on PATH, or None if it cannot be determined.
+
+    `aws configure sso` exists only in v2. v1 is still widely installed (it is what
+    pip and older Homebrew formulas give you), and there `aws configure sso` exits
+    non-zero with "Invalid choice". Recommending it to a v1 user sends them into a
+    login that cannot succeed, and the watcher then waits 15 minutes for
+    credentials that will never arrive. Found by walking the flow on a machine
+    with aws-cli/1.38.38."""
+    import subprocess
+    try:
+        r = subprocess.run(["aws", "--version"], capture_output=True, text=True, timeout=5)
+        blob = (getattr(r, "stdout", "") or "") + (getattr(r, "stderr", "") or "")
+        m = re.search(r"aws-cli/(\d+)\.", blob)
+        return int(m.group(1)) if m else None
+    except Exception:
+        # Never let version probing break onboarding. Unknown reads as "not v2",
+        # which routes to the path that works on every version.
+        return None
+
+
+def _offer_run_aws_login(cmd: list[str]) -> bool:
     """gh-style: offer to run the AWS login command right here instead of sending the
     user to a second terminal. Runs it sharing this process's stdio, so `aws configure
     sso`'s prompts and its browser device-flow work exactly as if they ran it by hand.
-    Best-effort and consent-gated; whatever credentials it produces, the watcher that
-    runs next connects automatically."""
+
+    Returns True only when the command actually ran and exited 0. The caller needs
+    that: it used to ignore the exit code, so a login that failed instantly still
+    dropped the user into "waiting for credentials..." for the full timeout with no
+    hint that anything had gone wrong."""
     import subprocess
 
     shown = " ".join(cmd)
     ans = _prompt(f"  Run `{shown}` for you now? [Y/n]", default="y").lower()
     if ans not in ("y", "yes", ""):
-        return
+        return False
     _emit_step("ran_aws_login_inline", cmd=cmd[0] + " " + (cmd[1] if len(cmd) > 1 else ""))
     print()
+    ok = False
     try:
-        subprocess.run(cmd)  # inherits stdio: interactive prompts + SSO browser flow
+        rc = subprocess.run(cmd).returncode  # inherits stdio: prompts + SSO browser flow
+        ok = rc == 0
+        if not ok:
+            _emit_step("aws_login_failed", cmd=cmd[0] + " " + (cmd[1] if len(cmd) > 1 else ""))
+            _warn(f"`{shown}` exited with status {rc}, so no credentials were created.")
     except KeyboardInterrupt:
         pass
     except (FileNotFoundError, OSError) as e:
-        _warn(f"Could not run it ({e}). Run `{shown}` yourself, this will keep watching.")
+        _emit_step("aws_login_failed", cmd=cmd[0])
+        _warn(f"Could not run it ({e}).")
     print()
+    return ok
 
 
 def _guide_and_watch_for_creds(have_ids: set):
@@ -875,16 +906,27 @@ def _guide_and_watch_for_creds(have_ids: set):
         sso_pending = []
 
     run_cmd: list[str] | None = None
+    _cli_major = _aws_cli_major() if shutil.which("aws") else None
     if sso_pending:
         _emit_step("guided_sso_login")
         print("  You already have an AWS Identity Center (SSO) profile. It just needs a login.")
         run_cmd = str(sso_pending[0]["login_command"]).split()
-    elif shutil.which("aws"):
+    elif _cli_major is not None and _cli_major >= 2:
         _emit_step("guided_aws_configure")
         print("  Set up AWS access, whichever fits:")
         print(f"      {bold('aws configure sso')}     company SSO / Identity Center (recommended)")
         print( "      aws configure         an IAM access key")
         run_cmd = ["aws", "configure", "sso"]
+    elif _cli_major is not None:
+        # v1 has no `configure sso`. Offering it here ran a command that exits
+        # "Invalid choice" and then left the user watching for credentials that
+        # could never appear. Offer what v1 can actually do.
+        _emit_step("guided_aws_configure_v1", cli_major=_cli_major)
+        print(f"  Your AWS CLI is v{_cli_major}, which has no `aws configure sso`.")
+        print("  Set up AWS access, whichever fits:")
+        print(f"      {bold('aws configure')}        an IAM access key (works on v1)")
+        print( "      brew install awscli   upgrade to v2 for company SSO")
+        run_cmd = ["aws", "configure"]
     else:
         _emit_step("guided_install_cli")
         print("  The AWS CLI is not installed. Fastest path:\n")
@@ -900,8 +942,27 @@ def _guide_and_watch_for_creds(have_ids: set):
     # gh-style: offer to run the login right here rather than making them open a
     # second terminal. Sharing this terminal lets the interactive prompts and the
     # SSO browser device-flow work; the watcher below connects the instant it lands.
+    login_failed = False
     if run_cmd:
-        _offer_run_aws_login(run_cmd)
+        login_failed = not _offer_run_aws_login(run_cmd)
+
+    # A login that failed produces no credentials, so "waiting for credentials"
+    # is a lie the user cannot see through: they sit at a spinner until the 15
+    # minute timeout. Say what happened and give a path that does not depend on
+    # the CLI at all before starting the watch.
+    if login_failed:
+        print("  That did not produce credentials. Two ways through:\n")
+        print("    1. AWS CloudShell (already signed in, no key to create):")
+        print("         open the >_ icon in the AWS console, then run")
+        print("         pip install finops-mcp && finops welcome\n")
+        try:
+            from .security.iam_setup import quick_create_available, quick_create_url
+            if quick_create_available():
+                print("    2. Create a read-only key in your browser:")
+                print(f"         {quick_create_url(region='us-east-1')}\n")
+        except Exception:
+            pass
+        print(dim("  Or press Ctrl-C to paste an access key instead.\n"))
 
     # Ctrl-C is the expected way out of this screen, so it must exit clean. A stray
     # interrupt landing between the prints (not inside the watch loop) used to raise
