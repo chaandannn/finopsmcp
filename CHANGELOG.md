@@ -2,6 +2,11 @@
 
 All notable changes to finops-mcp (nable).
 
+## 0.8.198
+
+- **Fixed: onboarding sent AWS CLI v1 users into a command that cannot work.** With no credentials on the machine, nable offered to run `aws configure sso` for you. That subcommand exists only in CLI v2, and v1 is still what pip and older Homebrew formulas install. On v1 it exits `Invalid choice`, and nable then sat in a fifteen-minute watch for credentials that could never appear. The only person who reaches that screen is someone with no AWS credentials, so that was the end of the road for them. nable now reads the installed CLI version and offers `aws configure`, which v1 does have; an unrecognised version takes the path that works on every version rather than assuming v2.
+- **A failed login now says so.** The exit code of the login command was ignored, so any failure still led to "waiting for credentials..." with a spinner implying progress. nable now reports what failed and offers two routes that need no CLI at all: AWS CloudShell, which is already signed in, and the one-click read-only key. Found by walking the real first-run flow on a machine with aws-cli/1.38.38 rather than by a test, and the two existing tests covering this screen had encoded the bug by asserting the SSO command was offered whenever `aws` was on PATH.
+
 ## 0.8.197
 
 - **Fixed: the MCP server would not start on a fresh install.** The `mcp` SDK released 2.0.0, which removed `mcp.server.fastmcp`. Our requirement had no upper bound, so from that release onward every new install of nable resolved 2.0.0 and `import finops.server` failed with `ModuleNotFoundError`. Anyone installing nable into Claude Desktop, Cursor or any other MCP client got a server that would not launch. The requirement is now `mcp[cli]>=1.28.1,<2`, which keeps the 1.28.1 floor that carries the CVE-2026-59950 fix. **If you installed nable and the MCP server failed to start, upgrade and it will work.** The cap comes off only alongside a port to the 2.x server API.
