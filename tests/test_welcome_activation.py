@@ -15,6 +15,8 @@ Scans are stubbed so these stay fast and never touch a network or a real cloud.
 """
 from __future__ import annotations
 
+import subprocess
+
 import os
 
 import pytest
@@ -343,9 +345,19 @@ def test_guided_path_offers_to_run_aws_login_inline(monkeypatch, capsys):
     monkeypatch.setattr(_sys, "stdin", _Tty(_sys.stdin))
     monkeypatch.setattr(_sys, "stdout", _Tty(_sys.stdout))
     monkeypatch.setattr(sw, "_prompt", lambda *a, **k: "y")   # accept the offer
+    # `aws configure sso` is v2-only. This test used to leave the version implicit,
+    # which meant it passed while the code offered that command to v1 CLIs too, a
+    # login that always fails. Pin v2 so this asserts the v2 behaviour it names;
+    # test_onboarding_no_creds.py owns the v1 case.
+    monkeypatch.setattr(sw, "_aws_cli_major", lambda: 2)
 
     ran = {}
-    monkeypatch.setattr("subprocess.run", lambda cmd, *a, **k: ran.setdefault("cmd", cmd))
+
+    def _fake_run(cmd, *a, **k):
+        ran.setdefault("cmd", cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr("subprocess.run", _fake_run)
 
     sw._guide_and_watch_for_creds(set())
     assert ran.get("cmd") == ["aws", "configure", "sso"]      # it ran the login for us
@@ -369,8 +381,15 @@ def test_guided_path_declines_run_cleanly(monkeypatch):
     monkeypatch.setattr(_sys, "stdin", _Tty(_sys.stdin))
     monkeypatch.setattr(_sys, "stdout", _Tty(_sys.stdout))
     monkeypatch.setattr(sw, "_prompt", lambda *a, **k: "n")   # decline
+    monkeypatch.setattr(sw, "_aws_cli_major", lambda: 2)
 
     ran = {}
-    monkeypatch.setattr("subprocess.run", lambda cmd, *a, **k: ran.setdefault("cmd", cmd))
+
+    def _fake_run(cmd, *a, **k):
+        ran.setdefault("cmd", cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr("subprocess.run", _fake_run)
     assert sw._guide_and_watch_for_creds(set()) is None
+    assert "cmd" not in ran, "declined the offer but something still ran"
     assert "cmd" not in ran                                   # nothing was run
