@@ -25,12 +25,29 @@ from __future__ import annotations
 
 import concurrent.futures
 import os
+import time
 from dataclasses import dataclass, field
 
 # These SDKs probe metadata endpoints that do not answer on a laptop. A first run
 # must not stall on that, and a slow probe is indistinguishable from "no creds"
 # for our purposes, so cap it and move on.
 PROBE_TIMEOUT_S = 6.0
+
+# Probing is expensive and the answer barely changes within a session. GCP is the
+# worst case: with no ADC file, google.auth.default() blocks the full timeout
+# probing a GCE metadata server that is not there, so an uncached
+# GCPConnector.is_configured() costs ~6s EVERY call. is_configured is called from
+# hot paths (tool dispatch, demo detection, the connected-provider surface), so
+# without this the cost lands on every tool call. Matches the 30s cache already
+# used by demo_data._real_provider_connected and tool_surface.connected_families.
+CACHE_TTL_S = 30.0
+_cache: dict[str, tuple[float, "Ambient"]] = {}
+
+
+def reset_cache() -> None:
+    """Drop memoised probes. Call after a connect so the new credential is seen
+    immediately rather than up to CACHE_TTL_S later, and between tests."""
+    _cache.clear()
 
 
 @dataclass
@@ -136,12 +153,37 @@ def detect_azure() -> Ambient:
 
 # ── GCP ───────────────────────────────────────────────────────────────────────
 
+def _gcp_signals_present() -> bool:
+    """Is there any local sign of GCP at all? Filesystem and env only, no network.
+
+    Deliberately generous: a false positive costs one slow probe, a false negative
+    would hide a real credential, which is the failure this whole module exists to
+    remove. GCE/Cloud Run are covered by the metadata env vars their runtimes set."""
+    from pathlib import Path
+    if any(os.getenv(k) for k in ("GOOGLE_APPLICATION_CREDENTIALS",
+                                  "GCP_SERVICE_ACCOUNT_KEY_PATH",
+                                  "GOOGLE_CLOUD_PROJECT", "GCLOUD_PROJECT",
+                                  "GCE_METADATA_HOST", "K_SERVICE")):
+        return True
+    cfg = Path(os.getenv("CLOUDSDK_CONFIG") or (Path.home() / ".config" / "gcloud"))
+    try:
+        return (cfg / "application_default_credentials.json").exists() or cfg.is_dir()
+    except OSError:
+        return False
+
 def detect_gcp() -> Ambient:
     """google.auth.default(), which covers Application Default Credentials from
     `gcloud auth application-default login`, plus GCE/Cloud Run metadata. The old
     check only looked at GOOGLE_APPLICATION_CREDENTIALS, so the single most common
     developer setup did not register."""
     env_accts = [b.strip() for b in os.getenv("GCP_BILLING_ACCOUNT_IDS", "").split(",") if b.strip()]
+
+    # Cheap negative first. google.auth.default() blocks the full timeout probing
+    # a GCE metadata server that is not there, so on the very common "this laptop
+    # has nothing to do with GCP" machine the expensive call is pure latency in
+    # the first-run path. A few stat() calls answer it instead.
+    if not (_gcp_signals_present() or env_accts):
+        return Ambient("gcp", detail="no GCP credential found (try `gcloud auth application-default login`)")
 
     def probe():
         try:
@@ -177,8 +219,25 @@ def detect_gcp() -> Ambient:
     return Ambient("gcp", found=True, source=source, scopes=accts)
 
 
-# Adding a cloud means adding it here. Nothing else needs to know the difference.
-PROBES = {"aws": detect_aws, "azure": detect_azure, "gcp": detect_gcp}
+def _memoized(provider: str):
+    """The probe for `provider`, wrapped so a repeat call inside CACHE_TTL_S is free."""
+    def run() -> Ambient:
+        now = time.monotonic()
+        hit = _cache.get(provider)
+        if hit and hit[0] > now:
+            return hit[1]
+        result = _RAW_PROBES[provider]()
+        _cache[provider] = (now + CACHE_TTL_S, result)
+        return result
+    run.__name__ = f"detect_{provider}_cached"
+    return run
+
+
+_RAW_PROBES = {"aws": detect_aws, "azure": detect_azure, "gcp": detect_gcp}
+
+# Adding a cloud means adding it to _RAW_PROBES. Nothing else needs to know the
+# difference, and everything gets the cache for free.
+PROBES = {name: _memoized(name) for name in _RAW_PROBES}
 
 
 def detect_all(providers: list[str] | None = None) -> dict[str, Ambient]:

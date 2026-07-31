@@ -139,13 +139,21 @@ def test_menu_default_enter_connects_not_skips(monkeypatch):
 
 
 def test_ambient_aws_offers_one_keystroke_real_scan(monkeypatch):
-    """With ambient AWS creds, accept the prompt -> real scan, no menu, no demo."""
+    """With ambient AWS creds, accept the prompt -> real scan, no menu, no demo.
+
+    Stubs ambient.detect_all, which is what the flow calls now. It used to stub
+    AWSConnector.is_configured, and once the probe moved this test kept passing
+    only on machines that happen to have real AWS credentials in
+    ~/.aws/credentials. It failed the moment those were hidden, which means it
+    had stopped testing anything.
+    """
+    from finops.ambient import Ambient
+
     monkeypatch.setattr("finops.setup_wizard._configure_claude_desktop", lambda *a, **k: None)
-
-    async def _ambient(self):
-        return True
-
-    monkeypatch.setattr("finops.connectors.aws.AWSConnector.is_configured", _ambient)
+    monkeypatch.setattr("finops.ambient.detect_all",
+                        lambda providers=None: {"aws": Ambient("aws", found=True,
+                                                               source="shared-credentials-file",
+                                                               scopes=["123456789012"])})
     monkeypatch.setattr("builtins.input", lambda *a, **k: "y")
 
     calls = []
@@ -154,6 +162,45 @@ def test_ambient_aws_offers_one_keystroke_real_scan(monkeypatch):
     w.run_welcome_flow(demo=False)
 
     assert calls == [False]  # one real scan, no menu, no demo fallback
+
+
+def test_ambient_azure_gets_the_same_one_keystroke_scan(monkeypatch, capsys):
+    """The whole point of the parity work: an Azure-first user with `az login`
+    already done gets the same first-run treatment an AWS user gets, rather than
+    'no credentials found' and a manual service-principal wizard."""
+    from finops.ambient import Ambient
+
+    monkeypatch.setattr("finops.setup_wizard._configure_claude_desktop", lambda *a, **k: None)
+    monkeypatch.setattr("finops.ambient.detect_all",
+                        lambda providers=None: {"azure": Ambient("azure", found=True,
+                                                                 source="default-chain",
+                                                                 scopes=["sub-abc"])})
+    monkeypatch.setattr("builtins.input", lambda *a, **k: "y")
+
+    calls = []
+    monkeypatch.setattr(w, "_show_value_moment", lambda demo=False: calls.append(demo) or True)
+
+    w.run_welcome_flow(demo=False)
+
+    assert calls == [False], "Azure ambient creds must trigger the same real scan"
+    assert "Azure" in capsys.readouterr().out
+
+
+def test_ambient_names_every_cloud_it_found(monkeypatch, capsys):
+    """Someone on both clouds should be told both, not just whichever we probed first."""
+    from finops.ambient import Ambient
+
+    monkeypatch.setattr("finops.setup_wizard._configure_claude_desktop", lambda *a, **k: None)
+    monkeypatch.setattr("finops.ambient.detect_all", lambda providers=None: {
+        "aws": Ambient("aws", found=True, scopes=["1"]),
+        "gcp": Ambient("gcp", found=True, scopes=["01AB-23"]),
+    })
+    monkeypatch.setattr("builtins.input", lambda *a, **k: "n")   # decline, we only check the copy
+    monkeypatch.setattr(w, "_show_value_moment", lambda demo=False: False)
+
+    w.run_welcome_flow(demo=False)
+    out = capsys.readouterr().out
+    assert "AWS" in out and "Google Cloud" in out
 
 
 def test_slow_ambient_probe_does_not_hang_onboarding(monkeypatch):

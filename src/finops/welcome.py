@@ -786,32 +786,34 @@ def run_welcome_flow(demo: bool = False) -> None:
     # read-only scan with those creds: no menu, no stored secrets. Ask first,
     # one keystroke. Never touch their account unprompted.
     _line(dim("  Checking for cloud credentials in your environment..."))
-    aws_ambient = False
+    # Every cloud, not just AWS. This probed AWSConnector alone, so someone whose
+    # machine was already logged into Azure (`az login`) or GCP (`gcloud auth
+    # application-default login`) saw "no credentials found" and was sent to a
+    # manual wizard, while an AWS user in the identical position was connected in
+    # seconds. ambient.detect_all runs the probes in parallel and each is
+    # individually time-boxed, so this stays as fast as the single AWS check was.
+    found: list = []
     try:
-        import asyncio as _aio
-        from .connectors.aws import AWSConnector
-        # Hard timeout: the credential chain can reach for an EC2/ECS instance
-        # profile (IMDS at 169.254.169.254) or refresh an expired SSO token,
-        # which hangs for botocore's default connect timeout on a laptop where
-        # IMDS is firewalled. Onboarding must never freeze, so cap it and treat
-        # a timeout as "no ambient creds".
-        aws_ambient = _aio.run(_aio.wait_for(AWSConnector().is_configured(), timeout=_AMBIENT_AWS_TIMEOUT))
+        from .ambient import detect_all
+        found = [a for a in detect_all().values() if a.usable]
     except Exception:
-        aws_ambient = False
+        found = []
 
-    if aws_ambient:
+    if found:
         try:
             from .setup_wizard import _emit_provider_connected, _emit_step
         except Exception:
             def _emit_provider_connected(*a, **k): pass
             def _emit_step(*a, **k): pass
-        _emit_step("welcome_ambient_detected")
-        _line(f"  {green('Found AWS credentials')} in your environment.")
+        names = {"aws": "AWS", "azure": "Azure", "gcp": "Google Cloud"}
+        label = " and ".join(names.get(a.provider, a.provider) for a in found)
+        _emit_step("welcome_ambient_detected", provider=",".join(a.provider for a in found))
+        _line(f"  {green('Found ' + label + ' credentials')} in your environment.")
         _line(dim("  nable can run a read-only cost scan with them right now."))
         _blank()
         ans = "y"
         try:
-            ans = input("  Show your real AWS bill now? [Y/n]: ").strip().lower() or "y"
+            ans = input(f"  Show your real {label} bill now? [Y/n]: ").strip().lower() or "y"
         except (KeyboardInterrupt, EOFError):
             ans = "n"
         _blank()
@@ -822,8 +824,10 @@ def run_welcome_flow(demo: bool = False) -> None:
                 # A confirmed read with ambient creds is a real connection. The
                 # ambient path never calls setup_aws_account, so without this the
                 # activation metric misses everyone who connects via an existing
-                # profile, SSO, or the default chain. auth_method marks it ambient.
-                _emit_provider_connected("ambient")
+                # profile, SSO, or the default chain. Record every provider that
+                # contributed, so the funnel stops reading as AWS-only.
+                for a in found:
+                    _emit_provider_connected("ambient", provider=a.provider)
         else:
             _emit_step("welcome_ambient_declined")
 

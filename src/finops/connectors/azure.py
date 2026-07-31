@@ -30,8 +30,8 @@ class AzureConnector(BaseConnector):
         required = ["AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET", "AZURE_TENANT_ID"]
         if all(os.getenv(v) for v in required) and self._subscription_ids:
             return True
-        from ..ambient import detect_azure
-        amb = detect_azure()
+        from ..ambient import PROBES
+        amb = PROBES["azure"]()
         if amb.usable and not self._subscription_ids:
             # Adopt what the ambient credential can actually see, so the rest of
             # the connector has a scope to query without a second setup step.
