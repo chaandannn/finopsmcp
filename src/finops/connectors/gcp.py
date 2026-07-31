@@ -28,11 +28,25 @@ class GCPConnector(BaseConnector):
             os.environ.setdefault("GOOGLE_APPLICATION_CREDENTIALS", key_path)
 
     async def is_configured(self) -> bool:
+        """Any usable GCP credential, including Application Default Credentials.
+
+        This used to require GOOGLE_APPLICATION_CREDENTIALS (or the key-path
+        variant) plus an explicit GCP_BILLING_ACCOUNT_IDS. `gcloud auth
+        application-default login`, the most common developer setup, sets
+        neither, so it read as unconfigured while AWS accepted its whole default
+        chain. Same question, same answer, for every cloud now: see
+        finops/ambient.py."""
         has_creds = bool(
             os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
             or os.getenv("GCP_SERVICE_ACCOUNT_KEY_PATH")
         )
-        return has_creds and bool(self._billing_account_ids)
+        if has_creds and self._billing_account_ids:
+            return True
+        from ..ambient import detect_gcp
+        amb = detect_gcp()
+        if amb.usable and not self._billing_account_ids:
+            self._billing_account_ids = amb.scopes
+        return amb.usable
 
     def project_ids(self) -> list[str]:
         """
