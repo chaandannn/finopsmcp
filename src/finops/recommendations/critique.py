@@ -331,15 +331,49 @@ def _llm_objections(rec: dict, *, context: str = "") -> list[Objection]:
     return []
 
 
+# Key names that must never ride along to the model provider, wherever they
+# appear. Matched as substrings against lowercased key names, because the danger
+# is the whole CLASS of field, not one spelling. `kms_key_id` and friends are
+# resource identifiers, not secrets, and stay allowed by the _id/_arn escape.
+_SENSITIVE_KEY_HINTS = ("secret", "password", "passwd", "token", "credential",
+                        "api_key", "apikey", "access_key", "private_key",
+                        "session_key", "authorization", "bearer", "cookie")
+
+
+def _key_is_sensitive(name: str) -> bool:
+    low = str(name).lower()
+    if low.endswith(("_id", "_arn", "_alias")):  # identifiers, the point of the payload
+        return False
+    return any(h in low for h in _SENSITIVE_KEY_HINTS)
+
+
+def _safe_metadata(meta: Any) -> dict:
+    """Scanner metadata, minus anything secret-shaped. Scalars only: nesting is
+    where surprises hide, and no falsifier needs a nested structure to argue."""
+    if not isinstance(meta, dict):
+        return {}
+    out = {}
+    for k, v in meta.items():
+        if _key_is_sensitive(k) or isinstance(v, (dict, list, tuple, set)):
+            continue
+        out[str(k)] = v
+    return out
+
+
 def _prompt_payload(rec: dict) -> str:
     """The recommendation as the critic sees it. Resource identifiers and metrics
-    only: no credentials, and nothing the caller did not already put in the rec."""
+    only. This is an allow-list, not a deny-list, because the rec dict comes from
+    a dozen scanners and the critic must stay safe against fields it has never
+    seen; metadata is the one open-ended field and goes through _safe_metadata."""
     keep = ("source", "title", "type", "waste_type", "why", "description", "region",
             "resource_id", "resource_type", "instance_type", "recommended_type",
             "current_monthly_cost_usd", "estimated_monthly_savings_usd",
             "estimated_monthly_savings", "cpu_avg_pct", "cpu_max_pct", "memory_avg_pct",
-            "lookback_days", "environment", "environment_bucket", "metadata")
+            "lookback_days", "environment", "environment_bucket")
     lines = [f"{k}: {rec[k]}" for k in keep if rec.get(k) not in (None, "", [], {})]
+    meta = _safe_metadata(rec.get("metadata"))
+    if meta:
+        lines.append(f"metadata: {meta}")
     return "Recommendation under review:\n" + "\n".join(lines)
 
 

@@ -244,6 +244,23 @@ def test_the_prompt_carries_no_credentials(monkeypatch):
     body = C._prompt_payload(_rec(
         aws_secret_access_key="SHOULD-NEVER-APPEAR",  # pragma: allowlist secret
         api_key="SHOULD-NEVER-APPEAR",  # pragma: allowlist secret
+        # metadata rides to the model as the one open-ended field, so a secret
+        # nested one level down is the likeliest future leak, not a top-level key.
+        metadata={"api_token": "SHOULD-NEVER-APPEAR",  # pragma: allowlist secret
+                  "session_key": "SHOULD-NEVER-APPEAR",  # pragma: allowlist secret
+                  "nested": {"anything": "SHOULD-NEVER-APPEAR"},
+                  "kms_key_id": "arn:aws:kms:us-east-1:123456789012:key/abc",
+                  "estimated_monthly_kms_calls": 4200},
     ))
     assert "SHOULD-NEVER-APPEAR" not in body
-    assert "i-0abc123" in body  # resource identifiers are the point
+    assert "i-0abc123" in body            # resource identifiers are the point
+    assert "kms_key_id" in body           # an identifier with "key" in its name survives
+    assert "4200" in body                 # and so do plain metrics
+
+
+def test_sensitive_key_detection_is_by_class_not_spelling():
+    for name in ("API_KEY", "x-authorization", "dbPassword", "refresh_token",
+                 "AWS_SECRET_ACCESS_KEY", "cookie"):
+        assert C._key_is_sensitive(name), name
+    for name in ("kms_key_id", "instance_id", "topic_arn", "key_alias", "region"):
+        assert not C._key_is_sensitive(name), name
