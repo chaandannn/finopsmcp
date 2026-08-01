@@ -76,6 +76,10 @@ azure = [
     "azure-identity>=1.15.0",
 ]
 gcp = [
+    # Transitive floor: google-auth pulls pyasn1 via pyasn1-modules, and 0.6.3
+    # carries published advisories (PYSEC-2026-3455/6/7). Same pattern as the
+    # pillow floor in [pdf]: constrain the transitive rather than trust the tree.
+    "pyasn1>=0.6.4",
     "google-cloud-billing>=1.13.0",
     "google-cloud-bigquery>=3.17.0",
     "google-cloud-compute>=1.19.0",
@@ -120,6 +124,7 @@ all = [
     "croniter>=2.0.0",
     "azure-mgmt-costmanagement>=4.0.0",
     "azure-identity>=1.15.0",
+    "pyasn1>=0.6.4",  # see [gcp] extra: keep the transitive off the 0.6.3 advisories
     "google-cloud-billing>=1.13.0",
     "google-cloud-bigquery>=3.17.0",
     "google-cloud-compute>=1.19.0",
