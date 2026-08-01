@@ -9,6 +9,28 @@ from __future__ import annotations
 from .. import server as _srv
 
 
+def _month_pair(today):
+    """The two month windows a month-over-month view should compare.
+
+    Returns (cur_start, cur_end, prev_start, prev_end, on_the_first).
+
+    On the 1st, month-to-date is an empty range. Cost providers reject it, the
+    fetch errors, and the caller's `.get("total_usd", 0.0)` turns that into a
+    clean-looking $0.00 with a -100% change against last month. So one day in
+    thirty, the mom and by_service views reported that every provider's spend
+    had collapsed to nothing. On that day there is no month-to-date to compare,
+    so compare the two months that have actually closed instead, and let the
+    caller say so.
+    """
+    first_this = today.replace(day=1)
+    last_prev = first_this - _srv.timedelta(days=1)
+    first_prev = last_prev.replace(day=1)
+    if today == first_this:
+        last_prev2 = first_prev - _srv.timedelta(days=1)
+        return first_prev, last_prev, last_prev2.replace(day=1), last_prev2, True
+    return first_this, today, first_prev, last_prev, False
+
+
 @_srv.mcp.tool()
 async def list_connected_providers() -> dict:
     """
@@ -1025,15 +1047,13 @@ async def get_view(
 
     # ── mom ──────────────────────────────────────────────────────────────────
     if view == "mom":
-        first_this = today.replace(day=1)
-        first_last = (first_this - _srv.timedelta(days=1)).replace(day=1)
-        last_last   = first_this - _srv.timedelta(days=1)
+        first_this, this_end, first_last, last_last, on_the_first = _month_pair(today)
 
         active = await _srv._active()
         if provider:
             active = {k: v for k, v in active.items() if k == provider}
 
-        this_total, this_by, _  = await _srv._gather_costs(active, first_this, today)
+        this_total, this_by, _  = await _srv._gather_costs(active, first_this, this_end)
         last_total, last_by, _  = await _srv._gather_costs(active, first_last, last_last)
 
         rows = []
@@ -1052,10 +1072,15 @@ async def get_view(
         total_pct = ((this_total - last_total) / last_total * 100) if last_total else None
         return {
             "view": meta["name"],
-            "this_month": {"period": f"{first_this} to {today}", "total": _srv._fmt_usd(this_total)},
+            "this_month": {"period": f"{first_this} to {this_end}", "total": _srv._fmt_usd(this_total)},
             "last_month": {"period": f"{first_last} to {last_last}", "total": _srv._fmt_usd(last_total)},
             "total_change": f"{total_pct:+.1f}%" if total_pct is not None else "n/a",
             "by_provider": rows,
+            # The keys stay this_month/last_month for consumers, so on the 1st say
+            # plainly what they hold: the two closed months, not a $0 current one.
+            **({"note": "It is the 1st, so there is no month-to-date yet. "
+                        "'this_month' is the month that just closed and 'last_month' "
+                        "is the one before it."} if on_the_first else {}),
         }
 
     # ── wow ──────────────────────────────────────────────────────────────────
@@ -1124,15 +1149,14 @@ async def get_view(
 
     # ── by_service ───────────────────────────────────────────────────────────
     if view == "by_service":
-        first_this = today.replace(day=1)
-        first_last = (first_this - _srv.timedelta(days=1)).replace(day=1)
+        first_this, this_end, first_last, last_last, on_the_first = _month_pair(today)
 
         active = await _srv._active()
         if provider:
             active = {k: v for k, v in active.items() if k == provider}
 
-        _, _, this_svc = await _srv._gather_costs(active, first_this, today)
-        _, _, last_svc = await _srv._gather_costs(active, first_last, first_this - _srv.timedelta(days=1))
+        _, _, this_svc = await _srv._gather_costs(active, first_this, this_end)
+        _, _, last_svc = await _srv._gather_costs(active, first_last, last_last)
 
         rows = []
         for svc, amt in sorted(this_svc.items(), key=lambda x: -x[1])[:20]:
@@ -1145,7 +1169,14 @@ async def get_view(
                 "change": f"{pct:+.1f}%" if pct is not None else "new",
             })
 
-        return {"view": meta["name"], "period": f"{first_this} to {today}", "services": rows}
+        return {
+            "view": meta["name"],
+            "period": f"{first_this} to {this_end}",
+            "services": rows,
+            **({"note": "It is the 1st, so there is no month-to-date yet. "
+                        "'this_month' is the month that just closed and 'last_month' "
+                        "is the one before it."} if on_the_first else {}),
+        }
 
     # ── by_tag ───────────────────────────────────────────────────────────────
     if view == "by_tag":
