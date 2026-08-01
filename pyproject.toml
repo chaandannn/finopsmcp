@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "finops-mcp"
-version = "0.8.198"
+version = "0.8.199"
 description = "Ask Claude about your AWS, Azure, GCP, and SaaS costs. MCP server with anomaly detection, rightsizing, and Jira ticketing."
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -44,9 +44,12 @@ dependencies = [
     "mcp[cli]>=1.28.1,<2",
     # cloud providers. AWS ships in core (the common path); the Azure and Google
     # Cloud SDKs are optional extras (finops-mcp[azure] / [gcp]) so the default
-    # install stays small and the first cold `uvx` launch is fast. They are imported
-    # lazily inside the Azure/GCP connectors, and is_configured() is env-var-only,
-    # so an AWS-only install never needs them.
+    # install stays small and the first cold `uvx` launch is fast. They are
+    # imported lazily, and ambient detection reports a missing SDK as "not found"
+    # rather than raising, so an AWS-only install never needs them. (This used to
+    # say is_configured() was env-var-only. Since 0.8.199 it probes the full
+    # credential chain for every cloud; the extras stay optional because the
+    # probe degrades, not because nothing looks.)
     "boto3>=1.34.0",
     # storage + scheduling
     "sqlalchemy>=2.0.0",
