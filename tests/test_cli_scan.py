@@ -19,6 +19,10 @@ from botocore.exceptions import ClientError, NoCredentialsError, SSOTokenLoadErr
 
 from finops import cli_scan
 
+# Captured before the _mid_month fixture stubs it out, so the boundary tests
+# below exercise the real window builder rather than the stub.
+_REAL_SPEND_WINDOW = cli_scan._spend_window
+
 
 @pytest.fixture(autouse=True)
 def _isolate_aws_profile():
@@ -33,6 +37,18 @@ def _isolate_aws_profile():
         os.environ.pop("AWS_PROFILE", None)
     else:
         os.environ["AWS_PROFILE"] = before
+
+
+@pytest.fixture(autouse=True)
+def _mid_month(monkeypatch):
+    # Pin the Cost Explorer window so these tests assert on scan OUTPUT, not on
+    # what day the CI runner happens to be. They used to read the real clock and
+    # went red at midnight UTC on the 1st, which is also how the month-boundary
+    # bug was found. The boundary itself is covered deliberately below, by
+    # exercising _spend_window directly and by forcing the 1st through run().
+    monkeypatch.setattr(
+        cli_scan, "_spend_window", lambda today: ("2026-07-01", "2026-07-15", "month-to-date")
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -336,6 +352,68 @@ def test_json_with_spend_flag_includes_breakdown(capsys):
     assert code == cli_scan.EXIT_OK
     assert doc["spend"]["top_services"][0]["service"] == "Amazon Bedrock"
     assert doc["recoverable"]["pct_of_spend"] is not None
+
+
+# ── the month boundary ────────────────────────────────────────────────────────
+#
+# On the 1st, month-to-date is an empty window. The old code answered it with a
+# fabricated zero, so one day in thirty nable told people their cloud bill was
+# $0.00 with no services listed. That is worse than an error: it looks like an
+# answer. These tests run every day of a year through the window builder, and
+# drive the 1st all the way through run() so the plumbing is covered too.
+
+def test_spend_window_never_asks_cost_explorer_for_an_empty_range():
+    from datetime import date, timedelta
+
+    day = date(2026, 1, 1)
+    for _ in range(400):  # a full year plus change, crossing both boundaries
+        start, end, covers = _REAL_SPEND_WINDOW(day)
+        assert start < end, f"empty CE window on {day}: {start}..{end}"
+        assert covers == ("last month" if day.day == 1 else "month-to-date")
+        day += timedelta(days=1)
+
+
+def test_spend_window_on_the_first_asks_for_the_month_that_just_closed():
+    from datetime import date
+
+    assert _REAL_SPEND_WINDOW(date(2026, 8, 1)) == ("2026-07-01", "2026-08-01", "last month")
+    # Year rollover: January 1st must reach back into the previous year.
+    assert _REAL_SPEND_WINDOW(date(2026, 1, 1)) == ("2025-12-01", "2026-01-01", "last month")
+
+
+def test_spend_window_mid_month_is_month_to_date():
+    from datetime import date
+
+    assert _REAL_SPEND_WINDOW(date(2026, 8, 14)) == ("2026-08-01", "2026-08-14", "month-to-date")
+
+
+def _force_first_of_month(monkeypatch):
+    from datetime import date
+
+    monkeypatch.setattr(
+        cli_scan, "_spend_window", lambda today: _REAL_SPEND_WINDOW(date(2026, 8, 1))
+    )
+
+
+def test_first_of_month_scan_reports_a_real_bill_labelled_last_month(capsys, monkeypatch):
+    _force_first_of_month(monkeypatch)
+    code, _, _ = _run(_args(spend=True), _session())
+    out = capsys.readouterr().out
+    assert code == cli_scan.EXIT_OK
+    # The bill is real and named, and it does NOT claim to be this month.
+    assert "on AWS last month" in out and "Bedrock" in out
+    assert "on AWS this month" not in out
+    assert "$0.00 on AWS" not in out
+
+
+def test_first_of_month_json_says_which_window_it_covers(capsys, monkeypatch):
+    _force_first_of_month(monkeypatch)
+    code, _, _ = _run(_args(json=True, spend=True), _session())
+    doc = json.loads(capsys.readouterr().out)
+    assert code == cli_scan.EXIT_OK
+    assert doc["spend"]["covers"] == "last month"
+    assert doc["spend"]["period"] == "2026-07-01 to 2026-08-01"
+    assert doc["spend"]["top_services"][0]["service"] == "Amazon Bedrock"
 
 
 # ── --demo ────────────────────────────────────────────────────────────────────

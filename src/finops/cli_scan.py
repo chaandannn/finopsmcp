@@ -203,16 +203,34 @@ def _available_profiles() -> list[str]:
 
 # ── Cost Explorer: at most 2 queries, one page each (CE bills $0.01/request) ──
 
+def _spend_window(today) -> tuple[str, str, str]:
+    """The CE TimePeriod to ask for, plus a label for what it covers.
+
+    Split out of _spend_snapshot so the month boundary is testable on any day of
+    the year. It used to live inline and only ever ran correctly on days 2-31:
+    on the 1st, month-to-date is an empty window that Cost Explorer rejects, and
+    the code returned a hand-made zero. So for one day in thirty nable told
+    people their cloud bill was $0.00 and named no services, which is worse than
+    an error because it looks like an answer. Ask for the month that just closed
+    instead and say so: it is complete, it is the number they want on the 1st,
+    and it is never a lie. CE end dates are exclusive, so `end` is safe to leave
+    at the first of the current month.
+    """
+    from datetime import timedelta
+
+    first_of_month = today.replace(day=1)
+    if today == first_of_month:
+        prev_start = (first_of_month - timedelta(days=1)).replace(day=1)
+        return prev_start.isoformat(), first_of_month.isoformat(), "last month"
+    return first_of_month.isoformat(), today.isoformat(), "month-to-date"
+
+
 def _spend_snapshot(session) -> dict | None:
     """Month-to-date total + by-service + by-region from CE. None if denied."""
     from datetime import date
 
     ce = session.client("ce", region_name="us-east-1")
-    today = date.today()
-    start = today.replace(day=1).isoformat()
-    end = today.isoformat()
-    if start == end:  # first of the month: CE needs a non-empty window
-        return {"period": start, "total": 0.0, "services": [], "regions": {}}
+    start, end, covers = _spend_window(date.today())
 
     def _grouped(dimension: str) -> list[tuple[str, float]]:
         resp = ce.get_cost_and_usage(
@@ -237,6 +255,7 @@ def _spend_snapshot(session) -> dict | None:
     services.sort(key=lambda kv: kv[1], reverse=True)
     return {
         "period": f"{start} to {end}",
+        "covers": covers,
         "total": total,
         "services": services[:3],
         "regions": dict(regions),
@@ -377,8 +396,11 @@ def _render(out, spend, report, *, demo: bool, ce_denied: bool, extra_blocks=Non
         if spend and spend["total"] > 0:
             total_spend += spend["total"]
             top = " · ".join(f"{name} {_short_usd(v)}" for name, v in spend["services"])
+            # "this month" is a lie on the 1st, when the snapshot falls back to the
+            # month that just closed. Say which window the number covers.
+            when = "last month" if spend.get("covers") == "last month" else "this month"
             print(
-                _bold(f"{_usd(spend['total'])} on AWS this month.") + f" Top: {top}{demo_tag}",
+                _bold(f"{_usd(spend['total'])} on AWS {when}.") + f" Top: {top}{demo_tag}",
                 file=out,
             )
             if recoverable >= _FINDING_FLOOR_USD:
@@ -475,6 +497,9 @@ def _json_payload(spend, report, *, demo, profile, account_id, duration_s, extra
         "spend": (
             {
                 "period": spend["period"],
+                # On the 1st this is last month's closed total, not month-to-date;
+                # `covers` says which, so a consumer never has to guess.
+                "covers": spend.get("covers", "month-to-date"),
                 "month_to_date_usd": round(spend["total"], 2),
                 "top_services": [
                     {"service": name, "usd": round(v, 2)} for name, v in spend["services"]
