@@ -1797,7 +1797,9 @@ async def run_full_cost_audit(
                 for r in data:
                     s = r.get("savings_estimate", 0) or 0
                     if s > 0:
-                        out.append({"title": f"Migrate {r.get('instance_id','?')} ({r.get('instance_type','?')} → {r.get('graviton_equivalent','?')})", "monthly_savings": s, "category": "Compute", "detail": f"{r.get('savings_pct',0)*100:.0f}% saving, {r.get('region','')}"})
+                        # current cost rides along so the critique can hold the
+                        # claim against it (a saving cannot exceed the resource).
+                        out.append({"title": f"Migrate {r.get('instance_id','?')} ({r.get('instance_type','?')} → {r.get('graviton_equivalent','?')})", "monthly_savings": s, "category": "Compute", "detail": f"{r.get('savings_pct',0)*100:.0f}% saving, {r.get('region','')}", "resource_id": r.get("instance_id", ""), "region": r.get("region", ""), "current_monthly_cost_usd": r.get("current_monthly_cost_estimate")})
             elif name == "ipv4":
                 waste = data.get("total_monthly_waste", 0) or 0
                 if waste > 0:
@@ -1892,12 +1894,17 @@ async def run_full_cost_audit(
                 for r in data:
                     if getattr(r, "protected", False) or r.monthly_cost_usd <= 0:
                         continue
-                    out.append({"title": f"{r.resource_type.replace('_', ' ').title()}: {r.name or r.resource_id}", "monthly_savings": r.monthly_cost_usd, "category": "Idle/Orphaned", "detail": f"{r.reason}, idle {r.idle_days}d, {r.region}"})
+                    # savings == the resource's own cost by construction (delete
+                    # it, stop paying it); carrying the cost makes that invariant
+                    # checkable by the critique instead of assumed.
+                    out.append({"title": f"{r.resource_type.replace('_', ' ').title()}: {r.name or r.resource_id}", "monthly_savings": r.monthly_cost_usd, "category": "Idle/Orphaned", "detail": f"{r.reason}, idle {r.idle_days}d, {r.region}", "resource_id": r.resource_id, "region": r.region, "current_monthly_cost_usd": r.monthly_cost_usd})
             elif name == "idle_rds" and isinstance(data, list):
                 for r in data:
                     s = r.get("estimated_monthly_savings", 0) or 0
                     if s > 0:
-                        out.append({"title": f"Stop or delete idle RDS instance {r.get('resource_id','?')}", "monthly_savings": s, "category": "Database", "detail": f"{r.get('engine','?')} {r.get('current_class','?')}, {r.get('region','?')}, no connections in 14d"})
+                        # lookback_days matches check_rds_idle's connection window;
+                        # cost equals the saving by construction (stopped == unpaid).
+                        out.append({"title": f"Stop or delete idle RDS instance {r.get('resource_id','?')}", "monthly_savings": s, "category": "Database", "detail": f"{r.get('engine','?')} {r.get('current_class','?')}, {r.get('region','?')}, no connections in 14d", "resource_id": r.get("resource_id", ""), "region": r.get("region", ""), "current_monthly_cost_usd": s, "lookback_days": 14})
         except Exception as exc:
             _srv.log.warning("audit norm failed for %s: %s", name, exc)
         return out
