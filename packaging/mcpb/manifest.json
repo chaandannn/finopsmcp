@@ -3,7 +3,7 @@
   "name": "nable",
   "display_name": "nable",
   "icon": "icon.png",
-  "version": "0.8.199",
+  "version": "0.8.200",
   "description": "Local-first FinOps for the AI era: query your cloud and AI spend in Claude, get savings drafted as pull requests. Your bill never leaves your machine.",
   "long_description": "nable reads your AWS, Azure, GCP, Kubernetes, SaaS, and AI/LLM (OpenAI, Anthropic, Bedrock) spend read-only and answers cost questions right in your editor: why spend moved, where the waste is, and what to cut. It judges which savings are real against your negotiated rates and drafts the fix as a pull request you approve. Read-only and propose-only: nable never changes your cloud on its own, and credentials and cost data stay on your machine, with no vendor backend in the path.",
   "author": {
