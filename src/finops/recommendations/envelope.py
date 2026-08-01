@@ -51,6 +51,11 @@ def magnitude_band(usd_per_month: float | None) -> str:
         v = abs(float(usd_per_month))
     except (TypeError, ValueError):
         return "unknown size"
+    import math
+    if not math.isfinite(v):
+        # NaN fails every comparison below and would fall through to the LARGEST
+        # band, turning garbage into "~hundreds of thousands/mo".
+        return "unknown size"
     if v < 100:
         return "under ~$100/mo"
     if v < 1000:

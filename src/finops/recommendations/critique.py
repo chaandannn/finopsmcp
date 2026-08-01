@@ -85,10 +85,16 @@ class Objection:
 # never call a cloud API, so they are free and run on everything.
 
 def _f(rec: dict, *keys: str) -> float | None:
-    """First numeric value among keys, or None. Recommendation dicts come from a
-    dozen scanners with drifting field names, and a critic that silently reads
-    nothing is worse than no critic: it prints a clean bill of health it never
-    earned. Returning None keeps 'absent' distinct from 'zero'."""
+    """First finite numeric value among keys, or None. Recommendation dicts come
+    from a dozen scanners with drifting field names, and a critic that silently
+    reads nothing is worse than no critic: it prints a clean bill of health it
+    never earned. Returning None keeps 'absent' distinct from 'zero'.
+
+    Non-finite values are treated as absent here and blocked by the garbage
+    falsifier below: every comparison against NaN is False, so a NaN claim
+    would otherwise sail through every check while rendering as "$nan"."""
+    import math
+
     for k in keys:
         if k not in rec:
             continue
@@ -96,9 +102,32 @@ def _f(rec: dict, *keys: str) -> float | None:
         if v is None or isinstance(v, bool):
             continue
         try:
-            return float(v)
+            f = float(v)
         except (TypeError, ValueError):
             continue
+        if math.isfinite(f):
+            return f
+    return None
+
+
+def _claim_is_garbage(rec: dict, keys: tuple) -> str | None:
+    """The raw claimed value when it exists but is not a finite number, else None.
+    Distinct from _f returning None: absent is fine, present-and-NaN is a claim
+    we must refuse to print."""
+    import math
+
+    for k in keys:
+        v = rec.get(k)
+        if v is None or isinstance(v, bool):
+            continue
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            if isinstance(v, str) and v.strip():
+                return v  # a non-numeric string where a dollar figure belongs
+            continue
+        if not math.isfinite(f):
+            return repr(v)
     return None
 
 
@@ -145,9 +174,28 @@ def falsifiers(rec: dict, *, today: date | None = None,
     out: list[Objection] = []
     claimed = _claimed(rec, savings_key)
 
+    # 0. A claim that exists but is not a finite number. NaN and infinity pass
+    #    through arithmetic checks unchallenged (every comparison is False), so
+    #    they must be refused explicitly or they print as "$nan" with a straight
+    #    face.
+    keys = (savings_key, *SAVINGS_KEYS) if savings_key else SAVINGS_KEYS
+    garbage = _claim_is_garbage(rec, keys)
+    if garbage is not None:
+        out.append(Objection(
+            code="claim_not_a_number",
+            detail=f"the claimed saving is {garbage}, which is not a finite dollar "
+                   f"figure and cannot be shown as one.",
+            blocking=True,
+        ))
+
     # 1. A full month billed against a resource that has not existed for one.
     #    The single most common way a savings figure is quietly inflated.
     age = _age_days(rec, today=today)
+    # A launch date in the future is clock skew or bad data; either way the
+    # resource has zero observed history, which is the strongest version of
+    # "too new for a monthly claim", not an exemption from it.
+    if age is not None and age < 0:
+        age = 0.0
     if claimed and claimed > 0 and age is not None and 0 <= age < 30:
         realized = claimed * (max(age, 1.0) / 30.0)
         out.append(Objection(
@@ -317,14 +365,20 @@ def _llm_objections(rec: dict, *, context: str = "") -> list[Objection]:
         for block in resp.content:
             if getattr(block, "type", "") == "tool_use" and block.name == "report_objections":
                 raw = (block.input or {}).get("objections") or []
+                if not isinstance(raw, list):
+                    return []
+                # Hard caps on count and length. The model is untrusted input
+                # like any other: a miscalibrated or prompt-injected response
+                # must not be able to flood the finding with unbounded text.
                 return [
                     Objection(
                         code=str(o.get("code") or "llm_objection")[:64],
-                        detail=str(o.get("detail") or "").strip(),
+                        detail=str(o.get("detail") or "").strip()[:500],
                         blocking=bool(o.get("blocking")),
                         source="llm",
                     )
-                    for o in raw if str(o.get("detail") or "").strip()
+                    for o in raw[:10]
+                    if isinstance(o, dict) and str(o.get("detail") or "").strip()
                 ]
     except Exception:
         return []
@@ -437,6 +491,14 @@ def critique(
     """
     out: list[dict] = []
     for rec in recs:
+        # Idempotence: a finding this pass already retracted carries None where
+        # its figure was. Re-reviewing that sees "no claim", raises nothing, and
+        # would flip survived back to True while the finding still says
+        # investigation. The pass already ruled; a prior verdict is final.
+        prior = rec.get("critique")
+        if isinstance(prior, dict) and prior.get("survived") is False:
+            out.append(dict(rec))
+            continue
         verdict = critique_one(rec, use_llm=use_llm, llm_floor_usd=llm_floor_usd,
                                context=context, today=today, savings_key=savings_key)
         annotated = dict(rec)  # copy: never mutate the caller's recommendation
