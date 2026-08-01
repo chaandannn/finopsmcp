@@ -238,7 +238,12 @@ def test_the_real_llm_helper_swallows_its_own_failures(monkeypatch):
 def test_the_prompt_carries_no_credentials(monkeypatch):
     # An MCP tool must never route a secret through a model provider. The critic
     # sends a rec dict it did not build, so pin what it forwards.
-    body = C._prompt_payload(_rec(aws_secret_access_key="SHOULD-NEVER-APPEAR",
-                                  api_key="SHOULD-NEVER-APPEAR"))
+    # The placeholders below are literal decoys, not credentials. detect-secrets
+    # flags the `api_key=` keyword, which is the scanner doing its job on a test
+    # whose whole purpose is proving that exact leak cannot happen.
+    body = C._prompt_payload(_rec(
+        aws_secret_access_key="SHOULD-NEVER-APPEAR",  # pragma: allowlist secret
+        api_key="SHOULD-NEVER-APPEAR",  # pragma: allowlist secret
+    ))
     assert "SHOULD-NEVER-APPEAR" not in body
     assert "i-0abc123" in body  # resource identifiers are the point
