@@ -25,12 +25,29 @@ from __future__ import annotations
 
 import concurrent.futures
 import os
+import time
 from dataclasses import dataclass, field
 
 # These SDKs probe metadata endpoints that do not answer on a laptop. A first run
 # must not stall on that, and a slow probe is indistinguishable from "no creds"
 # for our purposes, so cap it and move on.
 PROBE_TIMEOUT_S = 6.0
+
+# Probing is expensive and the answer barely changes within a session. GCP is the
+# worst case: with no ADC file, google.auth.default() blocks the full timeout
+# probing a GCE metadata server that is not there, so an uncached
+# GCPConnector.is_configured() costs ~6s EVERY call. is_configured is called from
+# hot paths (tool dispatch, demo detection, the connected-provider surface), so
+# without this the cost lands on every tool call. Matches the 30s cache already
+# used by demo_data._real_provider_connected and tool_surface.connected_families.
+CACHE_TTL_S = 30.0
+_cache: dict[str, tuple[float, "Ambient"]] = {}
+
+
+def reset_cache() -> None:
+    """Drop memoised probes. Call after a connect so the new credential is seen
+    immediately rather than up to CACHE_TTL_S later, and between tests."""
+    _cache.clear()
 
 
 @dataclass
@@ -111,30 +128,71 @@ def detect_azure() -> Ambient:
         subs = list(env_subs)
         source = "env" if all(os.getenv(v) for v in
                               ("AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET", "AZURE_TENANT_ID")) else "default-chain"
+        why = ""
         if not subs:
+            # ARM REST rather than an SDK. The obvious choice,
+            # azure.mgmt.resource.SubscriptionClient, does not exist: Azure moved
+            # it out of azure-mgmt-resource (26.0.0 ships only `resources`) into a
+            # separate azure-mgmt-resource-subscriptions package that is on 1.0.0.
+            # Pinning either would re-create the packaging fragility this whole
+            # fix exists to remove. azure-identity mints the token and httpx is
+            # already a core dependency, so this needs nothing new and cannot
+            # break on an SDK reorganisation.
             try:
-                from azure.mgmt.resource import SubscriptionClient
-                subs = [s.subscription_id for s in SubscriptionClient(cred).subscriptions.list()
-                        if getattr(s, "subscription_id", None)]
-            except Exception:
-                # A credential that cannot list subscriptions may still be able to
-                # read a subscription named explicitly, so this is not fatal.
-                pass
+                import httpx
+                token = cred.get_token("https://management.azure.com/.default").token
+                resp = httpx.get(
+                    "https://management.azure.com/subscriptions?api-version=2022-12-01",
+                    headers={"Authorization": f"Bearer {token}"}, timeout=5.0)
+                if resp.status_code == 200:
+                    subs = [v["subscriptionId"] for v in resp.json().get("value", [])
+                            if v.get("subscriptionId") and v.get("state") == "Enabled"]
+                else:
+                    why = f"HTTP {resp.status_code}"
+            except Exception as e:
+                # A real failure (expired login, no permission, offline). Keep the
+                # reason: it is the difference between "run az login" and "your
+                # credential cannot list subscriptions". Never swallow it silently,
+                # which is how a packaging bug read as "you have no Azure".
+                why = type(e).__name__
         if not subs and source != "env":
             # Nothing to prove the credential works; do not claim a connection.
-            return None
+            return ("no-subscriptions", None, [], why)
         return (source, cred, subs)
 
     r = _run(probe)
     if not r:
         return Ambient("azure", detail="no Azure credential found (try `az login`)")
-    source, _cred, subs = r
+    source = r[0]
     if source == "missing-sdk":
         return Ambient("azure", detail="azure SDK not installed (pip install 'finops-mcp[azure]')")
-    return Ambient("azure", found=True, source=source, scopes=subs)
+    if source == "no-subscriptions":
+        extra = f" ({r[3]})" if len(r) > 3 and r[3] else ""
+        return Ambient("azure", detail=f"an Azure credential was found but it can see no "
+                                       f"subscriptions{extra}; try `az login` again or set "
+                                       f"AZURE_SUBSCRIPTION_IDS")
+    return Ambient("azure", found=True, source=source, scopes=r[2])
 
 
 # ── GCP ───────────────────────────────────────────────────────────────────────
+
+def _gcp_signals_present() -> bool:
+    """Is there any local sign of GCP at all? Filesystem and env only, no network.
+
+    Deliberately generous: a false positive costs one slow probe, a false negative
+    would hide a real credential, which is the failure this whole module exists to
+    remove. GCE/Cloud Run are covered by the metadata env vars their runtimes set."""
+    from pathlib import Path
+    if any(os.getenv(k) for k in ("GOOGLE_APPLICATION_CREDENTIALS",
+                                  "GCP_SERVICE_ACCOUNT_KEY_PATH",
+                                  "GOOGLE_CLOUD_PROJECT", "GCLOUD_PROJECT",
+                                  "GCE_METADATA_HOST", "K_SERVICE")):
+        return True
+    cfg = Path(os.getenv("CLOUDSDK_CONFIG") or (Path.home() / ".config" / "gcloud"))
+    try:
+        return (cfg / "application_default_credentials.json").exists() or cfg.is_dir()
+    except OSError:
+        return False
 
 def detect_gcp() -> Ambient:
     """google.auth.default(), which covers Application Default Credentials from
@@ -142,6 +200,13 @@ def detect_gcp() -> Ambient:
     check only looked at GOOGLE_APPLICATION_CREDENTIALS, so the single most common
     developer setup did not register."""
     env_accts = [b.strip() for b in os.getenv("GCP_BILLING_ACCOUNT_IDS", "").split(",") if b.strip()]
+
+    # Cheap negative first. google.auth.default() blocks the full timeout probing
+    # a GCE metadata server that is not there, so on the very common "this laptop
+    # has nothing to do with GCP" machine the expensive call is pure latency in
+    # the first-run path. A few stat() calls answer it instead.
+    if not (_gcp_signals_present() or env_accts):
+        return Ambient("gcp", detail="no GCP credential found (try `gcloud auth application-default login`)")
 
     def probe():
         try:
@@ -177,8 +242,25 @@ def detect_gcp() -> Ambient:
     return Ambient("gcp", found=True, source=source, scopes=accts)
 
 
-# Adding a cloud means adding it here. Nothing else needs to know the difference.
-PROBES = {"aws": detect_aws, "azure": detect_azure, "gcp": detect_gcp}
+def _memoized(provider: str):
+    """The probe for `provider`, wrapped so a repeat call inside CACHE_TTL_S is free."""
+    def run() -> Ambient:
+        now = time.monotonic()
+        hit = _cache.get(provider)
+        if hit and hit[0] > now:
+            return hit[1]
+        result = _RAW_PROBES[provider]()
+        _cache[provider] = (now + CACHE_TTL_S, result)
+        return result
+    run.__name__ = f"detect_{provider}_cached"
+    return run
+
+
+_RAW_PROBES = {"aws": detect_aws, "azure": detect_azure, "gcp": detect_gcp}
+
+# Adding a cloud means adding it to _RAW_PROBES. Nothing else needs to know the
+# difference, and everything gets the cache for free.
+PROBES = {name: _memoized(name) for name in _RAW_PROBES}
 
 
 def detect_all(providers: list[str] | None = None) -> dict[str, Ambient]:

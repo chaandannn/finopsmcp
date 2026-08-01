@@ -137,17 +137,26 @@ def test_ambient_connect_emits_provider_connected(monkeypatch):
     monkeypatch.setattr(setup_wizard, "_configure_mcp_clients",
                         lambda: {"configured": [], "manual": []})
 
-    async def _ambient_ok(self):
-        return True
-
-    monkeypatch.setattr(AWSConnector, "is_configured", _ambient_ok)
+    # Stubs ambient.detect_all, which is what the welcome flow probes now. It
+    # used to stub AWSConnector.is_configured; once the probe moved to cover every
+    # cloud, that stub stopped being consulted and this test only passed on
+    # machines that happen to have real AWS credentials.
+    from finops.ambient import Ambient
+    monkeypatch.setattr("finops.ambient.detect_all",
+                        lambda providers=None: {"aws": Ambient("aws", found=True,
+                                                               source="default-chain",
+                                                               scopes=["123456789012"])})
     monkeypatch.setattr("builtins.input", lambda *a, **k: "y")
 
     emitted = []
-    monkeypatch.setattr(setup_wizard, "_emit_provider_connected", lambda m: emitted.append(m))
+    monkeypatch.setattr(setup_wizard, "_emit_provider_connected",
+                        lambda m, provider="aws": emitted.append((m, provider)))
 
     WC.run_welcome_flow(demo=False)
-    assert "ambient" in emitted
+    assert ("ambient", "aws") in emitted, (
+        "the ambient connect must record WHICH provider connected; it used to "
+        "hardcode aws, so an ambient Azure or GCP connect was reported as AWS"
+    )
 
 
 def test_demo_value_moment_renders_and_skips_real_aws_tools(monkeypatch):

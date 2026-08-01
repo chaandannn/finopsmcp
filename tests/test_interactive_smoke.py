@@ -172,10 +172,20 @@ def test_setup_aws_no_creds_screen_renders_without_crash(sandbox_env):
     traceback appeared. Then it's watching, so we let the harness Ctrl-C/kill it."""
     out, _ = _drive(
         [FINOPS, "setup", "aws"],
-        [("Run `aws configure sso` for you now?", "n\n")],
+        # The prompt wording depends on the machine: `aws configure sso` on CLI
+        # v2, `aws configure` on v1, and neither when the CLI is absent. Match
+        # the invariant part so this drives the screen on any runner.
+        [("for you now?", "n\n")],
         sandbox_env,
         timeout=9,
     )
     assert "Traceback" not in out, f"traceback in no-creds screen:\n{out[-800:]}"
     assert "No AWS credentials found" in out
-    assert "aws configure sso" in out                     # the guided command is shown
+    # Assert the screen offers SOME next step, not one specific command. Pinning
+    # "aws configure sso" made this a test of the runner's AWS CLI rather than of
+    # nable: it is v2-only, so the assertion silently depended on which CLI
+    # happened to be installed, and broke the moment nable started recommending
+    # correctly per version.
+    assert any(s in out for s in ("aws configure", "brew install awscli",
+                                  "CloudShell", "access key")), (
+        f"no-creds screen offered no way forward:\n{out[-800:]}")

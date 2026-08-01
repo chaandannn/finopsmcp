@@ -42,8 +42,8 @@ class GCPConnector(BaseConnector):
         )
         if has_creds and self._billing_account_ids:
             return True
-        from ..ambient import detect_gcp
-        amb = detect_gcp()
+        from ..ambient import PROBES
+        amb = PROBES["gcp"]()
         if amb.usable and not self._billing_account_ids:
             self._billing_account_ids = amb.scopes
         return amb.usable

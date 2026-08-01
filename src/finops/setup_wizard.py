@@ -635,11 +635,15 @@ def _confirm_cost_explorer(session) -> None:
             _warn(f"Connected, but could not confirm Cost Explorer: {ce_err}")
 
 
-def _emit_provider_connected(auth_method: str) -> None:
+def _emit_provider_connected(auth_method: str, provider: str = "aws") -> None:
+    """Record a connect. `provider` used to be hardcoded to "aws", so an ambient
+    Azure or GCP connect was reported as AWS and the funnel read as AWS-only no
+    matter what people actually connected. Defaulted rather than required so the
+    existing AWS call sites keep working unchanged."""
     try:
         from . import telemetry as _tel
         _tel._send_event(_tel._get_install_id(), "provider_connected", {
-            "provider": "aws",
+            "provider": provider,
             "auth_method": auth_method,
             "multi_account": True,
         })
