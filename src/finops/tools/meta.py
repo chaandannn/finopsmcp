@@ -617,6 +617,27 @@ async def list_savings_recommendations(
     # Learning loop: on the actionable (open) view, rank + suppress per what this
     # customer actually acts on. Propose-only; a no-op until the ledger has signal.
     if status in (None, "open"):
+        # Critique before ranking: a claim that did not survive review must not be
+        # ranked on the figure it just lost, and must not be counted in the
+        # headline total we are asking someone to believe. Deterministic only by
+        # default, so this costs nothing and never leaves the machine.
+        try:
+            from ..recommendations.critique import critique
+            recs = critique(recs, savings_key="estimated_monthly_savings_usd")
+            out["recommendations"] = recs
+            retracted = [r for r in recs if not (r.get("critique") or {}).get("survived", True)]
+            if retracted:
+                out["open_potential_usd"] = round(
+                    sum(r.get("estimated_monthly_savings_usd") or 0
+                        for r in recs if r["status"] == "open"), 2)
+                out["retracted_count"] = len(retracted)
+                out["critique_note"] = (
+                    f"{len(retracted)} recommendation(s) did not survive review and are shown "
+                    "as investigations with a size band instead of a dollar figure. "
+                    "Their `critique.objections` say why.")
+        except Exception as exc:
+            _srv.log.debug("critique skipped in list_savings_recommendations: %s", exc)
+
         try:
             from ..recommendations.learning import customer_signal, rescore
             sig = customer_signal()
@@ -632,7 +653,10 @@ async def list_savings_recommendations(
                 out["suppressed_by_context"] = ctx_suppressed
                 out["suppressed_by_context_count"] = len(ctx_suppressed)
                 out["open_potential_usd"] = round(
-                    sum(r["estimated_monthly_savings_usd"] for r in rs["ranked"]
+                    # `or 0`: a critiqued-down recommendation carries None here, and
+                    # summing it raises. It is also correctly excluded from a total
+                    # we are presenting as real money.
+                    sum(r.get("estimated_monthly_savings_usd") or 0 for r in rs["ranked"]
                         if r["status"] == "open"), 2)
             if any(s.get("coverage") != "COLD" for s in sig.get("by_source", [])):
                 out["learning_note"] = ("Ranked for you from which recommendation types you act on. "

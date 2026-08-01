@@ -1926,6 +1926,17 @@ async def run_full_cost_audit(
     # spend numbers are untouched; a cold ledger leaves the dollar order intact.
     # Suppressed-for-you sources sink to the bottom rather than being removed.
     learned_note = None
+    # Critique first, then rank. A finding whose claim was just retracted must not
+    # be ranked on the dollar figure it lost, so this has to run BEFORE rescore.
+    # Deterministic falsifiers only here (no network, no LLM unless opted in), so
+    # a free audit stays free. Never drops a finding: the worst case is a
+    # downgrade to an investigation with a magnitude band instead of a figure.
+    try:
+        from ..recommendations.critique import critique
+        findings = critique(findings, savings_key="monthly_savings")
+    except Exception as exc:
+        _srv.log.debug("critique skipped in run_full_cost_audit: %s", exc)
+
     try:
         from ..recommendations.learning import customer_signal, rescore
         sig = customer_signal()
@@ -1943,8 +1954,18 @@ async def run_full_cost_audit(
     if not top:
         return "No savings opportunities found. Your infrastructure looks well-optimized, or no AWS account is connected."
 
-    total_monthly = sum(f["monthly_savings"] for f in top)
+    # A finding the critique retracted carries None, not a number, and it must not
+    # be counted toward a total we are asking someone to believe. `or 0` keeps it
+    # out of the headline while the row below still shows its magnitude band.
+    total_monthly = sum(f.get("monthly_savings") or 0 for f in top)
     total_annual = total_monthly * 12
+
+    def _savings_cell(f: dict) -> str:
+        """The dollar figure, or the band when the claim did not survive review."""
+        v = f.get("monthly_savings")
+        if v is None:
+            return f"{f.get('magnitude', 'unconfirmed')} (needs confirming)"
+        return f"${v:,.2f}"
 
     # Show a Confidence column only when at least one shown finding carries real
     # learned signal, so a cold ledger keeps the original clean 4-column table.
@@ -1972,12 +1993,12 @@ async def run_full_cost_audit(
         lines.append("|---|-------------|----------|---------------|--------------------------|")
         for i, f in enumerate(top, 1):
             conf = _confidence_label(f) or "-"
-            lines.append(f"| {i} | {f['title']} | {f['category']} | ${f['monthly_savings']:,.2f} | {conf} |")
+            lines.append(f"| {i} | {f['title']} | {f['category']} | {_savings_cell(f)} | {conf} |")
     else:
         lines.append("| # | Opportunity | Category | Monthly Saving |")
         lines.append("|---|-------------|----------|---------------|")
         for i, f in enumerate(top, 1):
-            lines.append(f"| {i} | {f['title']} | {f['category']} | ${f['monthly_savings']:,.2f} |")
+            lines.append(f"| {i} | {f['title']} | {f['category']} | {_savings_cell(f)} |")
 
     if learned_note:
         lines.append("")
