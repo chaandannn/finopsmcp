@@ -124,12 +124,21 @@ def _fail(out, code: int, lines: list[str], error_class: str, t0: float,
     print(_dim(DOCS_LINE), file=out)
     # version + exception CLASS NAME only (never the message: messages carry
     # paths and account details). Without these, a month of real failures was
-    # one opaque "other" bucket nobody could diagnose remotely.
+    # one opaque "other" bucket nobody could diagnose remotely. `site` is the
+    # caller's line, stamped here so every _fail call, present and future, is
+    # locatable: line numbers drift across releases, but every event also
+    # carries the version, and the pair pins the exact statement.
     from . import __version__ as _v
+    _site = ""
+    try:
+        _site = f"cli_scan:{sys._getframe(1).f_lineno}"
+    except Exception:
+        pass
     _emit(
         "cli_scan_failed",
         {"error_class": error_class, "duration_s": round(time.time() - t0, 1),
-         "version": _v, "exc_type": type(exc).__name__ if exc else ""},
+         "version": _v, "exc_type": type(exc).__name__ if exc else "",
+         "site": _site},
         wait=True,
     )
     return code
@@ -743,7 +752,7 @@ def run(args) -> int:
                 return _fail(out, EXIT_EXPIRED, [
                     "your AWS session expired mid-run",
                     f"  fix: `aws sso login --profile {profile}`, then rerun",
-                ], "expired", t0)
+                ], "expired", t0, exc=exc)
             # any other CE hiccup: proceed without the spend headline
 
     override = getattr(args, "regions", None)
