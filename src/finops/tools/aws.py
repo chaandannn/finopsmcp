@@ -181,6 +181,7 @@ async def connect_aws(account_id: str = "") -> dict:
         account_id: The 12-digit account to connect, from the candidate list a
             no-argument call returns. Omit to just list what's available.
     """
+    from ..cloudshell import COMMAND as _CLOUDSHELL_CMD
     from ..setup_wizard import (
         _detect_aws_candidates, _emit_provider_connected, _auto_aws_name,
         _detect_sso_profiles_needing_login,
@@ -226,8 +227,11 @@ async def connect_aws(account_id: str = "") -> dict:
                    if sso_pending else "")
             ),
             "how_to_connect": [
-                "Fastest, in AWS CloudShell (already signed in): run "
-                "'pip install finops-mcp && finops welcome' and it uses CloudShell's own credentials.",
+                # The command comes from cloudshell.py so the model never quotes a
+                # stale one; the old literal here told users to pip install a
+                # package their CloudShell's Python 3.9 cannot resolve.
+                f"Fastest, in AWS CloudShell (already signed in): run '{_CLOUDSHELL_CMD}' "
+                "and it uses CloudShell's own credentials.",
                 "Or create a read-only access key: AWS console -> IAM -> your user -> "
                 "Security credentials -> Create access key, then run 'finops setup aws'.",
             ],

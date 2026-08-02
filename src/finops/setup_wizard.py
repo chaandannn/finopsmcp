@@ -956,9 +956,10 @@ def _guide_and_watch_for_creds(have_ids: set):
     # the CLI at all before starting the watch.
     if login_failed:
         print("  That did not produce credentials. Two ways through:\n")
+        from .cloudshell import COMMAND as _CS_CMD
         print("    1. AWS CloudShell (already signed in, no key to create):")
         print("         open the >_ icon in the AWS console, then run")
-        print("         pip install finops-mcp && finops welcome\n")
+        print(f"         {_CS_CMD}\n")
         try:
             from .security.iam_setup import quick_create_available, quick_create_url
             if quick_create_available():
@@ -1015,10 +1016,11 @@ def _print_one_click_key_offer(region: str = "us-east-1") -> None:
     # detection fires there and shows a real bill in seconds, no key to mint, no
     # console clicking, nothing hosted by nable. This is the single biggest lever
     # for getting a no-creds user to first value inside the 5-10 minute window.
+    from .cloudshell import COMMAND as _CS_CMD
     print(
         "\n  Fastest with no local key, AWS CloudShell (already signed in):\n"
         "    1. Open AWS CloudShell (the >_ terminal icon, top of the console).\n"
-        "    2. Run:  pip install finops-mcp && finops welcome\n"
+        f"    2. Run:  {_CS_CMD}\n"
         "    nable uses CloudShell's own credentials and shows your real bill on the spot.\n"
     )
     # Default path for a local/editor key: fully local. No nable-hosted step,
