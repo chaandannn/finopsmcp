@@ -198,10 +198,19 @@ def test_no_creds_offer_leads_with_cloudshell_fast_path(capsys):
     seconds with nothing to mint. This is the lever for first value in <10 min."""
     from finops.setup_wizard import _print_one_click_key_offer
 
+    from finops.cloudshell import COMMAND
+
     _print_one_click_key_offer(region="us-east-1")
     out = capsys.readouterr().out
     assert "CloudShell" in out
-    assert "pip install finops-mcp && finops welcome" in out
+    # Assert the command the module OWNS, not a literal. This test previously
+    # pinned "pip install finops-mcp && finops welcome", which cannot resolve on
+    # CloudShell's Python 3.9 and runs the editor wizard in a shell with no
+    # editor. The test encoded the bug and kept it green for months; sourcing the
+    # command from cloudshell.py means the assertion can never drift from what
+    # users are actually told again.
+    assert COMMAND in out
+    assert "pip install finops-mcp" not in out
     # The local key path must still be present, just no longer the only option.
     assert "Create access key" in out
 

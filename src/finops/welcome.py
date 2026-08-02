@@ -855,9 +855,21 @@ def run_welcome_flow(demo: bool = False) -> None:
     if not shown:
         # Lead with the one-click read-only key when it's published: a no-creds
         # user gets connected in two copy-pastes instead of hand-minting a key.
+        # Cloud Shell first. It is the only connect path that works identically on
+        # AWS, Azure and GCP, needs no key minted and nothing installed locally,
+        # and it is the ONLY path that reaches a laptop whose corporate proxy or
+        # TLS interception blocks the provider outright (a third of the machines
+        # that attempted a scan in the 30 days to 2026-08-01 failed exactly that
+        # way, instantly, and no local fix can help them).
+        from .cloudshell import COMMAND as _CS_CMD
+        _line(f"  {green('Fastest')}, your cloud's own browser terminal, already signed in:")
+        _line(dim("    Open the >_ icon in the AWS console, Azure portal, or Google Cloud console, then paste:"))
+        _line(f"    {cyan(_CS_CMD)}")
+        _line(dim("    Read-only. Nothing is installed on this machine and no key is created."))
+        _blank()
         _oneclick = _oneclick_aws_url()
         if _oneclick:
-            _line(f"  {green('Fastest')}, one-click read-only AWS key, no local creds needed:")
+            _line(dim("  Or a one-click read-only AWS key, if you would rather connect this machine:"))
             _line(f"    {link(_oneclick)}")
             _line(dim("    Click it, create the stack, then choose 1 below and paste the two outputs."))
             _blank()
