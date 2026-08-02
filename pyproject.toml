@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "finops-mcp"
-version = "0.8.200"
+version = "0.8.201"
 description = "Ask Claude about your AWS, Azure, GCP, and SaaS costs. MCP server with anomaly detection, rightsizing, and Jira ticketing."
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -47,7 +47,7 @@ dependencies = [
     # install stays small and the first cold `uvx` launch is fast. They are
     # imported lazily, and ambient detection reports a missing SDK as "not found"
     # rather than raising, so an AWS-only install never needs them. (This used to
-    # say is_configured() was env-var-only. Since 0.8.200 it probes the full
+    # say is_configured() was env-var-only. Since 0.8.201 it probes the full
     # credential chain for every cloud; the extras stay optional because the
     # probe degrades, not because nothing looks.)
     "boto3>=1.34.0",
