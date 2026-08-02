@@ -137,3 +137,24 @@ def test_the_cloud_menu_choice_is_instrumented():
     for label in ('"aws"', '"ai_keys"', '"azure"', '"gcp"', '"skip"'):
         assert label in block, f"menu choice {label} unmapped"
     assert "aborted" in block, "Ctrl-C must be distinguishable from choosing skip"
+
+
+# ── 4. value comes before the editor ──────────────────────────────────────────
+
+def test_the_first_run_shows_a_number_before_asking_about_editors():
+    """The reorder itself. The old flow configured editors as step 2 and showed
+    a number as step 3, so the first question a new user ever got was about MCP
+    config files; 118 machines entered and 109 left without a trace. Pin the
+    ORDER in the source of run_welcome_flow: the credential probe and the value
+    step must both appear before the editor-config call."""
+    import inspect
+
+    from finops import welcome
+
+    src = inspect.getsource(welcome.run_welcome_flow)
+    probe = src.index("detect_all")
+    value = src.index("See your first number")
+    editor = src.index("_configure_mcp_clients")
+    finish = src.index("You're set up.")
+    assert value < probe < editor < finish, (
+        "first-run order must be: value step -> credential probe -> editor config -> finish")

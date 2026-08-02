@@ -740,11 +740,17 @@ def run_welcome_flow(demo: bool = False) -> None:
     # column out of alignment (the previous hand-padded spacing did exactly
     # that, each row landing its status text one column further right or
     # left than the last).
-    _STEP_LABEL_W = 16
+    _STEP_LABEL_W = 24  # widest label ("See your first number") + 3
+    # Value before bureaucracy. This flow used to configure editors as step 2
+    # and show a number as step 3, so the first question a brand-new user ever
+    # got was about MCP config files. 118 machines entered this flow in the 30
+    # days before the swap and 109 left without a trace. Someone with
+    # credentials on the machine should see their own dollars before being
+    # asked anything about editors.
     for _n, _label, _status, _state in (
         (1, "Install", "done", "done"),
-        (2, "Connect editor", "writing your MCP config", "active"),
-        (3, "Connect a cloud", "AWS, Azure, or GCP", "pending"),
+        (2, "See your first number", "reading local credentials", "active"),
+        (3, "Connect your editor", "Claude, Cursor, Claude Code", "pending"),
     ):
         _padded = _label.ljust(_STEP_LABEL_W)
         if _state == "done":
@@ -757,27 +763,12 @@ def run_welcome_flow(demo: bool = False) -> None:
     _line(_rule())
     _blank()
 
-    # Step 2: auto-configure every MCP client we can find (Claude Desktop, Cursor)
-    # and surface the exact command for Claude Code. Honest about what got wired,
-    # so a Cursor/Claude Code user is never told "you're set up" with nothing written.
-    _line(bold("Step 2, Connecting nable to your editor"))
+    # Step 2: see a number. Zero-config AWS first, then a menu. The editor comes
+    # AFTER: a user who has just seen their own bill has a reason to wire it into
+    # Claude; a user who has seen nothing is answering config questions on faith.
+    _line(bold("Step 2, See your first number"))
     _blank()
     client_result = {"configured": [], "manual": []}
-    try:
-        from .setup_wizard import _configure_mcp_clients
-        client_result = _configure_mcp_clients()
-    except (KeyboardInterrupt, EOFError):
-        _line(dim(f"  Skipped. Run '{_cli('setup claude')}' later."))
-    except Exception:
-        _line(dim(f"  Could not auto-configure. Run '{_cli('setup claude')}' later."))
-    _blank()
-    _line(_rule())
-    _blank()
-
-    # Step 3: see a number. Zero-config AWS first, then a menu, and a demo
-    # fallback so nobody ever leaves the terminal without seeing value.
-    _line(bold("Step 3, See your first number"))
-    _blank()
 
     shown = False
 
@@ -962,6 +953,24 @@ def run_welcome_flow(demo: bool = False) -> None:
             _offer_budget_guardrail()
         except Exception:
             pass
+
+    # Step 3: auto-configure every MCP client we can find (Claude Desktop, Cursor)
+    # and surface the exact command for Claude Code. Honest about what got wired,
+    # so a Cursor/Claude Code user is never told "you're set up" with nothing
+    # written. Deliberately after the value moment: the number is the reason to
+    # want this in an editor at all.
+    _line(_rule())
+    _blank()
+    _line(bold("Step 3, Put nable in your editor"))
+    _blank()
+    try:
+        from .setup_wizard import _configure_mcp_clients
+        client_result = _configure_mcp_clients()
+    except (KeyboardInterrupt, EOFError):
+        _line(dim(f"  Skipped. Run '{_cli('setup claude')}' later."))
+    except Exception:
+        _line(dim(f"  Could not auto-configure. Run '{_cli('setup claude')}' later."))
+    _blank()
 
     # Finish, honest about which clients are wired, and the restart cliff. MCP
     # clients only load servers at startup, so a user with the editor already open
