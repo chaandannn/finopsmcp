@@ -117,13 +117,19 @@ def _emit(event: str, props: dict, wait: bool) -> None:
 
 # ── failure rendering: problem + cause + exact fix + docs link, never a trace ──
 
-def _fail(out, code: int, lines: list[str], error_class: str, t0: float) -> int:
+def _fail(out, code: int, lines: list[str], error_class: str, t0: float,
+          exc: Exception | None = None) -> int:
     for line in lines:
         print(line, file=out)
     print(_dim(DOCS_LINE), file=out)
+    # version + exception CLASS NAME only (never the message: messages carry
+    # paths and account details). Without these, a month of real failures was
+    # one opaque "other" bucket nobody could diagnose remotely.
+    from . import __version__ as _v
     _emit(
         "cli_scan_failed",
-        {"error_class": error_class, "duration_s": round(time.time() - t0, 1)},
+        {"error_class": error_class, "duration_s": round(time.time() - t0, 1),
+         "version": _v, "exc_type": type(exc).__name__ if exc else ""},
         wait=True,
     )
     return code
@@ -182,6 +188,13 @@ def _classify_boto_error(exc: Exception) -> str:
         return "bad-creds"
     if code in ("AccessDenied", "AccessDeniedException", "UnauthorizedOperation"):
         return "denied"
+    # Cannot reach AWS at all: proxy, VPN, TLS interception, DNS, offline. These
+    # were 97% of real-world scan failures ("other", duration 0s) before they
+    # were classified, because a corporate machine fails the first STS call
+    # instantly and none of these exception names were mapped.
+    if name in ("EndpointConnectionError", "ConnectTimeoutError", "ReadTimeoutError",
+                "ProxyConnectionError", "ConnectionClosedError", "SSLError"):
+        return "network"
     return "other"
 
 
@@ -644,13 +657,13 @@ def run(args) -> int:
             return _fail(out, EXIT_EXPIRED, [
                 "your AWS session has expired",
                 f"  fix: `aws sso login --profile {profile}`  (or refresh your temporary credentials)",
-            ], "expired", t0)
+            ], "expired", t0, exc=exc)
         if klass == "no-creds":
             return _fail(out, EXIT_NO_CREDS, [
                 "no usable AWS credentials found",
                 "  fix: `aws configure sso` (company SSO) or `aws configure` (access key)",
                 "  then: `nable connect` waits and connects the moment they appear",
-            ], "no-creds", t0)
+            ], "no-creds", t0, exc=exc)
         if klass == "denied":
             return _fail(out, EXIT_DENIED, [
                 "this AWS identity cannot call sts:GetCallerIdentity",
@@ -678,25 +691,32 @@ def run(args) -> int:
                 "your AWS config could not be parsed",
                 f"  {exc}",
                 "  fix: open that file and check for an unclosed [section] header or a stray line",
-            ], "config-broken", t0)
+            ], "config-broken", t0, exc=exc)
         if klass == "no-region":
             return _fail(out, EXIT_CONFIG, [
                 "no AWS region is configured",
                 "  fix: `export AWS_DEFAULT_REGION=us-east-1` (or set `region` in ~/.aws/config)",
-            ], "no-region", t0)
+            ], "no-region", t0, exc=exc)
         if klass == "bad-creds":
             return _fail(out, EXIT_NO_CREDS, [
                 "AWS rejected these credentials",
                 f"  profile {profile!r}: the access key is unknown, revoked, or the secret does not match",
                 "  fix: `aws sts get-caller-identity` to confirm, then `aws configure` to replace them",
-            ], "bad-creds", t0)
+            ], "bad-creds", t0, exc=exc)
+        if klass == "network":
+            return _fail(out, 1, [
+                "cannot reach AWS from this machine",
+                f"  {type(exc).__name__}: the request never got an answer",
+                "  fix: check VPN / proxy. Behind a corporate proxy, set HTTPS_PROXY;",
+                "  with TLS interception, point AWS_CA_BUNDLE at your company root cert",
+            ], "network", t0, exc=exc)
         # Genuinely unclassified. Keep the engine string so it is at least
         # reportable, and say what to do with it.
         return _fail(out, 1, [
             f"could not reach AWS: {exc}",
             "  fix: `nable scan --debug` prints the full traceback",
             "  if that does not explain it, please open an issue with the output",
-        ], "other", t0)
+        ], "other", t0, exc=exc)
 
     # Scope is always labeled, never detected: no organizations API, no
     # permission trap, never wrong. Org-aware payer detection waits for CUR.
