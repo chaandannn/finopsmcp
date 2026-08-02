@@ -880,11 +880,28 @@ def run_welcome_flow(demo: bool = False) -> None:
         _line(f"  {dim('5)')} Skip for now")
         _blank()
         choice = "5"
+        aborted = False
         try:
             choice = input("  Choice [1]: ").strip() or "1"
         except (KeyboardInterrupt, EOFError):
             choice = "5"
+            aborted = True
         _blank()
+        # The single darkest spot in the funnel: 118 machines reached this menu
+        # in 30 days and 109 were never heard from again, and nothing recorded
+        # what they picked or whether they Ctrl-C'd out. The choice (never the
+        # input beyond it) is the difference between "they skipped" and "they
+        # tried AWS and died downstream". Imported here because the `_emit_step`
+        # binding above only exists on the ambient-creds-found path, and the
+        # no-creds path is precisely the one this measures.
+        try:
+            from .setup_wizard import _emit_step as _menu_emit
+            _menu_emit("cloud_menu_choice",
+                       choice={"1": "aws", "2": "ai_keys", "3": "azure",
+                               "4": "gcp", "5": "skip"}.get(choice, "other"),
+                       aborted=aborted)
+        except Exception:
+            pass
 
         if choice == "1":
             from .setup_wizard import setup_aws_account

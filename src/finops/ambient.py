@@ -71,12 +71,70 @@ class Ambient:
         return self.found and (bool(self.scopes) or self.provider == "aws")
 
 
+class _quiet_sdk_loggers:
+    """Silence the cloud SDK loggers while ANY probe is running.
+
+    azure-identity logs its ENTIRE failed credential chain at WARNING when
+    DefaultAzureCredential finds nothing, which is the normal case on almost
+    every machine. With no logging config (a CLI), Python's last-resort handler
+    prints all ~25 lines to stderr, so onboarding's "Step 3, see your first
+    number" opened with a wall of Azure SDK diagnostics. Dogfooded 2026-08-01:
+    1.7KB of error text on a clean machine. "Nothing found" is an answer here,
+    not an incident, so nothing below ERROR leaves a probe.
+
+    Logger levels are process-global and detect_all runs its probes
+    CONCURRENTLY, so this is refcounted: the first probe in silences, the last
+    probe out restores. A naive per-probe save/restore let the fastest probe
+    (usually AWS) restore the levels while Azure was still mid-chain, which
+    re-leaked the noise on a timing roll of the dice; the subprocess test
+    caught it failing at ~1.3s and passing at ~2.3s.
+    """
+    _NAMES = ("azure", "azure.identity", "azure.core", "google", "google.auth",
+              "urllib3", "msal")
+    _lock = None   # created lazily so module import stays trivially cheap
+    _depth = 0
+    _saved: list = []
+
+    def __enter__(self):
+        import logging
+        import threading
+
+        cls = type(self)
+        if cls._lock is None:
+            cls._lock = threading.Lock()
+        with cls._lock:
+            if cls._depth == 0:
+                cls._saved = []
+                for name in cls._NAMES:
+                    lg = logging.getLogger(name)
+                    cls._saved.append((lg, lg.level, lg.propagate))
+                    lg.setLevel(logging.CRITICAL)
+                    lg.propagate = False
+            cls._depth += 1
+        return self
+
+    def __exit__(self, *exc):
+        cls = type(self)
+        with cls._lock:
+            cls._depth -= 1
+            if cls._depth == 0:
+                for lg, level, prop in cls._saved:
+                    lg.setLevel(level)
+                    lg.propagate = prop
+                cls._saved = []
+        return False
+
+
 def _run(fn, timeout: float = PROBE_TIMEOUT_S):
     """Call fn with a hard timeout, swallowing everything. A probe that hangs or
     explodes is just 'nothing found'; it must never take onboarding with it."""
+    def _quietly():
+        with _quiet_sdk_loggers():
+            return fn()
+
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-            return ex.submit(fn).result(timeout=timeout)
+            return ex.submit(_quietly).result(timeout=timeout)
     except Exception:
         return None
 
