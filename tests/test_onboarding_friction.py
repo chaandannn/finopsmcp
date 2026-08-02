@@ -158,3 +158,28 @@ def test_the_first_run_shows_a_number_before_asking_about_editors():
     finish = src.index("You're set up.")
     assert value < probe < editor < finish, (
         "first-run order must be: value step -> credential probe -> editor config -> finish")
+
+
+# ── 5. no failure site is anonymous ───────────────────────────────────────────
+
+def test_every_scan_failure_names_its_call_site():
+    """An external machine on 0.8.201 failed scan 3 times in 2 seconds with
+    error_class 'other' and an empty exc_type, and nothing said WHICH of the
+    unclassified _fail sites it died at. _fail now stamps the caller's line
+    into the event, so combined with the version every failure is locatable."""
+    import sys as _sys
+    import time as _time
+
+    from finops import cli_scan
+
+    events = []
+    orig = cli_scan._emit
+    try:
+        cli_scan._emit = lambda e, p, wait: events.append((e, p))
+        cli_scan._fail(_sys.stdout, 1, ["x"], "other", _time.time())
+    finally:
+        cli_scan._emit = orig
+    (_, props), = events
+    assert props["site"].startswith("cli_scan:"), props
+    line = int(props["site"].split(":")[1])
+    assert line > 0
