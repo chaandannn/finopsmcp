@@ -10,7 +10,7 @@
       "name": "nable",
       "source": "./plugins/nable",
       "description": "Local-first FinOps copilot. 180+ tools for cost queries, anomaly detection, rightsizing, and PRs across AWS, Azure, GCP, Kubernetes, and SaaS. Includes a /nable:connect command. Credentials stay on your machine.",
-      "version": "0.8.201",
+      "version": "0.8.202",
       "author": {
         "name": "Chandan Bukkapatnam",
         "email": "chbu0285@colorado.edu"

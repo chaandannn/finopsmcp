@@ -2,6 +2,10 @@
 
 All notable changes to finops-mcp (nable).
 
+## 0.8.202
+
+- **Every scan failure now says where it happened.** Within an hour of 0.8.201 shipping, a brand-new machine failed `nable scan` three times in two seconds with an unclassified error and no exception type, from a call site the telemetry could not name. Failure events now carry the call-site line and the version, which together pin the exact statement, so no failure anywhere in the scan can be anonymous again.
+
 ## 0.8.201
 
 - **The first run shows you a number before it asks you anything.** It used to configure MCP clients as step 2 and show a cost figure as step 3, so the first question a brand-new user ever got was about editor config files. Of the 118 machines that entered that flow in the last thirty days, 109 left without a trace. The order is now install, see your first number, then put nable in your editor: a silent credential probe, a one-keystroke read-only scan when credentials already exist on the machine, and the connect menu with the one-click read-only AWS key when they do not. The editor step comes after the value moment on purpose, because the number is the reason to want this in an editor at all.
