@@ -159,7 +159,7 @@ def _item_html(item: BriefItem, rank: int) -> str:
     <span class="chip {chip_cls}">{escape(chip_txt)}</span>
     {amount_html}
   </div>
-  <p class="words">{escape(item.in_words())}</p>
+  <p class="words">{escape(item.in_words(include_map=False))}</p>
 
   <div class="label">What it touches</div>
   {_map_html(m)}
@@ -221,7 +221,7 @@ def to_markdown(brief: Brief) -> str:
         head = f"## {n:02d}. {item.title}"
         if item.monthly_usd is not None:
             head += f"  ({_money(item.monthly_usd)})"
-        lines = [head, "", item.in_words(), "",
+        lines = [head, "", item.in_words(include_map=False), "",
                  f"**What it touches:** {m.summary()}  _({chip})_", "",
                  f"**Drafted change:** {item.drafted_fix.get('summary', '')}"]
         for s in item.drafted_fix.get("steps") or []:

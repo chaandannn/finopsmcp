@@ -81,12 +81,17 @@ class BriefItem:
                    or self.finding.get("issue")
                    or self.finding.get("resource_id") or "Finding")
 
-    def in_words(self) -> str:
+    def in_words(self, *, include_map: bool = True) -> str:
         """The explanation for someone who does not read AWS resource ids.
 
         Deterministic and assembled from what the finding already proved. No
         model call: this text is the trust surface, and a fluent invented
         sentence here costs more than it saves.
+
+        include_map=False for surfaces that render the resource map as its own
+        section (the dashboard page, the markdown brief). Slack and the email
+        subject line have no such section, so they keep it and stay
+        self-contained.
         """
         bits = []
         why = str(self.finding.get("why") or self.finding.get("reason") or "").strip()
@@ -101,7 +106,8 @@ class BriefItem:
                 self.finding.get("rough_monthly"))
             bits.append(f"The amount is unconfirmed, roughly {band}")
 
-        bits.append(self.resource_map.summary().rstrip("."))
+        if include_map:
+            bits.append(self.resource_map.summary().rstrip("."))
         return ". ".join(b for b in bits if b) + "."
 
     def to_dict(self) -> dict[str, Any]:

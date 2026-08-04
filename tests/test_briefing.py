@@ -401,3 +401,30 @@ def test_the_email_subject_carries_the_number():
     assert "$212/mo" in e["subject"]
     assert to_email(build_brief([], today=TODAY, use_llm=False, now=NOW))["subject"] \
         == "nable: nothing new to act on"
+
+
+def test_in_words_drops_the_map_where_the_map_has_its_own_section():
+    """The dashboard and markdown render the resource map as its own block, so
+    repeating the same sentence in the summary reads as a stutter. Slack has no
+    such block and keeps it."""
+    from finops.briefing.render import to_html, to_markdown
+
+    b = build_brief([_vol()], today=TODAY, use_llm=False, now=NOW)
+    item = b.items[0]
+    assert "Nothing else references this" in item.in_words()
+    assert "Nothing else references this" not in item.in_words(include_map=False)
+    # Markdown states it once, in its own section, not twice.
+    assert to_markdown(b).count("Nothing else references this") == 1
+    # The HTML draws the map instead of restating it, and the chip carries the
+    # verdict. The sentence should therefore not appear at all.
+    html = to_html(b)
+    assert "Nothing else references this" not in html
+    assert 'class="node">nothing<' in html
+    assert "nothing references it" in html          # the chip
+
+
+def test_slack_keeps_the_map_sentence_because_it_has_no_map_section():
+    from finops.briefing.render import to_slack_blocks
+
+    b = build_brief([_vol()], today=TODAY, use_llm=False, now=NOW)
+    assert "Nothing else references this" in str(to_slack_blocks(b))

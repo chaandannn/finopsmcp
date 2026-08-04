@@ -2572,7 +2572,7 @@ def main(args: list[str] | None = None) -> None:
         _GROUPS = [
             # "get answers" leads: help text is the CLI's homepage, and the
             # commands that produce value outrank the ones that configure it.
-            ("get answers", ["scan", "ai-budget"]),
+            ("get answers", ["scan", "brief", "ai-budget"]),
             ("start here", ["welcome", "connect", "doctor", "tools", "serve", "upgrade"]),
             ("clouds", ["aws", "aws-cur", "azure", "gcp"]),
             ("ai / llm providers", ["openai", "anthropic", "openrouter", "litellm",
@@ -2663,6 +2663,8 @@ def main(args: list[str] | None = None) -> None:
     # The value-producing commands register first (module is light: stdlib only).
     from .cli_scan import add_parser as _add_scan_parser
     _add_scan_parser(sub)
+    from .cli_brief import add_parser as _add_brief_parser
+    _add_brief_parser(sub)
     from .cli_ai_budget import add_parser as _add_ai_budget_parser
     _add_ai_budget_parser(sub)
 
@@ -3013,6 +3015,9 @@ def main(args: list[str] | None = None) -> None:
     elif parsed.cmd == "scan":
         from .cli_scan import run as _scan_run
         raise SystemExit(_scan_run(parsed))
+    elif parsed.cmd == "brief":
+        from .cli_brief import run as _brief_run
+        raise SystemExit(_brief_run(parsed))
     elif parsed.cmd == "ai-budget":
         from .cli_ai_budget import run as _ab_run
         raise SystemExit(_ab_run(parsed))
