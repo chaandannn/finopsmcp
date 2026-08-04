@@ -601,7 +601,8 @@ async def export_cost_report_csv(
     import csv
     import pathlib
 
-    _srv.require_role("analyst")
+    if err := _srv.require_role("analyst"):
+        return err
 
     aws = _srv._CLOUD_CONNECTORS.get("aws")
     if aws is None or not await aws.is_configured():
@@ -952,7 +953,8 @@ async def publish_cost_report_to_notion(
         - "Share this audit with the team"
 
     """
-    _srv.require_role("analyst")
+    if err := _srv.require_role("analyst"):
+        return err
 
     from ..connectors.saas.notion import NotionConnector
     notion = NotionConnector()

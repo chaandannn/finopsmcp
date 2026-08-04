@@ -2047,12 +2047,12 @@ def vault_rotate() -> None:
         _err(f"Key rotation failed: {e}")
         _warn("Credentials have NOT been re-encrypted. The old key is still active.")
         return
-    # Save new key only after rotation succeeded
-    if not Vault._save_keyring(new_key):
-        import stat
-        key_path = Path(os.environ.get("FINOPS_DATA_DIR", Path.home() / ".finops")) / "vault.key"
-        key_path.write_bytes(new_key)
-        key_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    # Save the new key only after rotation succeeded, through the same rule
+    # default() uses to read it back. This used to write the file ONLY when the
+    # keyring write failed, which is backwards: the file outranks the keyring on
+    # read, so a working keyring left the stale old key on disk and every
+    # credential became undecryptable on the next run.
+    Vault.persist_master_key(new_key)
     _ok("Key rotation complete")
 
 

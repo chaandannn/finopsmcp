@@ -73,6 +73,19 @@ def _keyring_disabled() -> bool:
     )
 
 
+def _vault_dir() -> Path:
+    """Where this vault's db + key live. Profile-aware, so a rotation under
+    FINOPS_PROFILE persists beside the db it just re-encrypted."""
+    profile = _active_profile()
+    if not profile:
+        return _data_dir()
+    import stat as _stat
+    data = Path.home() / ".finops" / "profiles" / profile
+    data.mkdir(parents=True, exist_ok=True)
+    data.chmod(_stat.S_IRWXU)
+    return data
+
+
 class VaultError(Exception):
     pass
 
@@ -365,14 +378,7 @@ class Vault:
         ~/.finops/profiles/{profile}/vault.db and the keyring service is
         prefixed with "nable-{profile}-".
         """
-        profile = _active_profile()
-        if profile:
-            import stat as _stat
-            data = Path.home() / ".finops" / "profiles" / profile
-            data.mkdir(parents=True, exist_ok=True)
-            data.chmod(_stat.S_IRWXU)
-        else:
-            data = _data_dir()
+        data = _vault_dir()
         db_path = data / "vault.db"
         key_path = data / "vault.key"
         keychain_only = os.environ.get("FINOPS_VAULT_KEYCHAIN_ONLY", "") == "1"
@@ -398,10 +404,27 @@ class Vault:
         if key is None:
             from cryptography.fernet import Fernet
             key = Fernet.generate_key()
-            saved = cls._save_keyring(key)
-            if not saved or not keychain_only:
-                cls._write_key_file(key_path, key)
-            log.info("Vault: generated new master key (keyring=%s, file=%s)",
-                     saved, not keychain_only or not saved)
+            cls.persist_master_key(key)
 
         return cls(db_path, key)
+
+    @classmethod
+    def persist_master_key(cls, key: bytes) -> None:
+        """Write a master key to exactly the stores default() will read back.
+
+        Shared by first-run generation and by key rotation. Rotation used to
+        have its own copy of this rule and had it inverted — it wrote the file
+        only when the keyring write FAILED, so on a machine with a working
+        keyring the stale old key stayed in vault.key, which default() reads
+        first, and every stored credential became undecryptable. One rule, one
+        implementation, so the two cannot drift again.
+        """
+        data = _vault_dir()
+        keychain_only = os.environ.get("FINOPS_VAULT_KEYCHAIN_ONLY", "") == "1"
+        saved = cls._save_keyring(key)
+        # The file is the primary read path. Skip it only when the user asked
+        # for keychain-only AND the keychain actually took the key.
+        if not saved or not keychain_only:
+            cls._write_key_file(data / "vault.key", key)
+        log.info("Vault: persisted master key (keyring=%s, file=%s)",
+                 saved, not keychain_only or not saved)

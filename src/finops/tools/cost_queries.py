@@ -1304,7 +1304,8 @@ async def get_focus_costs(
         - "Show costs in FOCUS format grouped by service category"
 
     """
-    _srv.require_role("viewer")
+    if err := _srv.require_role("viewer"):
+        return err
 
     from ..focus import normalize as _focus_normalize
     from dataclasses import asdict
@@ -1475,7 +1476,8 @@ async def slice_costs(
         via: Internal: how the slice was invoked.
 
     """
-    _srv.require_role("viewer")
+    if err := _srv.require_role("viewer"):
+        return err
     from ..slice import parse_spec, run_slice
     from ..slice.engine import derive_card
     from ..slice.spec import SliceSpecError
@@ -1702,7 +1704,8 @@ async def run_full_cost_audit(
         - "Find everything we could save"
 
     """
-    _srv.require_role("analyst")
+    if err := _srv.require_role("analyst"):
+        return err
 
     aws = _srv._CLOUD_CONNECTORS.get("aws")
     if aws is None or not await aws.is_configured():

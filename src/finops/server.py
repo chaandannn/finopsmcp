@@ -693,14 +693,18 @@ def _team_nudge(message: str, context: str = "") -> str | None:
         if get_status().mode != "free":
             return None
         found = _savings_found_monthly()
-        # Count the impression so the funnel is measurable: which nudges show, with
-        # what ROI multiple, is the difference between knowing which moment converts
-        # and guessing. Fire-and-forget, never blocks or fails the answer.
+        # Count the impression so the funnel is measurable: which nudge moment
+        # converts is the whole question. Fire-and-forget, never blocks the answer.
+        #
+        # The payload carries NO figure derived from the user's bill. It used to
+        # send savings_found_monthly and roi_multiple, which telemetry.py's own
+        # "What we never collect" list promises never leave the machine ("Cost
+        # figures or billing data"). roi_multiple was found / _PRO_MONTHLY_USD, so
+        # it reconstructed the dollar amount exactly even without the first field.
+        # The context alone answers the question the event exists to answer.
         try:
             from . import telemetry as _tel
             _tel._send_event(_tel._get_install_id(), "upgrade_nudge_shown", {
-                "savings_found_monthly": round(found, 2),
-                "roi_multiple": round(found / _PRO_MONTHLY_USD, 1) if found else 0,
                 "context": context or "generic",
             })
         except Exception:
