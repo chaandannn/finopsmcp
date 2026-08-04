@@ -68,11 +68,25 @@ def _advertised_names():
 
 
 def test_clean_machine_advertises_core_only():
+    """A machine with nothing connected sees ONLY what is useful with nothing
+    connected. core was 115 tools and ~31k tokens riding every message, ~90 of
+    which could answer nothing but "no accounts connected", charged to precisely
+    the user who had not connected yet. It is now ~21 tools and ~4k tokens."""
     names = _advertised_names()
-    # cost tools + connectors stay discoverable for the first-run flow
-    for must in ("get_cost_summary", "connect_aws", "connect_gcp", "connect_azure",
-                 "what_can_nable_do", "get_agent_team"):
+    # The connect path, diagnosis, and the two surfaces that need no cloud at all.
+    for must in ("connect_aws", "connect_gcp", "connect_azure",
+                 "what_can_nable_do", "get_agent_team", "nable_setup_status",
+                 "check_ai_budget", "check_action_policy",
+                 # the single cost tool kept visible on purpose: it is what the
+                 # model reaches for when a fresh user asks "what am I spending?",
+                 # and its no-accounts response is what starts an in-chat connect
+                 "get_cost_summary"):
         assert must in names, must
+    # The cross-provider cost surface is NOT advertised until a data source exists.
+    for hidden in ("get_cost_trends", "forecast_costs", "run_full_cost_audit",
+                   "slice_costs", "get_savings_summary", "list_savings_recommendations"):
+        assert hidden not in names, hidden
+    assert len(names) <= 30, f"clean-machine surface crept back up to {len(names)}"
     # provider families hidden
     for hidden in ("get_azure_budgets", "audit_gcp_waste", "get_kubernetes_costs",
                    "get_databricks_costs", "get_llm_costs", "create_ticket",
@@ -149,3 +163,52 @@ def test_token_weight_drops_meaningfully(monkeypatch):
     clean = [t for t in every if advertise(t.name)]
     full, filtered = weight(every), weight(clean)
     assert filtered < full * 0.8, f"expected >20% cut, got {full} -> {filtered}"
+
+
+# ── the cost family gate ──────────────────────────────────────────────────────
+
+def test_cost_tools_appear_once_a_data_source_connects(monkeypatch):
+    """The whole point of splitting core: the cross-provider cost surface is dead
+    weight until there is something to report on, then it must appear."""
+    tool_surface._reset_cache_for_tests()
+    assert "get_cost_trends" not in _advertised_names()
+
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIATEST")
+    tool_surface._reset_cache_for_tests()
+    names = _advertised_names()
+    for must in ("get_cost_trends", "forecast_costs", "run_full_cost_audit", "slice_costs"):
+        assert must in names, must
+
+
+def test_notifications_alone_do_not_unlock_cost_tools(monkeypatch):
+    """A Slack token is a place to SEND findings, not a source to read them from.
+    Gating on 'any family connected' rather than 'any DATA SOURCE connected' would
+    hand a user 94 cost tools that still have nothing to talk about."""
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")  # pragma: allowlist secret
+    tool_surface._reset_cache_for_tests()
+    fams = connected_families()
+    assert "notifications" in fams, "precondition: the Slack token registers a family"
+    assert not (fams & tool_surface._DATA_SOURCE_FAMILIES), "precondition: no data source"
+    assert "get_cost_trends" not in _advertised_names()
+
+
+def test_a_hidden_cost_tool_is_still_callable(monkeypatch):
+    """Hiding is advertisement-only. If a model names a hidden tool it must still
+    run, or the in-chat connect flow breaks the moment a tool is gated."""
+    import asyncio
+
+    from mcp.shared.memory import create_connected_server_and_client_session as connect
+
+    from finops import server
+
+    tool_surface._reset_cache_for_tests()
+    assert "get_cost_trends" not in _advertised_names()
+
+    async def go():
+        async with connect(server.mcp._mcp_server) as s:
+            return await s.call_tool("get_cost_trends", {})
+
+    r = asyncio.run(go())
+    text = "".join(getattr(c, "text", "") for c in r.content)
+    assert text, "a hidden tool returned nothing; it was not resolvable"
+    assert "Unknown tool" not in text and "not found" not in text.lower()
