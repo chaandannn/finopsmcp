@@ -132,7 +132,30 @@ def _claim_is_garbage(rec: dict, keys: tuple) -> str | None:
 
 
 def _age_days(rec: dict, *, today: date | None = None) -> float | None:
-    """Age of the resource in days, from whichever launch/creation field it carries."""
+    """Age of the resource in days, from whichever launch/creation field it carries.
+
+    A numeric `age_days` is checked FIRST because it is what the AWS waste
+    analyzers actually emit. They carry no date string at all, so until this
+    existed the full-month-on-a-new-resource falsifier — the headline check of
+    the whole critique pass — could never fire on the most common finding
+    source: a $5,000/mo claim on a three-day-old volume sailed through.
+
+    `idle_days` is deliberately NOT consulted. A volume idle for 74 days can be
+    three years old; conflating the two would retract correct findings.
+    """
+    for k in ("age_days", "resource_age_days"):
+        for src in (rec, rec.get("metadata") if isinstance(rec.get("metadata"), dict) else {}):
+            v = (src or {}).get(k)
+            if v is None or isinstance(v, bool):
+                continue
+            try:
+                f = float(v)
+            except (TypeError, ValueError):
+                continue
+            import math
+            if math.isfinite(f) and f >= 0:
+                return f
+
     raw = None
     for k in ("launch_time", "launched_at", "created_at", "creation_date", "start_time"):
         if rec.get(k):
