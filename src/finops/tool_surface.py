@@ -16,8 +16,14 @@ intact: connect_aws works, then the AWS tools are usable immediately and appear
 in the list after a tools/list_changed notification or an editor restart.
 
 Rules:
-  - core is always advertised (cross-provider cost/budget/anomaly/forecast tools,
-    connectors, meta).
+  - core is always advertised, and is deliberately SMALL: only what is useful
+    with zero providers connected (connect_*, status/diagnosis, the local agent
+    budget, the preflight guard). ~20 tools.
+  - cost holds the cross-provider cost/report/recommendation tools. They are not
+    provider-specific, but every one needs a data source, so they are advertised
+    only once some provider family is connected. On a fresh machine they would
+    each answer "no accounts connected", which is pure context tax on precisely
+    the user who has not connected yet.
   - a provider family is advertised when local signals say it is connected
     (env vars first, then vault key names, then accounts.yaml / kubeconfig).
     Detection never touches the network and is cached ~30s.
@@ -41,32 +47,64 @@ log = logging.getLogger(__name__)
 # ── the family map (every registered tool, exactly once) ──────────────────────
 
 _CORE: frozenset[str] = frozenset({
-    "acknowledge_anomaly",
+    # Advertised ALWAYS, including on a machine with nothing connected. The test
+    # for membership here is narrow: does this tool do something useful with ZERO
+    # providers connected? Connecting, diagnosing, discovering what is available,
+    # and the two surfaces that need no cloud at all (the local agent budget and
+    # the preflight/policy guard). Everything else lives in _COST below, because
+    # a tool that can only answer "no accounts connected" is pure context tax on
+    # the exact user who has not connected yet.
     "activate_pro",
-    "audit_duplicate_spend",
-    "audit_terraform_tags",
-    "benchmark_costs",
     "check_action_policy",
     "check_ai_budget",
-    "get_ai_budget_status",
-    "set_ai_budget",
-    "check_budget_status",
     "check_connector_health",
-    "check_notification_config",
-    "cleanup_idle_resources",
-    "compare_providers",
-    "connect_opencost",
-    # The provider connectors live in core deliberately: a machine with nothing
-    # connected exists to surface exactly these.
     "connect_aws",
     "connect_azure",
     "connect_gcp",
+    "connect_opencost",
+    "estimate_change_cost",
+    "estimate_terraform_cost",
+    # The one cost tool that stays visible with nothing connected, on purpose.
+    # A fresh user's first question is "what am I spending?", and the model needs
+    # something to reach for: get_cost_summary's no-accounts response names
+    # connect_aws/connect_gcp/connect_azure as callable next steps, which is how
+    # an in-chat connect actually starts. Without it the model can only answer
+    # from its own words. ~250 tokens is cheap insurance on the activation path.
+    "get_cost_summary",
+    "get_agent_team",
+    "get_ai_budget_status",
+    "list_accounts",
+    "list_connected_providers",
+    "list_profiles",
+    "list_vault_credentials",
+    "nable_setup_status",
+    "set_ai_budget",
+    "what_can_nable_do",
+    "whoami",
+})
+
+_COST: frozenset[str] = frozenset({
+    # Advertised once ANY provider is connected. These are cross-provider rather
+    # than provider-specific, so they cannot hang off the aws/azure/gcp families,
+    # but every one of them needs at least one data source to say anything. On a
+    # fresh machine they would each return "no accounts connected", so they stay
+    # out of the list until there is something to talk about.
+    #
+    # Hiding is advertisement-only: the call path resolves against the registry,
+    # so a model that names one of these still runs it, and connect_* fires
+    # tools/list_changed so they appear the moment a provider lands.
+    "acknowledge_anomaly",
+    "audit_duplicate_spend",
+    "audit_terraform_tags",
+    "benchmark_costs",
+    "check_budget_status",
+    "check_notification_config",
+    "cleanup_idle_resources",
+    "compare_providers",
     "create_api_key",
     "delete_alert_policy",
     "delete_budget",
     "dismiss_recommendation",
-    "estimate_change_cost",
-    "estimate_terraform_cost",
     "explain_cost_change",
     "explain_recent_cost_drivers",
     "export_board_summary",
@@ -74,10 +112,10 @@ _CORE: frozenset[str] = frozenset({
     "export_cost_report_csv",
     "fetch_invoice_emails",
     "forecast_costs",
+    "forget_cost_context",
     "generate_account_dashboard",
     "generate_terraform_tag_fixes",
     "get_account_anomalies",
-    "get_agent_team",
     "get_ai_engineering_report",
     "get_ai_kpis",
     "get_anomalies",
@@ -85,7 +123,6 @@ _CORE: frozenset[str] = frozenset({
     "get_commitment_analysis",
     "get_commitment_coverage_by_tag",
     "get_cost_history",
-    "get_cost_summary",
     "get_cost_summary_all_accounts",
     "get_cost_trends",
     "get_costs_by_service",
@@ -99,6 +136,7 @@ _CORE: frozenset[str] = frozenset({
     "get_idle_load_balancers",
     "get_instance_deep_analysis",
     "get_label_costs",
+    "get_learned_cost_context",
     "get_nable_roi",
     "get_ou_cost_breakdown",
     "get_pinned_view",
@@ -121,24 +159,20 @@ _CORE: frozenset[str] = frozenset({
     "get_view",
     "get_workload_costs",
     "identify_nonprod_scheduling_opportunities",
-    "list_accounts",
     "list_active_services",
     "list_alert_policies",
     "list_api_keys",
     "list_budgets",
-    "list_connected_providers",
     "list_idle_resources",
     "list_pinned_views",
-    "list_profiles",
     "list_savings_recommendations",
-    "list_vault_credentials",
     "list_views",
     "mark_recommendation_acted_on",
-    "nable_setup_status",
     "open_rightsizing_pr",
     "open_terraform_tag_pr",
     "pin_view",
     "recommend_database_savings_plans",
+    "remember_cost_context",
     "revoke_api_key",
     "run_attribution_now",
     "run_full_cost_audit",
@@ -148,16 +182,11 @@ _CORE: frozenset[str] = frozenset({
     "set_business_metrics",
     "slice_costs",
     "start_dashboard_server",
+    "suggest_cost_policies",
     "sync_budgets_from_yaml",
     "take_snapshot_now",
     "unpin_view",
     "verify_savings",
-    "remember_cost_context",
-    "get_learned_cost_context",
-    "forget_cost_context",
-    "suggest_cost_policies",
-    "what_can_nable_do",
-    "whoami",
 })
 
 _AWS: frozenset[str] = frozenset({
@@ -266,6 +295,7 @@ _TICKETS: frozenset[str] = frozenset({
 
 FAMILY_TOOLS: dict[str, frozenset[str]] = {
     "core": _CORE,
+    "cost": _COST,
     "aws": _AWS,
     "azure": _AZURE,
     "gcp": _GCP,
@@ -275,6 +305,13 @@ FAMILY_TOOLS: dict[str, frozenset[str]] = {
     "notifications": _NOTIFICATIONS,
     "tickets": _TICKETS,
 }
+
+# Families that actually carry spend data. Used to gate the cross-provider "cost"
+# family: notifications and tickets are places to SEND findings, not sources to
+# read them from, so they do not by themselves make cost tools meaningful.
+_DATA_SOURCE_FAMILIES: frozenset[str] = frozenset(
+    {"aws", "azure", "gcp", "kubernetes", "databricks", "llm"}
+)
 
 _FAMILY_OF: dict[str, str] = {
     name: family for family, names in FAMILY_TOOLS.items() for name in names
@@ -471,4 +508,11 @@ def advertise(tool_name: str) -> bool:
         return True
     if family == "core":
         return True
+    if family == "cost":
+        # Cross-provider tools: not tied to one cloud, but useless without at
+        # least one data source. Gate on any PROVIDER being connected, not on
+        # connected_families() being non-empty: notifications and tickets are
+        # integrations, not sources of spend, and a machine with only a Slack
+        # token still has nothing to report on.
+        return bool(connected_families() & _DATA_SOURCE_FAMILIES)
     return family in connected_families()
