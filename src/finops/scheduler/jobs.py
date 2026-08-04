@@ -548,6 +548,24 @@ def _mark_credit_alert_sent(key: str) -> None:
         log.debug("Could not persist credit alert state")
 
 
+def job_morning_brief() -> None:
+    """The overnight run: scan, review, rank, draft, save, deliver.
+
+    Scheduled before the workday so the brief is waiting rather than requested.
+    It writes to disk unconditionally (the dashboard is the primary surface) and
+    pushes only to channels someone opted into via NABLE_BRIEF_DELIVER.
+    """
+    try:
+        from ..briefing.run import run_overnight
+        result = run_overnight()
+        b = result["summary"]
+        log.info("Morning brief ready: %s actionable, %s unconfirmed, delivered=%s",
+                 b["actionable_count"], b["investigation_count"],
+                 result["delivered"] or "dashboard only")
+    except Exception:
+        log.exception("Morning brief failed")
+
+
 def job_credit_check() -> None:
     """Check the AWS credit-to-cash flip and alert once when it trips."""
     try:
@@ -746,6 +764,11 @@ def start_scheduler() -> BackgroundScheduler | None:
     # AI/token spend monitor at 05:00 UTC: token-spend spikes + commitment attention
     ai_monitor_cron = os.environ.get("FINOPS_AI_MONITOR_CRON", "0 5 * * *")
     _scheduler.add_job(job_ai_monitor, CronTrigger.from_crontab(ai_monitor_cron), id="ai_monitor", replace_existing=True)
+
+    # Morning brief at 06:00 UTC: the overnight run, waiting before the workday.
+    # Set NABLE_BRIEF_CRON to move it; NABLE_BRIEF_DELIVER opts into Slack/Teams/email.
+    brief_cron = os.environ.get("NABLE_BRIEF_CRON", "0 6 * * *")
+    _scheduler.add_job(job_morning_brief, CronTrigger.from_crontab(brief_cron), id="morning_brief", replace_existing=True)
 
     _scheduler.start()
     log.info("Scheduler started (snapshot=%s, anomaly=%s, digest=%s)", snapshot_cron, anomaly_cron, digest_cron)
