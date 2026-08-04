@@ -2,6 +2,10 @@
 
 All notable changes to finops-mcp (nable).
 
+## 0.8.203
+
+- **A fresh install now costs 87% less context per message.** Every tool nable advertises rides in the model's context on every single message you send. On a machine with nothing connected that was 112 tools and roughly 31,000 tokens, about nine cents a message before you asked anything, and around ninety of those tools could answer nothing except "no accounts connected". The user least likely to have got value yet was paying the most for it. A fresh machine now sees 21 tools and about 4,000 tokens: connecting, diagnosing, discovering what is available, the local agent budget, and the preflight guard. The full cost surface appears the moment a provider connects, which is the point. Nothing was removed: a hidden tool called by name still runs, so an in-chat connect works exactly as before.
+
 ## 0.8.202
 
 - **Every scan failure now says where it happened.** Within an hour of 0.8.201 shipping, a brand-new machine failed `nable scan` three times in two seconds with an unclassified error and no exception type, from a call site the telemetry could not name. Failure events now carry the call-site line and the version, which together pin the exact statement, so no failure anywhere in the scan can be anonymous again.
