@@ -901,30 +901,20 @@ async def cleanup_idle_resources(
     dry_run: bool = True,
 ) -> dict:
     """
-    Delete or release idle AWS resources. This is a REAL ACTION that terminates
-    EC2 instances, releases EBS volumes, and frees Elastic IPs. Always runs in
-    dry_run=True mode first so you can review what will be deleted. Requires
-    explicit confirmation before setting dry_run=False.
-
-    Requires FINOPS_CLEANUP_ENABLED=true in the environment (opt-in safety gate).
-    Every action is written to ~/.finops-mcp/cleanup_audit.jsonl for audit.
-
-    dry_run=True (default): shows what WOULD be deleted, nothing is changed.
-    dry_run=False: actually deletes. Only set this after explicit user confirmation.
+    Propose cleanup for idle AWS resources. nable never deletes anything: this
+    returns the resources, the dollars, and the exact command for each, and the
+    operator runs them. There is no mode in which this tool executes.
 
     Examples:
-        - "Clean up idle EC2 instances and unattached EBS volumes"
-        - "Show me what I can safely delete to save money"
-        - "Terminate the stopped instances that have been idle for 2 weeks"
-        - "Show me what would happen if I cleaned up unattached EBS volumes"
-        - "Delete the EBS volumes we just listed" (then confirm: dry_run=False)
-        - "Clean up all unused Elastic IPs in us-east-1"
+        - "What can I safely delete to save money?"
+        - "Show me idle Elastic IPs in us-east-1 and how to release them"
+        - "Which stopped instances have been idle for two weeks?"
     Args:
-        resource_ids: Explicit resource ids to act on. Required unless scanning by type.
+        resource_ids: Explicit resource ids to include. Omit to include everything found.
         resource_types: Idle resource types to include, e.g. ["ebs", "eip"].
         regions: AWS regions to scan. Defaults to all enabled regions.
         min_idle_days: Only include resources idle at least this many days.
-        dry_run: True (default) previews actions without executing anything.
+        dry_run: Ignored. Kept so existing callers do not break; nothing executes.
 
     """
     if err := _srv.require_role("admin"):

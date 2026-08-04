@@ -1368,7 +1368,8 @@ async def pin_view(
         - "Save that as a card"
 
     """
-    _srv.require_role("viewer")
+    if err := _srv.require_role("viewer"):
+        return err
     from ..slice import parse_spec
     from ..slice.engine import derive_card
     from ..slice.spec import SliceResult, SliceSpecError
@@ -1400,7 +1401,8 @@ async def list_pinned_views() -> dict:
         - "What views do I have pinned?"
         - "Show my saved cost cards"
     """
-    _srv.require_role("viewer")
+    if err := _srv.require_role("viewer"):
+        return err
     from ..slice.views import list_pinned_views as _list
     views = _list(owner="instance")
     return {"count": len(views), "views": [
@@ -1424,7 +1426,8 @@ async def get_pinned_view(view_id: int) -> dict:
         - "Refresh my S3 spend card"
         - "Re-run pinned view 2"
     """
-    _srv.require_role("viewer")
+    if err := _srv.require_role("viewer"):
+        return err
     from ..slice.views import get_pinned_view as _get
     v = _get(int(view_id), owner="instance")
     if not v:
@@ -1448,7 +1451,8 @@ async def unpin_view(view_id: int) -> dict:
         - "Unpin the S3 spend card from my dashboard"
         - "Remove pinned view 3"
     """
-    _srv.require_role("viewer")
+    if err := _srv.require_role("viewer"):
+        return err
     from ..slice.views import unpin_view as _unpin
     return {"unpinned": _unpin(int(view_id), owner="instance"), "id": int(view_id)}
 
