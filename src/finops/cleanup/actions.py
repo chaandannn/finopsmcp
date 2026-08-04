@@ -29,6 +29,7 @@ import logging
 import shlex
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from .idle import IdleResource, scan_idle_resources
@@ -124,6 +125,26 @@ _PLAN_MAP = {
     "stopped_ec2":   _plan_stopped_ec2,
     "load_balancer": _plan_load_balancer,
 }
+
+
+def draft_command(resource_type: str, resource_id: str, region: str,
+                  metadata: dict | None = None) -> dict | None:
+    """The command for one resource, without needing an IdleResource.
+
+    The morning brief drafts fixes for findings that came from the waste
+    analyzers, not from the idle scanner, so it has ids and regions rather than
+    IdleResource objects. This keeps a single place that knows how to phrase a
+    cleanup, and it is the place that also refuses to run one. Returns None when
+    this resource type has no drafted cleanup.
+    """
+    planner = _PLAN_MAP.get(resource_type)
+    if planner is None or not resource_id or not region:
+        return None
+    stub = SimpleNamespace(resource_id=resource_id, region=region,
+                           metadata=dict(metadata or {}), protected=False,
+                           name="", monthly_cost_usd=0.0, reason="")
+    plan = planner(stub)
+    return plan if "command" in plan else None
 
 
 # ─── public entry point ───────────────────────────────────────────────────────

@@ -264,3 +264,54 @@ def test_sensitive_key_detection_is_by_class_not_spelling():
         assert C._key_is_sensitive(name), name
     for name in ("kms_key_id", "instance_id", "topic_arn", "key_alias", "region"):
         assert not C._key_is_sensitive(name), name
+
+
+# ── the age the AWS analyzers actually emit ──────────────────────────────────
+
+def test_a_numeric_age_days_fires_the_new_resource_falsifier():
+    """The gap that made the headline check inert where it mattered most.
+
+    analyzers/waste.py emits `age_days` as a number and carries no date string
+    at all, so _age_days returned None for every AWS waste finding and a
+    $5,000/mo claim on a three-day-old volume passed review untouched. Found by
+    building a finding shaped like a real one instead of like a test fixture.
+    """
+    from datetime import date
+
+    from finops.recommendations.critique import _age_days, critique
+
+    today = date(2026, 8, 3)
+    for placement in ({"age_days": 3}, {"metadata": {"age_days": 3}}):
+        rec = {"resource_id": "vol-new",
+               "estimated_monthly_savings_usd": 5000.0, **placement}
+        assert _age_days(rec, today=today) == 3.0
+        out = critique([rec], today=today, use_llm=False)[0]
+        assert out["critique"]["survived"] is False, placement
+        assert out["estimated_monthly_savings_usd"] is None
+
+
+def test_idle_days_is_not_treated_as_resource_age():
+    """A volume idle 74 days can be three years old. Conflating the two would
+    retract correct findings, which is worse than missing some."""
+    from datetime import date
+
+    from finops.recommendations.critique import _age_days, critique
+
+    rec = {"resource_id": "vol-old", "estimated_monthly_savings_usd": 5000.0,
+           "idle_days": 3}
+    assert _age_days(rec, today=date(2026, 8, 3)) is None
+    assert critique([rec], today=date(2026, 8, 3), use_llm=False)[0]["critique"]["survived"]
+
+
+def test_an_old_resource_still_survives_and_garbage_ages_are_ignored():
+    from datetime import date
+
+    from finops.recommendations.critique import _age_days, critique
+
+    today = date(2026, 8, 3)
+    assert _age_days({"age_days": 400}, today=today) == 400.0
+    for junk in ("n/a", True, None, float("nan"), -5, [1]):
+        assert _age_days({"age_days": junk}, today=today) is None, junk
+    survived = critique([{"resource_id": "v", "estimated_monthly_savings_usd": 5000.0,
+                          "age_days": 400}], today=today, use_llm=False)[0]
+    assert survived["critique"]["survived"] is True
