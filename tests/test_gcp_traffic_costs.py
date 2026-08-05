@@ -262,3 +262,95 @@ def test_gcs_a_sku_containing_both_storage_and_operations_counts_as_ops():
     assert len(out) == 1
     assert out[0].metadata["operations_fee_usd"] == pytest.approx(90.0)
     assert out[0].metadata["storage_fee_usd"] == pytest.approx(100.0)
+
+
+# ── the connector function itself (the tool tests mock it away) ──────────────
+
+def test_the_connector_without_the_export_is_an_error_naming_the_fix(monkeypatch):
+    """The real function, not the mocked payload: without the export it must
+    say which env var is missing, never return empty rows."""
+    from datetime import date
+
+    from finops.connectors.gcp import get_sku_costs_by_project
+
+    monkeypatch.delenv("GCP_BQ_BILLING_TABLE", raising=False)
+    out = get_sku_costs_by_project(date(2026, 7, 1), date(2026, 7, 31))
+    assert "GCP_BQ_BILLING_TABLE" in out.get("error", "")
+    assert "rows" not in out
+
+
+def test_the_connector_query_failure_leaks_the_type_never_the_message(monkeypatch):
+    """BigQuery exceptions carry table paths and project names, and this error
+    string reaches tool output. Only the exception class may pass through."""
+    import sys
+    import types
+    from datetime import date
+
+    from finops.connectors import gcp as gcp_conn
+
+    monkeypatch.setenv("GCP_BQ_BILLING_TABLE", "proj.billing.export_v1")
+
+    secret = "project 'acme-prod-billing' table missing"
+
+    class _Client:
+        def __init__(self, *a, **k):
+            raise PermissionError(secret)
+
+    fake_bq = types.SimpleNamespace(
+        Client=_Client, QueryJobConfig=lambda **k: None,
+        ScalarQueryParameter=lambda *a: None)
+    fake_gc = types.ModuleType("google.cloud")
+    fake_gc.bigquery = fake_bq
+    monkeypatch.setitem(sys.modules, "google.cloud", fake_gc)
+    monkeypatch.setitem(sys.modules, "google.cloud.bigquery", fake_bq)
+
+    out = gcp_conn.get_sku_costs_by_project(date(2026, 7, 1), date(2026, 7, 31))
+    assert out.get("error")
+    assert "PermissionError" in out["error"]
+    assert secret not in out["error"], "the exception message leaked"
+
+
+def test_the_connector_parses_rows_and_parameterises_dates(monkeypatch):
+    """Success path against a fake client: rows come back as dicts, and the
+    dates travel as query PARAMETERS, never interpolated into the SQL string
+    (the table name is interpolated, from our own env var, and that is the only
+    interpolation allowed)."""
+    import sys
+    import types
+    from datetime import date
+
+    from finops.connectors import gcp as gcp_conn
+
+    monkeypatch.setenv("GCP_BQ_BILLING_TABLE", "proj.billing.export_v1")
+    captured = {}
+
+    class _Job:
+        def result(self):
+            return [{"project_id": "p1", "service": "Networking",
+                     "sku": "Cloud NAT Gateway: Data Processing", "cost_usd": 300.0}]
+
+    class _Client:
+        def query(self, sql, job_config=None):
+            captured["sql"] = sql
+            captured["config"] = job_config
+            return _Job()
+
+    params = []
+    fake_bq = types.SimpleNamespace(
+        Client=lambda *a, **k: _Client(),
+        QueryJobConfig=lambda query_parameters=None: params.extend(query_parameters or []) or "cfg",
+        ScalarQueryParameter=lambda name, typ, val: (name, typ, val))
+    fake_gc = types.ModuleType("google.cloud")
+    fake_gc.bigquery = fake_bq
+    monkeypatch.setitem(sys.modules, "google.cloud", fake_gc)
+    monkeypatch.setitem(sys.modules, "google.cloud.bigquery", fake_bq)
+
+    out = gcp_conn.get_sku_costs_by_project(date(2026, 7, 1), date(2026, 7, 31))
+    assert out.get("error") is None
+    assert out["rows"][0]["project_id"] == "p1"
+    assert "2026-07-01" not in captured["sql"], "dates must be parameters, not SQL text"
+    assert ("start_date", "DATE", "2026-07-01") in params
+    assert ("end_date", "DATE", "2026-07-31") in params
+    assert "`proj.billing.export_v1`" in captured["sql"]
+    # net-of-credits is the whole reason the sum matches the console
+    assert "credits" in captured["sql"].lower()
