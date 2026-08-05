@@ -80,6 +80,27 @@ async def get_cost_summary(
     if len(by_provider) > 1:
         by_provider = _srv._cap_provider_service_detail(by_provider)
 
+    # A total is only a total if something was actually read. Providers that
+    # errored contribute 0 to grand_total, so a run where every provider failed
+    # used to return "$0.00" with the reason buried in by_provider, and a model
+    # reading that tells the user they spent nothing this month. A confident
+    # wrong number is worse than a refusal.
+    _failed = {name: p.get("error") for name, p in by_provider.items()
+               if isinstance(p, dict) and p.get("error")}
+    _ok = [name for name in by_provider if name not in _failed]
+
+    if _failed and not _ok:
+        # Every provider failed. Refuse, and lead with the first reason, which
+        # carries the setup instructions when it is a missing billing export.
+        first = next(iter(_failed.values()))
+        return {
+            "error": "no_cost_data",
+            "message": str(first),
+            "failed_providers": _failed,
+            "note": ("No provider returned cost data, so nable has no total to "
+                     "report. This is not a finding of zero spend."),
+        }
+
     _ranked_services = sorted(grand_by_service.items(), key=lambda x: -x[1])
     result = {
         "period": {"start": sd.isoformat(), "end": ed.isoformat()},
@@ -88,6 +109,16 @@ async def get_cost_summary(
         "by_provider": by_provider,
         "grand_by_service": {k: round(v, 4) for k, v in _ranked_services[:50]},
     }
+    if _failed:
+        # Some read, some did not. The total is real but incomplete, and nothing
+        # downstream may present it as the whole bill.
+        result["partial"] = True
+        result["failed_providers"] = _failed
+        result["partial_warning"] = (
+            f"This total covers {', '.join(sorted(_ok))} only. "
+            f"{', '.join(sorted(_failed))} could not be read, so real spend is "
+            f"higher than the figure above."
+        )
     # If any provider reports a non-USD currency, the grand total mixes currencies
     # and must not be presented as USD. nable does not convert, surface it loudly.
     _currencies = {

@@ -380,3 +380,71 @@ def test_the_guard_does_not_block_unbilled_services():
     with pytest.raises(Exception) as e:
         client.describe_volumes(VolumeIds=["vol-00000000000000000"])
     assert "spends real money" not in str(e.value)
+
+
+# ── a total is only a total if something was read ────────────────────────────
+
+def _summary(monkeypatch, providers: dict):
+    """Drive the real get_cost_summary with a controlled set of provider results."""
+    import asyncio
+
+    import finops.server as srv
+
+    async def fake_gather(targets, sd, ed, granularity):
+        total = sum(p.get("total_usd", 0.0) for p in providers.values()
+                    if not p.get("error"))
+        by_service = {}
+        for p in providers.values():
+            for k, v in (p.get("services") or {}).items():
+                by_service[k] = by_service.get(k, 0.0) + v
+        return total, dict(providers), by_service
+
+    async def fake_active(pool):
+        return {k: object() for k in providers}
+
+    monkeypatch.setattr(srv, "_gather_costs", fake_gather)
+    monkeypatch.setattr(srv, "_active", fake_active)
+    return asyncio.run(srv.get_cost_summary())
+
+
+def test_every_provider_failing_refuses_instead_of_reporting_zero(monkeypatch):
+    """The bug the billing gate created and this caught: a user asks what they
+    spent, every provider errors, and the answer is "$0.00" with the reason
+    buried in by_provider. A model reads that and says they spent nothing."""
+    out = _summary(monkeypatch, {"aws": {"error": "Cost Explorer is off. Deploy ..."}})
+    assert out["error"] == "no_cost_data"
+    assert "grand_total_usd" not in out
+    assert "$0.00" not in repr(out)
+    assert "not a finding of zero spend" in out["note"]
+    assert "Deploy" in out["message"], "the refusal must carry the actionable reason"
+
+
+def test_a_partial_read_is_labelled_and_never_presented_as_the_whole_bill(monkeypatch):
+    """Worse than the all-failed case because it looks plausible: two of three
+    providers read, the total silently under-reports, and nothing says so."""
+    out = _summary(monkeypatch, {
+        "aws": {"total_usd": 1200.0, "services": {"EC2": 1200.0}},
+        "gcp": {"total_usd": 300.0, "services": {"GCE": 300.0}},
+        "azure": {"error": "no billing export configured"},
+    })
+    assert out["partial"] is True
+    assert out["grand_total_usd"] == 1500.0
+    assert "azure" in out["failed_providers"]
+    assert "azure" in out["partial_warning"]
+    assert "higher than the figure above" in out["partial_warning"]
+
+
+def test_a_clean_read_is_not_labelled_partial(monkeypatch):
+    """A warning on every answer is a warning nobody reads."""
+    out = _summary(monkeypatch, {"aws": {"total_usd": 900.0, "services": {"EC2": 900.0}}})
+    assert "partial" not in out
+    assert "partial_warning" not in out
+    assert out["grand_total_usd"] == 900.0
+
+
+def test_a_genuine_zero_is_still_reported_as_zero(monkeypatch):
+    """A connected account that really spent nothing must still say $0.00. The
+    refusal is for "could not read", never for "read, and it was zero"."""
+    out = _summary(monkeypatch, {"aws": {"total_usd": 0.0, "services": {}}})
+    assert out.get("error") != "no_cost_data"
+    assert out["grand_total_usd"] == 0.0
