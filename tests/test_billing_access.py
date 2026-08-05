@@ -1,11 +1,11 @@
-"""Cost Explorer is not a data source, and the gate that enforces that.
+"""When Cost Explorer is worth paying for, and the policy that decides.
 
-nable reads cost from the billing export each cloud already produces. Cost
-Explorer bills the customer per request and cannot return line items, so it is
-off by default and every direct client construction is being retired.
+CE stays: it is the on-ramp that turns credentials somebody already has into a
+real number in a minute. What it is not worth is being called when unnecessary —
+when the billing export can answer the same question for free and in more
+detail, or in unattended work where the per-request charge repeats on a timer.
 
-These tests are written to BREAK the gate, not to demonstrate it. A gate that
-only fails closed on the inputs its author thought of is not a gate.
+These tests are written to BREAK the policy, not to demonstrate it.
 """
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ PKG = pathlib.Path(finops.__file__).parent
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
-    for k in (ba.ALLOW_CE_ENV, "CUR_S3_BUCKET", "CUR_ATHENA_DATABASE",
+    for k in (ba.FORBID_CE_ENV, "CUR_S3_BUCKET", "CUR_ATHENA_DATABASE",
               "CUR_ATHENA_TABLE", "CUR_ATHENA_RESULTS_BUCKET",
               "AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_SUBSCRIPTION_ID",
               "GCP_BQ_BILLING_TABLE", "GOOGLE_APPLICATION_CREDENTIALS",
@@ -31,51 +31,70 @@ def _clean_env(monkeypatch):
     yield
 
 
-# ── the opt-in fails closed ──────────────────────────────────────────────────
+# ── the policy: available, but not called when unnecessary ──────────────────
 
-@pytest.mark.parametrize("value", [
-    "", " ", "0", "false", "False", "no", "off", "disabled", "null", "None",
-    "2", "true;", "1 1", "y", "t", "TRUE!", "\t", "\n", "01", "1.0",
-])
-def test_every_ambiguous_opt_in_value_means_off(monkeypatch, value):
-    """Fail closed. Anything that is not an exact opt-in leaves CE off, so a
-    half-configured environment cannot start billing the customer."""
-    monkeypatch.setenv(ba.ALLOW_CE_ENV, value)
-    assert ba.cost_explorer_allowed() is False, f"{value!r} enabled Cost Explorer"
+def test_cost_explorer_is_available_by_default():
+    """It is the on-ramp. Somebody with credentials they already have must get a
+    real number without deploying a stack or waiting a day for the first report."""
+    assert ba.cost_explorer_forbidden() is False
+    assert ba.cost_explorer_allowed() is True
+    assert ba.should_use_cost_explorer("aws") is True
 
 
-@pytest.mark.parametrize("value", ["1", "true", "TRUE", "True", "yes", " yes ", "  1  "])
-def test_the_documented_opt_in_values_work(monkeypatch, value):
-    monkeypatch.setenv(ba.ALLOW_CE_ENV, value)
+def test_a_provisioned_export_means_cost_explorer_is_never_called(monkeypatch):
+    """The actual waste. The export answers the same question with more detail
+    and no per-request charge, so reaching for CE anyway spends the customer's
+    money for a worse answer."""
+    for k in _CUR_KEYS:
+        monkeypatch.setenv(k, "x")
+    assert ba.provisioned("aws") is True
+    assert ba.should_use_cost_explorer("aws") is False
+    # ...but it is not FORBIDDEN, just unnecessary. Nothing raises.
     assert ba.cost_explorer_allowed() is True
 
 
-def test_cost_explorer_is_off_with_no_environment_at_all():
+def test_unattended_work_never_calls_cost_explorer():
+    """A per-request charge on a timer, with nobody watching, is the case that
+    actually costs money and the one nobody agreed to."""
+    assert ba.cost_explorer_allowed(unattended=True) is False
+    assert ba.should_use_cost_explorer("aws", unattended=True) is False
+    with pytest.raises(ba.BillingAccessError) as e:
+        ba.ce_client(unattended=True)
+    assert "scheduled or background" in str(e.value)
+    assert "aws-cur-setup.yaml" in str(e.value), "the refusal must name the free path"
+
+
+@pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes", " yes ", "  1  "])
+def test_an_operator_can_ban_cost_explorer_outright(monkeypatch, value):
+    monkeypatch.setenv(ba.FORBID_CE_ENV, value)
+    assert ba.cost_explorer_forbidden() is True
     assert ba.cost_explorer_allowed() is False
-
-
-def test_ce_client_refuses_and_names_the_fix():
+    assert ba.should_use_cost_explorer("aws") is False
     with pytest.raises(ba.BillingAccessError) as e:
         ba.ce_client()
-    msg = str(e.value)
-    assert "aws-cur-setup.yaml" in msg, "the refusal must name the template to deploy"
-    assert ba.ALLOW_CE_ENV in msg, "the refusal must name the escape hatch"
-    assert "bills your account per request" in msg
+    assert ba.FORBID_CE_ENV in str(e.value)
 
 
-def test_ce_client_refuses_even_when_handed_a_session():
-    """A caller passing its own session must not bypass the gate: that is the
-    shape of every 'but I already have credentials' workaround."""
-    class FakeSession:
-        def client(self, *a, **k):
-            raise AssertionError("the gate was bypassed via an injected session")
+@pytest.mark.parametrize("value", [
+    "", " ", "0", "false", "no", "off", "2", "y", "t", "01", "1.0", "\t",
+])
+def test_an_unrecognised_ban_value_leaves_the_on_ramp_working(monkeypatch, value):
+    """Failing closed here would silently break the first-run experience for
+    somebody who typed the variable wrong. The safe default is the working one:
+    CE only costs a cent, a broken on-ramp costs the user."""
+    monkeypatch.setenv(ba.FORBID_CE_ENV, value)
+    assert ba.cost_explorer_forbidden() is False, f"{value!r} banned Cost Explorer"
+    assert ba.cost_explorer_allowed() is True
 
-    with pytest.raises(ba.BillingAccessError):
-        ba.ce_client(session=FakeSession())
+
+def test_the_ban_beats_everything_including_an_interactive_question(monkeypatch):
+    monkeypatch.setenv(ba.FORBID_CE_ENV, "1")
+    for k in _CUR_KEYS:
+        monkeypatch.delenv(k, raising=False)
+    assert ba.should_use_cost_explorer("aws", unattended=False) is False
 
 
-def test_ce_client_builds_only_after_an_explicit_opt_in(monkeypatch):
-    monkeypatch.setenv(ba.ALLOW_CE_ENV, "1")
+def test_ce_client_builds_for_an_interactive_call():
     built = {}
 
     class FakeSession:
@@ -85,20 +104,6 @@ def test_ce_client_builds_only_after_an_explicit_opt_in(monkeypatch):
 
     assert ba.ce_client(session=FakeSession()) == "client"
     assert built["service"] == "ce"
-
-
-def test_permitting_cost_explorer_is_logged_loudly(monkeypatch, caplog):
-    """It spends the customer's money. It may never happen quietly."""
-    monkeypatch.setenv(ba.ALLOW_CE_ENV, "1")
-
-    class FakeSession:
-        def client(self, *a, **k):
-            return object()
-
-    with caplog.at_level("WARNING"):
-        ba.ce_client(session=FakeSession(), reason="unit test")
-    assert "billed per request" in caplog.text
-    assert ba.ALLOW_CE_ENV in caplog.text
 
 
 # ── provisioning detection ───────────────────────────────────────────────────

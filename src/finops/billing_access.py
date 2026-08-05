@@ -1,31 +1,38 @@
-"""Provisioned billing access. Cost Explorer is not a data source.
+"""Where cost data comes from, and when Cost Explorer is worth paying for.
 
-nable reads cost from the billing export each cloud already produces: AWS Cost
-and Usage Report in S3 queried through Athena, Azure cost exports under a
-service principal, GCP billing export in BigQuery under a service account. Each
-is provisioned once, by a template, and read for free afterwards.
+nable prefers the billing export each cloud already produces: AWS Cost and Usage
+Report in S3 queried through Athena, Azure cost exports under a service
+principal, GCP billing export in BigQuery under a service account. Provisioned
+once by a template, read cheaply afterwards, and carrying line items — which
+resource, which tag, which hour. The resource map, cost-to-code blame and
+bill-verified savings all need that detail, and Cost Explorer will never have it.
 
-WHY COST EXPLORER IS OFF BY DEFAULT. Two reasons, and the second is the one that
-matters:
+COST EXPLORER STAYS. It is the reason somebody can point nable at credentials
+they already have and get a real number in a minute, with no stack to deploy and
+no 24-hour wait for the first report. That on-ramp is worth more than the
+per-request charge, and removing it would trade a working first impression for
+architectural tidiness.
 
-  1. Every GetCostAndUsage request bills the account it runs in. A cost tool that
-     adds a recurring line to the customer's own bill, on a schedule, has an
-     obvious credibility problem.
-  2. Cost Explorer aggregates. It cannot tell you which volume, which instance,
-     which line item. Everything nable is actually good at — mapping a finding to
-     the resources around it, blaming a cost on the code that created it,
-     verifying a saving against the bill it claimed — needs line items. CUR has
-     them; Cost Explorer never will. Building on CE caps the product.
+What it is not worth is calling it when we do not have to. Three rules:
 
-So CE is not a fallback that quietly fills gaps. It is off, it stays off unless
-an operator explicitly turns it on for a one-off, and the absence of billing
-access is reported as a setup step with the template to deploy, not as an empty
-answer or a zero.
+  1. If the billing export is provisioned, CE is never called. The export answers
+     the same question with more detail and without the per-request charge, so
+     reaching for CE anyway is pure waste on the customer's bill.
+  2. For an interactive question a person just asked, with no export configured,
+     CE is used. That is the on-ramp, and one request is the right price for an
+     answer somebody is waiting for.
+  3. In unattended paths — the overnight run, scheduled jobs, the test suite — CE
+     is never called. A per-request charge nobody is watching, repeating on a
+     timer, is the case that actually costs real money and the one nobody
+     consented to.
+
+NABLE_NO_COST_EXPLORER=1 forbids it everywhere, for organisations that want the
+guarantee in writing.
 
 `ce_client()` is the ONLY place in the package permitted to construct a Cost
-Explorer client. tests/test_billing_access.py enforces that with a ratchet over
-the whole source tree: the list of legacy direct constructions may shrink and may
-never grow.
+Explorer client, so the rules above live in exactly one place.
+tests/test_billing_access.py enforces that with a ratchet over the whole source
+tree: the list of legacy direct constructions may shrink and may never grow.
 """
 from __future__ import annotations
 
@@ -36,10 +43,9 @@ from typing import Any
 
 log = logging.getLogger("finops.billing_access")
 
-# The one opt-out. Documented, off by default, and deliberately verbose to type:
-# nobody sets this by accident, and reading it in a stack trace tells you exactly
-# what happened.
-ALLOW_CE_ENV = "NABLE_ALLOW_COST_EXPLORER"
+# The opt-OUT. Cost Explorer is available by default because it is the on-ramp;
+# this is for organisations that want a hard guarantee it is never called.
+FORBID_CE_ENV = "NABLE_NO_COST_EXPLORER"
 
 AWS = "aws"
 AZURE = "azure"
@@ -138,33 +144,65 @@ def missing_setup(provider: str) -> AccessPath | None:
     return None if provisioned(p) else ACCESS_PATHS[p]
 
 
-def cost_explorer_allowed() -> bool:
-    """False unless an operator explicitly opted in for this process.
+def cost_explorer_forbidden() -> bool:
+    """True when an operator has banned Cost Explorer outright.
 
-    Accepts only the exact opt-in strings. "0", "false", "no" and anything
-    unrecognised mean off, so a half-configured environment fails closed.
+    Only the exact opt-out strings count. Anything unrecognised leaves CE
+    available, because failing closed here would silently break the on-ramp for
+    somebody who typed the variable wrong.
     """
-    return _env(ALLOW_CE_ENV).lower() in ("1", "true", "yes")
+    return _env(FORBID_CE_ENV).lower() in ("1", "true", "yes")
+
+
+def cost_explorer_allowed(*, unattended: bool = False) -> bool:
+    """May we call Cost Explorer right now?
+
+    unattended: True for the overnight run, scheduled jobs, and anything else
+        nobody is sitting in front of. A per-request charge on a timer is the
+        case that actually costs money, so it is never allowed there.
+    """
+    if cost_explorer_forbidden():
+        return False
+    return not unattended
+
+
+def should_use_cost_explorer(provider: str = AWS, *, unattended: bool = False) -> bool:
+    """The whole policy in one call: is CE both permitted AND necessary?
+
+    Returns False when the billing export is provisioned, because the export
+    answers the same question with more detail and no per-request charge.
+    Calling CE anyway would be waste on the customer's bill, which is the actual
+    problem — not Cost Explorer itself.
+    """
+    if provisioned(provider):
+        return False
+    return cost_explorer_allowed(unattended=unattended)
 
 
 def ce_client(session: Any = None, *, region: str | None = None,
-              config: Any = None, reason: str = "") -> Any:
+              config: Any = None, reason: str = "", unattended: bool = False) -> Any:
     """The only permitted Cost Explorer client in this package.
 
-    Raises BillingAccessError unless the operator opted in. The exception text is
-    the message a user sees, so it names the fix rather than the rule.
+    Raises BillingAccessError when policy says this call should not happen: the
+    operator banned CE, or it is an unattended path where a recurring
+    per-request charge would accrue with nobody watching. The exception text is
+    what a user reads, so it names the fix rather than the rule.
     """
-    if not cost_explorer_allowed():
+    if cost_explorer_forbidden():
         raise BillingAccessError(
-            "Cost Explorer is off. nable reads cost from your billing export, "
-            "which is free to query and carries the resource-level detail Cost "
-            "Explorer cannot. "
+            f"Cost Explorer is disabled here ({FORBID_CE_ENV}=1). "
             + " ".join(ACCESS_PATHS[AWS].as_instructions())
-            + f" To make a one-off Cost Explorer call anyway, set {ALLOW_CE_ENV}=1; "
-              "AWS bills your account per request."
         )
-    log.warning("Cost Explorer call permitted by %s (billed per request to your "
-                "AWS account)%s", ALLOW_CE_ENV, f": {reason}" if reason else "")
+    if unattended:
+        raise BillingAccessError(
+            "Cost Explorer is not used in scheduled or background work: it bills "
+            "per request, and a charge that repeats on a timer with nobody "
+            "watching is the one nobody agreed to. Configure the billing export "
+            "and this runs for free. "
+            + " ".join(ACCESS_PATHS[AWS].as_instructions())
+        )
+    log.debug("Cost Explorer call (billed per request to your AWS account)%s",
+              f": {reason}" if reason else "")
     import boto3
 
     region = region or os.getenv("AWS_DEFAULT_REGION", "us-east-1")

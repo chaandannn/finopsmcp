@@ -121,15 +121,16 @@ class AWSConnector(BaseConnector):
         if is_demo():
             return _DemoRefusingClient()
 
-        # The gate. nable reads cost from the CUR billing export, which is free
-        # to query and carries line items; Cost Explorer bills per request and
-        # only ever returns aggregates. This raises BillingAccessError unless an
-        # operator explicitly opted in, so the default path through the main AWS
-        # cost connector can no longer put a charge on the customer's bill.
-        from ..billing_access import cost_explorer_allowed, ce_client
+        # Cost Explorer stays: it is what lets somebody point nable at
+        # credentials they already have and get a number in a minute. The policy
+        # only stops it being called when it is unnecessary — an operator banned
+        # it, or this is unattended work where a per-request charge would repeat
+        # on a timer with nobody watching. Callers in scheduled paths pass
+        # unattended=True.
+        from ..billing_access import cost_explorer_forbidden, ce_client
 
-        if not cost_explorer_allowed():
-            ce_client(reason="AWSConnector._make_client")   # raises with the fix
+        if cost_explorer_forbidden():
+            ce_client(reason="AWSConnector._make_client")   # raises, names the fix
 
 
         # Without explicit timeouts botocore waits 60s per attempt with ~4
