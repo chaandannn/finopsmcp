@@ -34,14 +34,21 @@ class CURQueryError(Exception):
 # ── configuration ─────────────────────────────────────────────────────────────
 
 def is_configured() -> bool:
-    """Return True when all four required CUR env vars are set."""
+    """Return True when all four required CUR env vars hold a real value.
+
+    Whitespace is not configuration. A key set to "   " (a trailing space in a
+    .env file, a blank line in a Docker secret, a copy-paste from a wiki) used to
+    read as configured, and the failure then surfaced as an Athena syntax error
+    against a table named " " instead of the setup instructions the operator
+    actually needed.
+    """
     required = [
         "CUR_S3_BUCKET",
         "CUR_ATHENA_DATABASE",
         "CUR_ATHENA_TABLE",
         "CUR_ATHENA_RESULTS_BUCKET",
     ]
-    return all(get_env(v) for v in required)
+    return all((get_env(v) or "").strip() for v in required)
 
 
 def _db() -> str:

@@ -85,8 +85,19 @@ def test_console_script_targets_pinned_in_pyproject():
 
 def test_shim_targets_entry_and_floors_scan_release():
     text = (REPO / "shim" / "pyproject.toml").read_text()
-    assert 'nable = "finops.entry:main"' in text, (
-        "shim must repoint to the light dispatcher in 0.1.2"
+    # 0.1.3 puts nable_shim between the console script and the dispatcher, so an
+    # interpreter too old to install finops-mcp gets one actionable line instead
+    # of an ImportError traceback. The requirement is unchanged in substance:
+    # reach the light dispatcher, never the server module.
+    assert 'nable = "nable_shim:main"' in text, (
+        "shim must enter through the version guard"
+    )
+    guard = (REPO / "shim" / "nable_shim.py").read_text()
+    assert "from finops.entry import main" in guard, (
+        "the guard must delegate to the light dispatcher, not finops.server"
+    )
+    assert "finops.server" not in guard, (
+        "importing the server costs ~0.9s before anything prints"
     )
     # The floor must be a version that ships finops/entry.py + scan, or cached
     # uv environments serve an old build with no scan subcommand (the exact
