@@ -345,3 +345,220 @@ def test_the_tool_is_registered_and_in_the_azure_family():
     names = {t.name for t in server.mcp._tool_manager.list_tools()}
     assert "audit_azure_reservation_scope" in names
     assert "audit_azure_reservation_scope" in ts.FAMILY_TOOLS["azure"]
+
+
+# ── the connector: the layer the PR caveat says is the actual risk ───────────
+
+class _FakeResp:
+    def __init__(self, payload, status=200):
+        self._payload, self.status_code = payload, status
+
+    def json(self):
+        return self._payload
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+
+def _fake_httpx(monkeypatch, get_pages=None, post_pages=None):
+    """Swap httpx for a canned sequence. Each call pops the next page."""
+    import finops.connectors.azure_detail as det
+
+    gets, posts = list(get_pages or []), list(post_pages or [])
+    calls = {"get": [], "post": []}
+
+    class _Httpx:
+        @staticmethod
+        def get(url, **kw):
+            calls["get"].append(url)
+            return gets.pop(0) if gets else _FakeResp({}, 500)
+
+        @staticmethod
+        def post(url, **kw):
+            calls["post"].append((url, kw.get("json")))
+            return posts.pop(0) if posts else _FakeResp({}, 500)
+
+    import sys
+    monkeypatch.setitem(sys.modules, "httpx", _Httpx)
+    return calls
+
+
+def test_backfill_fills_only_the_missing_fields(monkeypatch):
+    """The summaries API is authoritative for utilisation; the list API for
+    scope. Backfill must never overwrite a field the summaries already gave."""
+    import finops.connectors.azure_detail as det
+
+    reservations = [{
+        "reservation_id": "/PROVIDERS/x/reservations/R1",   # case differs on purpose
+        "sku_name": "", "meter_id": "", "region": "",
+        "applied_scope_type": "", "applied_scopes": [],
+        "avg_utilization_pct": 55.0,
+    }]
+    _fake_httpx(monkeypatch, get_pages=[_FakeResp({"value": [{
+        "id": "/providers/x/reservations/r1",
+        "location": "eastus",
+        "sku": {"name": "Standard_D4s_v5"},
+        "properties": {"appliedScopeType": "Single",
+                       "appliedScopes": ["/subscriptions/abc"],
+                       "meterId": "m-1"},
+    }]})])
+    det._backfill_reservation_scopes(reservations, {"Authorization": "Bearer t"})
+    r = reservations[0]
+    assert r["applied_scope_type"] == "Single"
+    assert r["applied_scopes"] == ["/subscriptions/abc"]
+    assert r["meter_id"] == "m-1"
+    assert r["region"] == "eastus"
+    assert r["avg_utilization_pct"] == 55.0, "backfill touched a summaries field"
+
+
+def test_backfill_failure_leaves_reservations_untouched(monkeypatch):
+    """Enrichment failure may only produce a MISSED finding, never a false one:
+    a blank scope is treated as not-narrow by the detector."""
+    import copy
+
+    import finops.connectors.azure_detail as det
+
+    reservations = [{"reservation_id": "/x/r1", "applied_scope_type": "",
+                     "applied_scopes": [], "meter_id": "", "region": ""}]
+    before = copy.deepcopy(reservations)
+    _fake_httpx(monkeypatch, get_pages=[_FakeResp({}, 500)])
+    det._backfill_reservation_scopes(reservations, {})
+    assert reservations == before
+    # and the detector's contract on that blank scope:
+    assert find_scope_limited_reservations(
+        [dict(_res(), applied_scope_type="")], [_usage()]) == []
+
+
+def test_backfill_skips_the_network_entirely_when_nothing_is_missing(monkeypatch):
+    import finops.connectors.azure_detail as det
+
+    calls = _fake_httpx(monkeypatch)
+    det._backfill_reservation_scopes(
+        [{"reservation_id": "/x/r1", "applied_scope_type": "Shared"}], {})
+    assert calls["get"] == [], "made an API call it did not need"
+
+
+def test_backfill_follows_pagination(monkeypatch):
+    import finops.connectors.azure_detail as det
+
+    reservations = [{"reservation_id": "/x/r2", "applied_scope_type": "",
+                     "applied_scopes": [], "meter_id": "", "region": ""}]
+    _fake_httpx(monkeypatch, get_pages=[
+        _FakeResp({"value": [{"id": "/x/r1", "location": "eastus",
+                              "properties": {"appliedScopeType": "Shared"}}],
+                   "nextLink": "https://next"}),
+        _FakeResp({"value": [{"id": "/x/r2", "location": "westus2",
+                              "properties": {"appliedScopeType": "Single",
+                                             "appliedScopes": ["/subscriptions/s2"]}}]}),
+    ])
+    det._backfill_reservation_scopes(reservations, {})
+    assert reservations[0]["applied_scope_type"] == "Single"
+    assert reservations[0]["region"] == "westus2"
+
+
+def test_on_demand_usage_parses_row_dicts_and_filters_on_demand(monkeypatch):
+    """_query_cost_management returns dicts keyed by column name (this is the
+    exact contract I got wrong on the first write of this fetcher, so it is
+    pinned here), and the query body must restrict to PricingModel=OnDemand or
+    already-discounted usage counts as recoverable a second time."""
+    from datetime import date
+
+    import finops.connectors.azure_detail as det
+
+    monkeypatch.setenv("AZURE_SUBSCRIPTION_ID", "sub-1,sub-2")
+    monkeypatch.setenv("AZURE_CLIENT_ID", "c")
+    monkeypatch.setenv("AZURE_CLIENT_SECRET", "s")
+    monkeypatch.setenv("AZURE_TENANT_ID", "t")
+    monkeypatch.setattr(det, "_get_access_token", lambda: "tok")
+
+    bodies = []
+
+    def fake_query(token, sub_id, body):
+        bodies.append(body)
+        if sub_id == "sub-2":
+            raise RuntimeError("no Cost Management access")   # one sub failing
+        return [{"MeterId": "m-1", "MeterSubCategory": "D4s v5",
+                 "ResourceLocation": "eastus", "Cost": 123.45}]
+
+    monkeypatch.setattr(det, "_query_cost_management", fake_query)
+    out = det.get_on_demand_usage_by_subscription(
+        start_date=date(2026, 7, 1), end_date=date(2026, 7, 31))
+
+    assert out.get("error") is None
+    assert len(out["usage"]) == 1, "the failing subscription must skip, not kill the sweep"
+    row = out["usage"][0]
+    assert row == {"subscription_id": "sub-1", "meter_id": "m-1",
+                   "sku_name": "D4s v5", "region": "eastus",
+                   "on_demand_cost_usd": 123.45}
+    flt = bodies[0]["dataset"]["filter"]["dimensions"]
+    assert flt["name"] == "PricingModel" and flt["values"] == ["OnDemand"]
+
+
+def test_on_demand_usage_without_configuration_is_an_error_not_empty(monkeypatch):
+    """Empty usage means 'no siblings paid on demand', which suppresses every
+    finding. Unconfigured must be distinguishable from genuinely quiet."""
+    from datetime import date
+
+    import finops.connectors.azure_detail as det
+
+    for var in ("AZURE_SUBSCRIPTION_ID", "AZURE_CLIENT_ID",
+                "AZURE_CLIENT_SECRET", "AZURE_TENANT_ID"):
+        monkeypatch.delenv(var, raising=False)
+    out = det.get_on_demand_usage_by_subscription(
+        start_date=date(2026, 7, 1), end_date=date(2026, 7, 31))
+    assert out.get("error"), "unconfigured returned a silent empty result"
+
+
+# ── detector edges the first pass missed ─────────────────────────────────────
+
+def test_zero_wasted_hours_is_never_flagged_even_below_the_floor():
+    """util < floor with wasted_hours 0 can happen on partial windows. There is
+    nothing to recover, so there is no finding."""
+    assert find_scope_limited_reservations(
+        [_res(avg_utilization_pct=55.0, wasted_hours=0.0)], [_usage()]) == []
+
+
+def test_duplicate_usage_rows_double_count_and_that_is_bounded_by_waste():
+    """Pagination retries can duplicate a row. The sum inflates, but the min()
+    bound caps the FIGURE at the wasted-hours value, so a duplicate can never
+    overstate the claim past what the reservation actually wasted."""
+    f = find_scope_limited_reservations([_res()], [_usage(), _usage()])[0]
+    assert f.metadata["sibling_on_demand_usd"] == pytest.approx(1800.0)
+    assert f.est_monthly_savings == pytest.approx(320.0)   # still the waste bound
+
+
+def test_utilisation_above_100_reads_as_healthy_not_as_garbage():
+    assert find_scope_limited_reservations(
+        [_res(avg_utilization_pct=104.0)], [_usage()]) == []
+
+
+def test_mixed_case_subscription_ids_still_match_reachability():
+    res = _res(applied_scopes=["/SUBSCRIPTIONS/11111111-1111-1111-1111-111111111111"])
+    covered = _usage(subscription_id="11111111-1111-1111-1111-111111111111".upper())
+    assert find_scope_limited_reservations([res], [covered]) == []
+
+
+def test_backfill_never_overwrites_a_field_the_summaries_already_carry(monkeypatch):
+    """Caught by mutation testing: the fill-only test above had every field
+    blank, so overwrite and fill-gap were indistinguishable. Here the summaries
+    already gave a region and the list API disagrees; summaries win, because
+    they are the record of what the utilisation figures were computed against."""
+    import finops.connectors.azure_detail as det
+
+    reservations = [{
+        "reservation_id": "/x/r1",
+        "region": "eastus",                    # already known from summaries
+        "meter_id": "", "applied_scope_type": "", "applied_scopes": [],
+    }]
+    _fake_httpx(monkeypatch, get_pages=[_FakeResp({"value": [{
+        "id": "/x/r1", "location": "westus2",  # list API disagrees
+        "properties": {"appliedScopeType": "Single",
+                       "appliedScopes": ["/subscriptions/abc"],
+                       "meterId": "m-1"},
+    }]})])
+    det._backfill_reservation_scopes(reservations, {})
+    r = reservations[0]
+    assert r["region"] == "eastus", "backfill overwrote a summaries field"
+    assert r["applied_scope_type"] == "Single"   # the gap still filled
+    assert r["meter_id"] == "m-1"
