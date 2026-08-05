@@ -351,8 +351,7 @@ def test_the_session_guard_blocks_a_real_cost_explorer_call():
     import boto3
 
     client = boto3.client("ce", region_name="us-east-1",
-                          aws_access_key_id="AKIAIOSFODNN7EXAMPLE",
-                          aws_secret_access_key="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+                          aws_access_key_id="testing", aws_secret_access_key="testing")
     with pytest.raises(AssertionError) as e:
         client.get_cost_and_usage(
             TimePeriod={"Start": "2026-08-01", "End": "2026-08-02"},
@@ -366,8 +365,7 @@ def test_the_session_guard_blocks_athena_too():
     import boto3
 
     client = boto3.client("athena", region_name="us-east-1",
-                          aws_access_key_id="AKIAIOSFODNN7EXAMPLE",
-                          aws_secret_access_key="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+                          aws_access_key_id="testing", aws_secret_access_key="testing")
     with pytest.raises(AssertionError):
         client.start_query_execution(QueryString="SELECT 1")
 
@@ -379,8 +377,7 @@ def test_the_guard_does_not_block_unbilled_services():
     import botocore.exceptions
 
     client = boto3.client("ec2", region_name="us-east-1",
-                          aws_access_key_id="AKIAIOSFODNN7EXAMPLE",
-                          aws_secret_access_key="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+                          aws_access_key_id="testing", aws_secret_access_key="testing")
     # Reaches the network layer and fails there (or on auth), NOT on our guard.
     with pytest.raises(Exception) as e:
         client.describe_volumes(VolumeIds=["vol-00000000000000000"])
