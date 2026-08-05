@@ -482,7 +482,16 @@ def get_reservation_utilization(
             "used_hours":          round(used_hrs, 2),
             "reserved_hours":      round(reserved_hrs, 2),
             "wasted_hours":        round(wasted_hrs, 2),
+            # The scope detector needs these. The summaries API carries them
+            # inconsistently across offer types, so they are best-effort here and
+            # back-filled from the Reservations list API below when absent.
+            "meter_id":            _str(props.get("meterId") or ""),
+            "region":              _str(props.get("location") or ""),
+            "applied_scope_type":  _str(props.get("appliedScopeType") or ""),
+            "applied_scopes":      props.get("appliedScopes") or [],
         })
+
+    _backfill_reservation_scopes(reservations, headers)
 
     avg_util_overall = (
         round(sum(utilization_pcts) / len(utilization_pcts), 2)
@@ -495,6 +504,123 @@ def get_reservation_utilization(
         "period":               f"{start_date} to {end_date}",
         "source":               "azure_reservations_api",
     }
+
+
+def _backfill_reservation_scopes(reservations: list[dict], headers: dict) -> None:
+    """Fill scope/meter/region gaps from the Reservations list API.
+
+    The summaries endpoint reports utilisation; the reservations endpoint is the
+    source of truth for appliedScopeType and appliedScopes. Best-effort: a
+    reservation we cannot enrich keeps blank scope fields, and the scope detector
+    treats an unknown scope as not-narrow, so enrichment failure can only produce
+    a missed finding, never a false one.
+    """
+    if not reservations or not any(
+        not r.get("applied_scope_type") for r in reservations
+    ):
+        return
+    try:
+        import httpx
+    except ImportError:
+        return
+
+    url = f"{_MGMT_BASE}/providers/Microsoft.Capacity/reservations?api-version={_CAP_API_VER}"
+    by_id: dict[str, dict] = {}
+    while url:
+        try:
+            resp = httpx.get(url, headers=headers, timeout=60)
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as exc:
+            log.warning("Azure reservations list fetch failed: %s", exc)
+            return
+        for item in data.get("value", []):
+            props = item.get("properties", {})
+            by_id[_str(item.get("id", "")).lower()] = {
+                "applied_scope_type": _str(props.get("appliedScopeType") or props.get("userFriendlyAppliedScopeType") or ""),
+                "applied_scopes": props.get("appliedScopes") or [],
+                "meter_id": _str((props.get("skuDescription") and props.get("meterId")) or props.get("meterId") or ""),
+                "region": _str(item.get("location") or ""),
+                "sku_name": _str((item.get("sku") or {}).get("name") or ""),
+            }
+        url = data.get("nextLink")
+
+    for r in reservations:
+        detail = by_id.get(_str(r.get("reservation_id")).lower())
+        if not detail:
+            continue
+        for key in ("applied_scope_type", "applied_scopes", "meter_id", "region"):
+            if not r.get(key):
+                r[key] = detail[key]
+        if not r.get("sku_name") and detail.get("sku_name"):
+            r["sku_name"] = detail["sku_name"]
+
+
+def get_on_demand_usage_by_subscription(
+    start_date: date,
+    end_date: date,
+) -> dict[str, Any]:
+    """On-demand (undiscounted) spend per subscription per meter over the window.
+
+    The scope detector's third condition: money a narrowly-scoped reservation
+    COULD have absorbed but did not, because it cannot reach the subscription
+    that spent it. Grouped by MeterId so it joins against reservation meters,
+    and filtered to OnDemand pricing so already-discounted usage never counts as
+    recoverable a second time.
+
+    Queries every subscription in AZURE_SUBSCRIPTION_ID. One subscription
+    failing (no Cost Management access, moved tenant) skips it with a warning
+    rather than losing the rest; the detector then simply cannot see that
+    sibling, which can only under-report.
+    """
+    if not is_configured():
+        return _error("Azure not configured.")
+    try:
+        import httpx  # noqa: F401
+    except ImportError:
+        return _error("httpx is required. Run: pip install httpx")
+    try:
+        token = _get_access_token()
+    except RuntimeError as exc:
+        log.warning("Azure auth failed: %s", exc)
+        return _error(str(exc))
+
+    body = {
+        "type": "ActualCost",
+        "timeframe": "Custom",
+        "timePeriod": {"from": f"{start_date}T00:00:00Z", "to": f"{end_date}T23:59:59Z"},
+        "dataset": {
+            "granularity": "None",
+            "aggregation": {"totalCost": {"name": "Cost", "function": "Sum"}},
+            "grouping": [
+                {"type": "Dimension", "name": "MeterId"},
+                {"type": "Dimension", "name": "MeterSubCategory"},
+                {"type": "Dimension", "name": "ResourceLocation"},
+            ],
+            "filter": {
+                "dimensions": {"name": "PricingModel", "operator": "In", "values": ["OnDemand"]}
+            },
+        },
+    }
+
+    usage: list[dict] = []
+    for sub_id in _subscription_ids():
+        try:
+            rows = _query_cost_management(token, sub_id, body)
+        except Exception as exc:
+            log.warning("Azure on-demand usage fetch failed for %s: %s", sub_id, exc)
+            continue
+        for row in rows:
+            usage.append({
+                "subscription_id": sub_id,
+                "meter_id": _str(row.get("MeterId", "")),
+                "sku_name": _str(row.get("MeterSubCategory", "")),
+                "region": _str(row.get("ResourceLocation", "")),
+                "on_demand_cost_usd": _float(row.get("Cost", row.get("totalCost", 0))),
+            })
+
+    return {"usage": usage, "period": f"{start_date} to {end_date}",
+            "source": "azure_cost_management"}
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────

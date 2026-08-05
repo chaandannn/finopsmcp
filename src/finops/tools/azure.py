@@ -363,3 +363,86 @@ async def get_azure_cost_by_dimension(
     except Exception as exc:
         _srv.log.error("get_azure_cost_by_dimension failed: %s", exc)
         return {"error": str(exc)}
+
+
+@_srv.mcp.tool()
+async def audit_azure_reservation_scope(
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> dict:
+    """
+    Find Azure reservations locked to one subscription while a sibling
+    subscription pays full price for the same capacity.
+
+    A reservation scoped to a single subscription only discounts resources in
+    that subscription; matching workloads anywhere else in the billing account
+    pay on-demand rates while the reservation's hours go unused. The fix is a
+    free portal setting (scope -> Shared): no exchange, no refund, no new
+    commercial transaction.
+
+    A finding requires ALL THREE, so deliberate single-scoping (capacity
+    priority, chargeback) is never flagged on its own:
+      1. the reservation is scoped to a single subscription or resource group
+      2. it is measurably underutilised over the window
+      3. a subscription it cannot reach spent real money on the same meter
+
+    Args:
+        start_date: ISO date (YYYY-MM-DD). Defaults to 30 days ago.
+        end_date: ISO date. Defaults to today.
+
+    Examples:
+        - "Are any Azure reservations scoped too narrowly?"
+        - "Is reserved capacity going unused while another subscription pays full price?"
+        - "Audit our Azure reservation scopes"
+    """
+    sd, ed = _srv._default_dates()
+    if start_date:
+        try:
+            sd = _srv.date.fromisoformat(start_date)
+        except ValueError:
+            return {"error": "start_date must be ISO format YYYY-MM-DD."}
+    if end_date:
+        try:
+            ed = _srv.date.fromisoformat(end_date)
+        except ValueError:
+            return {"error": "end_date must be ISO format YYYY-MM-DD."}
+
+    try:
+        from ..connectors.azure_detail import (
+            get_on_demand_usage_by_subscription,
+            get_reservation_utilization,
+        )
+        from ..recommendations.azure_reservation_scope import (
+            find_scope_limited_reservations,
+        )
+        from ..recommendations.critique import critique
+
+        util = await _srv.asyncio.to_thread(get_reservation_utilization,
+                                            start_date=sd, end_date=ed)
+        if util.get("error"):
+            return util
+        usage = await _srv.asyncio.to_thread(get_on_demand_usage_by_subscription,
+                                             start_date=sd, end_date=ed)
+        if usage.get("error"):
+            return usage
+
+        findings = find_scope_limited_reservations(
+            util.get("reservations") or [], usage.get("usage") or [])
+        reviewed = critique([f.to_dict() for f in findings], use_llm=False)
+
+        confirmed = [f for f in reviewed
+                     if (f.get("critique") or {}).get("survived", True)]
+        total = sum(f.get("est_monthly_savings") or 0.0 for f in confirmed)
+        return {
+            "findings": reviewed,
+            "reservations_checked": len(util.get("reservations") or []),
+            "subscriptions_checked": len({u.get("subscription_id")
+                                          for u in usage.get("usage") or []}),
+            "est_monthly_savings_usd": round(total, 2),
+            "period": f"{sd} to {ed}",
+            "note": ("The fix is a free portal setting change (scope -> Shared). "
+                     "nable proposes it and changes nothing."),
+        }
+    except Exception as exc:
+        _srv.log.error("audit_azure_reservation_scope failed: %s", exc)
+        return {"error": str(exc)}

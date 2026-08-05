@@ -231,7 +231,7 @@ _AZURE: frozenset[str] = frozenset({
     "get_azure_advisor_recommendations",
     "get_azure_budgets",
     "get_azure_cost_by_dimension",
-    "get_azure_reservation_utilization",
+    "get_azure_reservation_utilization", "audit_azure_reservation_scope",
     "get_azure_vm_rightsizing",
     "get_resource_cost_breakdown_azure",
 })
