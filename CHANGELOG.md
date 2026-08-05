@@ -2,6 +2,14 @@
 
 All notable changes to finops-mcp (nable).
 
+## 0.8.206
+
+- **Three detections that look where native advisors never do.** Cloud advisors report utilisation of running compute; almost nothing watches billing configuration and per-operation charges. All three ship with the trust envelope on: a figure is only precise when it was measured, everything else is an honest size band with the exact confirm step that turns it into a number, and every finding survives the adversarial critique pass before you see it.
+- **Azure: a reservation locked to one subscription while another pays full price.** A single-scoped reservation cannot discount matching workloads in sibling subscriptions, so its unused hours are lost while the sibling pays on-demand rates. nable flags this only when all three conditions hold: the scope is narrow, the reservation is measurably underutilised, and a subscription it cannot reach spent real money on the same meter. That third condition is the one no native tool computes, and it is what separates deliberate architecture (capacity priority, chargeback) from waste. The recoverable figure is bounded by both sides, the wasted hours and the sibling spend, because either number alone overstates. The fix is a free portal setting: scope to Shared, no exchange, no refund.
+- **GCP: Cloud NAT data-processing fees that dwarf the gateway itself.** NAT bills per gigabyte processed on top of its hourly charge, and the per-gigabyte side hides inside the service total. Flagged when the processing fee clears $50 a month and runs at least twice the uptime charge. The classic driver is Google-API-bound traffic that Private Google Access would carry free; the confirm step is a day of VPC flow logs.
+- **GCP: Cloud Storage request charges out of proportion to the data.** Class A and B operation fees at 30% or more of storage cost mean the access pattern is filesystem-shaped: many small objects, list-heavy walks, gcsfuse on a hot path. The recoverable figure counts only the excess over a healthy operations share, so ordinary usage is never claimed as waste.
+- Honesty over coverage, stated plainly: none of the three has run against a live tenant yet, so SKU and field matching is pinned to documented shapes and the chosen failure mode is silence, not noise. A renamed SKU makes a detection go quiet; it cannot make one invent a finding.
+
 ## 0.8.205
 
 - **nable now does the work before you show up.** `nable brief` runs the scan, reviews what it found, ranks it, and drafts each change; a scheduled job does the same thing overnight so it is waiting at six in the morning rather than being requested. Every item carries the four things somebody actually needs before they will touch anything: what it is and what it costs, what breaks if you touch it, the exact change as commands you can read, and how you will know next month whether it worked. It opens nothing, files nothing, and runs nothing.
