@@ -279,3 +279,53 @@ class GCPConnector(BaseConnector):
 
     async def list_accounts(self) -> list[dict[str, str]]:
         return [{"id": b, "name": b} for b in self._billing_account_ids]
+
+
+def get_sku_costs_by_project(start_date: date, end_date: date) -> dict:
+    """Per-project, per-SKU net cost from the BigQuery billing export.
+
+    The shared input for the traffic-shaped waste detections (Cloud NAT data
+    processing, GCS request overhead): both are per-operation charges that only
+    the export itemises. The Billing API cannot answer this, so without
+    GCP_BQ_BILLING_TABLE this returns an explicit error rather than an empty
+    list an absent export would make indistinguishable from a clean estate.
+
+    Net cost includes credits (stored negative), matching _query_bigquery: a
+    CUD-covered SKU that summed gross would overstate by 10-30% and the
+    detections would flag money that is not actually being paid.
+    """
+    bq_table = os.getenv("GCP_BQ_BILLING_TABLE")
+    if not bq_table:
+        return {"error": ("GCP_BQ_BILLING_TABLE is not set. SKU-level detection "
+                          "needs the BigQuery billing export.")}
+    try:
+        from google.cloud import bigquery
+    except ImportError:
+        return {"error": "google-cloud-bigquery is not installed."}
+
+    query = f"""
+        SELECT
+            project.id AS project_id,
+            service.description AS service,
+            sku.description AS sku,
+            SUM(cost + IFNULL((SELECT SUM(c.amount) FROM UNNEST(credits) c), 0)) AS cost_usd
+        FROM `{bq_table}`
+        WHERE
+            DATE(usage_start_time) >= @start_date
+            AND DATE(usage_start_time) <= @end_date
+        GROUP BY project_id, service, sku
+        HAVING cost_usd > 0
+        ORDER BY cost_usd DESC
+    """
+    try:
+        client = bigquery.Client()
+        job_config = bigquery.QueryJobConfig(query_parameters=[
+            bigquery.ScalarQueryParameter("start_date", "DATE", start_date.isoformat()),
+            bigquery.ScalarQueryParameter("end_date", "DATE", end_date.isoformat()),
+        ])
+        rows = [dict(r) for r in client.query(query, job_config=job_config).result()]
+    except Exception as exc:
+        return {"error": f"BigQuery billing export query failed: {type(exc).__name__}"}
+
+    return {"rows": rows, "period": f"{start_date} to {end_date}",
+            "source": "gcp_bigquery_billing_export"}
