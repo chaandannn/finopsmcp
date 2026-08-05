@@ -175,3 +175,41 @@ def test_a_missing_engine_is_explained_rather_than_traced(monkeypatch):
         assert "--from finops-mcp" in err.getvalue()
     finally:
         sys.path.remove(str(SHIM))
+
+
+# ── the commands we TEACH must not land on the redirect ──────────────────────
+
+def test_the_readme_never_teaches_an_unpinned_uvx_nable():
+    """uvx uses whatever system interpreter it finds and will NOT download a
+    newer one:
+
+        DEBUG Caching via base interpreter: .../Versions/3.10/bin/python3
+        DEBUG Solving with installed Python version: 3.10.5
+
+    So a bare `uvx nable` lands on the 3.11 redirect for anyone whose default
+    python is 3.10 — Ubuntu 22.04, most older pyenv setups, many CI images. The
+    redirect is a safety net for people who type the short form from memory, not
+    something our own docs should be routing people into.
+    """
+    readme = (REPO / "README.md").read_text()
+    offenders = [
+        line.strip()
+        for line in readme.splitlines()
+        if re.search(r"(?<!-)\buvx nable\b", line)
+    ]
+    assert not offenders, (
+        "these teach an unpinned uvx nable, which hits the redirect on Python "
+        "3.10; use `uvx --python 3.12 nable`:\n  " + "\n  ".join(offenders)
+    )
+
+
+def test_the_cloudshell_command_pins_the_interpreter():
+    """Cloud shells are the worst case: AWS CloudShell ships Python 3.9, so an
+    unpinned command cannot work there at all."""
+    sys.path.insert(0, str(REPO / "src"))
+    try:
+        from finops import cloudshell
+        assert "--python" in cloudshell.COMMAND
+        assert cloudshell.PYTHON >= "3.11"
+    finally:
+        sys.path.remove(str(REPO / "src"))

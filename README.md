@@ -19,7 +19,7 @@ Built for the engineer who owns the bill, not a dedicated FinOps team. Everythin
 ## Try it
 
 ```bash
-uvx nable scan
+uvx --python 3.12 nable scan
 ```
 
 ```text
@@ -36,13 +36,13 @@ $2,140/mo recoverable
 run `nable scan --spend` for the spend breakdown (uses Cost Explorer, ~$0.02)
 ```
 
-Reads only free cloud APIs, so scanning never adds to your bill. `uvx nable scan --demo` runs on sample data with no account at all. Add `--json` for CI, or `--spend` for a deeper breakdown.
+Reads only free cloud APIs, so scanning never adds to your bill. `uvx --python 3.12 nable scan --demo` runs on sample data with no account at all. Add `--json` for CI, or `--spend` for a deeper breakdown.
 
 ![nable demo: a sample bill in seconds](https://raw.githubusercontent.com/getnable/finopsmcp/main/docs/demo.gif)
 
 ## Use it in your editor
 
-`uvx nable` runs as a local MCP server inside Claude, Cursor, and VS Code, on your existing Claude or Cursor membership, no API key and no per-token cost. Then ask:
+`uvx --python 3.12 nable` runs as a local MCP server inside Claude, Cursor, and VS Code, on your existing Claude or Cursor membership, no API key and no per-token cost. Then ask:
 
 - "Why did our AWS bill jump last month?"
 - "How much are we spending on OpenAI and Anthropic?"
@@ -54,7 +54,7 @@ Reads only free cloud APIs, so scanning never adds to your bill. `uvx nable scan
 Requires Python 3.11+. Need `uv`? `curl -LsSf https://astral.sh/uv/install.sh | sh` (or `brew install uv`).
 
 ```bash
-uvx nable
+uvx --python 3.12 nable
 ```
 
 The setup wizard finds AWS or GCP credentials already on your machine (an SSO login, a CLI profile, or default credentials), connects the one you pick, and configures your editor. Usually you never type a key.
@@ -199,7 +199,7 @@ finops setup claude    # re-run editor configuration only
 | Tools don't appear in Claude | Switch to uvx config or use absolute path |
 | `command not found: finops-mcp` | Re-install with `pip install finops-mcp` or use `uvx` |
 | AWS returns no data | Run `finops setup aws` |
-| `No matching distribution found for finops-mcp` | Your Python is older than 3.11. Install on 3.11+ (`uvx nable`, or `python3.11 -m pip install finops-mcp`). |
+| `No matching distribution found for finops-mcp` | Your Python is older than 3.11. Install on 3.11+ (`uvx --python 3.12 nable`, or `python3.11 -m pip install finops-mcp`). |
 | `cryptography` build error / `maturin failed` | uv tried to compile on Python 3.10. Use 3.11+: `uvx --python 3.12 nable`. |
 | Corporate SSL errors | `pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org finops-mcp` |
 | Works at home, not at work | Use `uvx` (corporate IT often strips custom PATH entries) |
