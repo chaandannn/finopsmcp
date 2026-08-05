@@ -42,6 +42,26 @@ def _reauth_hint(session) -> str:
     )
 
 
+class _DemoRefusingClient:
+    """A Cost Explorer client that exists but will not call anything.
+
+    Demo mode serves StreamCo data; every code path is supposed to intercept
+    before an API call happens. Handing those paths a real client meant a missed
+    interception spent real money on the presenter's account. This keeps
+    construction working (paths that build-then-discard are unaffected) and turns
+    a missed interception into an obvious error rather than a charge.
+    """
+
+    def __getattr__(self, name: str):
+        def _refuse(*_a, **_k):
+            raise RuntimeError(
+                f"demo mode called the real Cost Explorer API ({name}). Demo data "
+                f"should have been served before this point; this is a bug in the "
+                f"demo interception, not a configuration problem."
+            )
+        return _refuse
+
+
 class AWSConnector(BaseConnector):
     provider = "aws"
 
@@ -88,6 +108,29 @@ class AWSConnector(BaseConnector):
     def _make_client(self, role_arn: str | None = None):
         import boto3
         from botocore.config import Config as _BotoConfig
+
+        # Demo mode must never hold a live Cost Explorer client. It used to get a
+        # real one: every demo path is expected to intercept the RESULT and serve
+        # StreamCo data instead, so the client was built and discarded. Any path
+        # that forgot to intercept would have billed the presenter's own AWS
+        # account mid-demo. This returns a client that refuses every call, so a
+        # missed interception fails loudly on a laptop instead of silently
+        # spending money in front of a customer.
+        from ..demo_data import is_demo
+
+        if is_demo():
+            return _DemoRefusingClient()
+
+        # The gate. nable reads cost from the CUR billing export, which is free
+        # to query and carries line items; Cost Explorer bills per request and
+        # only ever returns aggregates. This raises BillingAccessError unless an
+        # operator explicitly opted in, so the default path through the main AWS
+        # cost connector can no longer put a charge on the customer's bill.
+        from ..billing_access import cost_explorer_allowed, ce_client
+
+        if not cost_explorer_allowed():
+            ce_client(reason="AWSConnector._make_client")   # raises with the fix
+
 
         # Without explicit timeouts botocore waits 60s per attempt with ~4
         # retries; under CE throttling that leaks worker threads for minutes

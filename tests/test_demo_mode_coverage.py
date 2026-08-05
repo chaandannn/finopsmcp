@@ -9,6 +9,21 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import patch
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _force_demo(monkeypatch):
+    """Patching DEMO_MODE is not enough to be in demo mode.
+
+    is_demo() yields to real data whenever a provider is connected, so on any
+    developer machine with AWS credentials these "demo" tests silently exercised
+    the LIVE path and made real ce:GetCostAndUsage requests, billing whoever ran
+    the suite. FINOPS_DEMO_FORCE is the switch that means "demo even though real
+    credentials exist", which is what a demo test actually wants.
+    """
+    monkeypatch.setenv("FINOPS_DEMO_FORCE", "1")
+
 
 def test_optimize_ai_spend_demo_shows_real_plan():
     import finops.server as srv

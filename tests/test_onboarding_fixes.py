@@ -168,6 +168,10 @@ def test_demo_value_moment_renders_and_skips_real_aws_tools(monkeypatch):
     from finops import server
 
     monkeypatch.setattr(dd, "DEMO_MODE", True)
+    # DEMO_MODE alone is not demo mode: is_demo() yields to real data when a
+    # provider is connected, so without this the test hit real AWS on any
+    # machine with credentials — the exact bug the test was written to prevent.
+    monkeypatch.setenv("FINOPS_DEMO_FORCE", "1")
     called = {"idle": 0, "ai": 0}
 
     async def _idle(*a, **k):
