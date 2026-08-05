@@ -237,7 +237,7 @@ _AZURE: frozenset[str] = frozenset({
 })
 
 _GCP: frozenset[str] = frozenset({
-    "audit_gcp_waste",
+    "audit_gcp_waste", "audit_gcp_nat_fees", "audit_gcs_request_overhead",
     "get_gcp_recommendations",
 })
 

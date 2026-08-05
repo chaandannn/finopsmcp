@@ -1851,7 +1851,9 @@ from .tools.forecast import (  # noqa: E402,F401
     forecast_costs,
 )
 from .tools.gcp import (  # noqa: E402,F401
+    audit_gcp_nat_fees,
     audit_gcp_waste,
+    audit_gcs_request_overhead,
     connect_gcp,
     get_gcp_recommendations,
 )

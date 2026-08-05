@@ -274,3 +274,115 @@ async def connect_gcp(billing_account_id: str = "") -> dict:
         "note": ("Credentials stay on this machine. nable reads billing data only; it never "
                  "changes your Google Cloud account."),
     }
+
+
+def _sku_window(start_date: str | None, end_date: str | None):
+    sd, ed = _srv._default_dates()
+    if start_date:
+        sd = _srv.date.fromisoformat(start_date)
+    if end_date:
+        ed = _srv.date.fromisoformat(end_date)
+    return sd, ed
+
+
+@_srv.mcp.tool()
+async def audit_gcp_nat_fees(
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> dict:
+    """
+    Find Cloud NAT gateways whose data-processing fees dwarf their uptime charge.
+
+    NAT bills per gigabyte processed on top of the hourly gateway charge, and
+    the per-GB side is invisible in every service-level cost view. The classic
+    driver is Google-API-bound traffic that Private Google Access would carry
+    free. Findings are investigations with the measured fee attached: the
+    avoidable share needs VPC flow logs, which nable does not read, so no
+    precise savings figure is invented.
+
+    Requires the BigQuery billing export (GCP_BQ_BILLING_TABLE).
+
+    Args:
+        start_date: ISO date (YYYY-MM-DD). Defaults to 30 days ago.
+        end_date: ISO date. Defaults to today.
+
+    Examples:
+        - "Are we overpaying for Cloud NAT?"
+        - "Why is NAT data processing so expensive?"
+    """
+    try:
+        sd, ed = _sku_window(start_date, end_date)
+    except ValueError:
+        return {"error": "dates must be ISO format YYYY-MM-DD."}
+    try:
+        from ..connectors.gcp import get_sku_costs_by_project
+        from ..recommendations.critique import critique
+        from ..recommendations.gcp_traffic_costs import find_nat_processing_overhead
+
+        data = await _srv.asyncio.to_thread(get_sku_costs_by_project, sd, ed)
+        if data.get("error"):
+            return data
+        findings = find_nat_processing_overhead(data.get("rows") or [])
+        reviewed = critique([f.to_dict() for f in findings], use_llm=False)
+        return {
+            "findings": reviewed,
+            "projects_checked": len({r.get("project_id")
+                                     for r in data.get("rows") or [] if r.get("project_id")}),
+            "period": f"{sd} to {ed}",
+            "note": ("Fees are measured from the billing export; the avoidable share "
+                     "needs a flow-log check, so figures are size bands, not claims."),
+        }
+    except Exception as exc:
+        _srv.log.error("audit_gcp_nat_fees failed: %s", exc)
+        return {"error": str(exc)}
+
+
+@_srv.mcp.tool()
+async def audit_gcs_request_overhead(
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> dict:
+    """
+    Find projects paying more for GCS operations than the stored data justifies.
+
+    Class A/B request charges ride on top of storage cost, and when they reach a
+    meaningful share of it the access pattern is filesystem-shaped: many small
+    objects, list-heavy walks, gcsfuse on a hot path. Findings are
+    investigations sized by the excess over a healthy operations share; normal
+    usage is never counted as recoverable.
+
+    Requires the BigQuery billing export (GCP_BQ_BILLING_TABLE).
+
+    Args:
+        start_date: ISO date (YYYY-MM-DD). Defaults to 30 days ago.
+        end_date: ISO date. Defaults to today.
+
+    Examples:
+        - "Why is Cloud Storage so expensive when we store so little?"
+        - "Are GCS request charges eating us?"
+    """
+    try:
+        sd, ed = _sku_window(start_date, end_date)
+    except ValueError:
+        return {"error": "dates must be ISO format YYYY-MM-DD."}
+    try:
+        from ..connectors.gcp import get_sku_costs_by_project
+        from ..recommendations.critique import critique
+        from ..recommendations.gcp_traffic_costs import find_gcs_request_overhead
+
+        data = await _srv.asyncio.to_thread(get_sku_costs_by_project, sd, ed)
+        if data.get("error"):
+            return data
+        findings = find_gcs_request_overhead(data.get("rows") or [])
+        reviewed = critique([f.to_dict() for f in findings], use_llm=False)
+        return {
+            "findings": reviewed,
+            "projects_checked": len({r.get("project_id")
+                                     for r in data.get("rows") or [] if r.get("project_id")}),
+            "period": f"{sd} to {ed}",
+            "note": ("Operation fees are measured; the recoverable share is the excess "
+                     "over a healthy ops-to-storage ratio, reported as a size band."),
+        }
+    except Exception as exc:
+        _srv.log.error("audit_gcs_request_overhead failed: %s", exc)
+        return {"error": str(exc)}
