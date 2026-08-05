@@ -14,7 +14,20 @@ build-backend = "hatchling.build"
 # uv select or download a modern interpreter instead, and the dependency floor
 # guarantees no resolver can reach back past the fix.
 #
-# 0.1.2 ships the CLI front door: the entry point repoints to the light
+# 0.1.3 REVERSES the floor, on purpose. Raising requires-python to 3.11 in 0.1.1
+# did not close the staleness trap, it created a worse one: on a 3.10 interpreter
+# 0.1.1 and 0.1.2 both excluded themselves, leaving 0.1.0 as the only installable
+# version. `uvx nable` there resolved to finops-mcp 0.8.87 — no scan command, no
+# entry dispatcher, and an mcp pin that raised ModuleNotFoundError on import. The
+# user got a traceback and we got no telemetry, because it died before our code
+# ran. Measured 2026-08-05: 0.1.0 + finops-mcp 0.8.87 on a stock 3.10.
+#
+# So the floor goes DOWN to 3.9, the engine dependency moves behind a
+# python_version marker, and nable_shim.py does the check at runtime. Now the
+# newest version is installable everywhere, always wins resolution, and an old
+# interpreter gets one actionable line instead of a stack trace.
+#
+# 0.1.2 shipped the CLI front door: the entry point repoints to the light
 # dispatcher (finops.entry:main) so `uvx nable scan` prints in under 2s instead
 # of paying the ~0.9s server import first, and the floor rises to the first
 # release that has finops/entry.py + the scan subcommand. Without the floor
@@ -22,10 +35,10 @@ build-backend = "hatchling.build"
 # all: the same staleness trap 0.1.1 fixed, one layer up.
 [project]
 name = "nable"
-version = "0.1.2"
+version = "0.1.3"
 description = "Ask Claude about your cloud and AI bill. Brand alias for finops-mcp."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.9"
 license = { text = "Elastic-2.0" }
 authors = [{ name = "Chandan Bukkapatnam", email = "chbu0285@colorado.edu" }]
 keywords = ["finops", "mcp", "aws", "azure", "gcp", "cloud cost", "claude", "cursor"]
@@ -34,7 +47,7 @@ classifiers = [
   "Programming Language :: Python :: 3",
   "Topic :: System :: Systems Administration",
 ]
-dependencies = ["finops-mcp>=0.8.181"]
+dependencies = ["finops-mcp>=0.8.181; python_version >= '3.11'"]
 
 [project.urls]
 Homepage = "https://getnable.com"
@@ -42,9 +55,9 @@ Documentation = "https://getnable.com/docs"
 Repository = "https://github.com/getnable/finopsmcp"
 
 [project.scripts]
-nable = "finops.entry:main"
+nable = "nable_shim:main"
 
 [tool.hatch.build.targets.wheel]
-# Metadata-only package: no Python modules to include, just the entry point that
-# resolves into the finops-mcp dependency.
-bypass-selection = true
+# 0.1.3 ships one real module: the version check has to run somewhere, and it
+# has to run on interpreters too old to install finops-mcp at all.
+include = ["nable_shim.py"]
