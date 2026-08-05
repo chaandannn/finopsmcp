@@ -214,30 +214,42 @@ def test_timed_out_regions_are_reported(monkeypatch):
     assert "2 region(s) timed out" in gaps and "ap-southeast-2" in gaps
 
 
-def test_the_scheduler_job_is_registered_and_calls_the_run(monkeypatch):
-    """The wiring, not the unit: deleting the add_job line must fail a test."""
+def test_the_open_core_ships_no_schedule_for_the_brief():
+    """The brief OBJECT is open; the SCHEDULE is not.
+
+    0.8.205 briefly shipped an APScheduler job here. That put the always-on loop
+    on the wrong side of the open/closed line (BOUNDARY.md: the watch loop, the
+    scheduler and the hosted surfaces are the closed layer), and it grew a second
+    loop beside the one nable-enterprise already had. The schedule now lives in
+    nable_enterprise/brief.py, riding the existing watch loop and its
+    push-on-change dedup.
+
+    What stays open is everything a person can run on demand: `nable brief`,
+    build_brief, the resource map, the renderers.
+    """
     import inspect
 
     from finops.scheduler import jobs
 
     src = inspect.getsource(jobs)
-    assert "job_morning_brief" in src
-    assert 'id="morning_brief"' in src
-    assert "NABLE_BRIEF_CRON" in src
-
-    called = []
-    monkeypatch.setattr("finops.briefing.run.run_overnight",
-                        lambda *a, **k: called.append(1) or {
-                            "summary": {"actionable_count": 0, "investigation_count": 0},
-                            "delivered": {}})
-    jobs.job_morning_brief()
-    assert called == [1]
+    assert "morning_brief" not in src, (
+        "the brief schedule belongs in nable-enterprise, not the open core"
+    )
+    assert not hasattr(jobs, "job_morning_brief")
 
 
-def test_the_scheduler_job_swallows_failures(monkeypatch):
-    """A failing brief must not take the whole scheduler down with it."""
-    from finops.scheduler import jobs
+def test_the_brief_is_still_fully_available_on_demand():
+    """Removing the schedule must not remove the product. Everything the CLI and
+    an enterprise tick need is still importable from the open package."""
+    from finops.briefing import build_brief, to_html, to_markdown, to_slack_blocks
+    from finops.briefing.run import gather_findings, latest, run_overnight
 
-    monkeypatch.setattr("finops.briefing.run.run_overnight",
-                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("nope")))
-    jobs.job_morning_brief()          # must not raise
+    for fn in (build_brief, to_html, to_markdown, to_slack_blocks,
+               gather_findings, latest, run_overnight):
+        assert callable(fn)
+
+
+def test_run_overnight_still_works_without_any_scheduler():
+    out = brun.run_overnight(findings=FINDINGS, today=TODAY, now=NOW)
+    assert out["summary"]["actionable_count"] == 1
+    assert out["delivered"] == {}
