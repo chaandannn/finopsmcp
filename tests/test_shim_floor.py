@@ -179,27 +179,23 @@ def test_a_missing_engine_is_explained_rather_than_traced(monkeypatch):
 
 # ── the commands we TEACH must not land on the redirect ──────────────────────
 
-def test_the_readme_never_teaches_an_unpinned_uvx_nable():
-    """uvx uses whatever system interpreter it finds and will NOT download a
-    newer one:
+def test_the_readme_teaches_the_short_command_and_documents_the_pinned_one():
+    """`uvx nable` is the brand and the thing people type from memory. On 3.11+
+    it is strictly better, and on 3.10 shim 0.1.3 turns it into a ten-second
+    redirect rather than a traceback — which is exactly what that redirect is
+    for.
 
-        DEBUG Caching via base interpreter: .../Versions/3.10/bin/python3
-        DEBUG Solving with installed Python version: 3.10.5
-
-    So a bare `uvx nable` lands on the 3.11 redirect for anyone whose default
-    python is 3.10 — Ubuntu 22.04, most older pyenv setups, many CI images. The
-    redirect is a safety net for people who type the short form from memory, not
-    something our own docs should be routing people into.
+    Pinning `--python 3.12` in the headline command would hardcode an ageing
+    version into the most-copied string we own and make a working tool look
+    fragile. So the short form stays in the prose, and the pinned form stays in
+    the troubleshooting table where it is the actual remedy.
     """
     readme = (REPO / "README.md").read_text()
-    offenders = [
-        line.strip()
-        for line in readme.splitlines()
-        if re.search(r"(?<!-)\buvx nable\b", line)
-    ]
-    assert not offenders, (
-        "these teach an unpinned uvx nable, which hits the redirect on Python "
-        "3.10; use `uvx --python 3.12 nable`:\n  " + "\n  ".join(offenders)
+    assert "uvx nable" in readme, "the short brand command must be what we teach"
+    # ...and the pinned form must still be documented SOMEWHERE, or a 3.10 user
+    # who lands on the troubleshooting table has nothing to copy.
+    assert "uvx --python 3.12 nable" in readme, (
+        "the pinned command must remain in troubleshooting as the remedy"
     )
 
 

@@ -7,6 +7,15 @@ What we collect (and only this):
   - Which MCP tools were invoked (feature names, not query content)
   - Number of connected providers (count only, not which accounts)
   - Plan tier: free | trial | pro
+  - Which nable version you are running, your Python MAJOR.MINOR (e.g. "3.12"),
+    how nable was installed (uvx | pipx | venv | docker | system), and your OS
+    family (e.g. "darwin"). Never the install path: it contains your home
+    directory and usually your name, so only the one-word classification is sent.
+
+Why that last line exists: a cohort on Python 3.10 got a five-week-old build
+that crashed on import, and it was invisible for two months because no event
+carried a version or an interpreter. A tool that cannot see which of its own
+builds is running cannot tell a quiet outage from low demand.
 
 What we never collect:
   - Cloud account IDs, ARNs, or credentials
@@ -148,6 +157,66 @@ def _send(install_id: str, properties: dict) -> None:
     _send_event(install_id, "heartbeat", properties)
 
 
+# ── runtime facts stamped on every event ──────────────────────────────────────
+
+_RUNTIME_CACHE: dict | None = None
+
+
+def _install_method() -> str:
+    """How this copy of nable was installed, as a coarse label.
+
+    Never the path itself: sys.prefix contains the user's home directory and
+    therefore usually their name. Only the classification leaves the machine.
+    """
+    import sys
+
+    prefix = sys.prefix
+    try:
+        if os.path.exists("/.dockerenv"):
+            return "docker"
+        # uv's ephemeral tool envs live under an archive-v0 cache directory;
+        # `uv tool install` sets UV_TOOL_NAME in the launcher environment.
+        if "/archive-v0/" in prefix or os.environ.get("UV_TOOL_NAME"):
+            return "uvx"
+        if "pipx" in prefix:
+            return "pipx"
+        if prefix != getattr(sys, "base_prefix", prefix):
+            return "venv"
+        return "system"
+    except Exception:
+        return "unknown"
+
+
+def _runtime_props() -> dict:
+    """Which build, which interpreter, how installed.
+
+    This exists because a broken cohort was invisible for two months. `version`
+    was stamped on scan failures only, so 328 machines reported version=None on
+    every other event and there was no way to tell a stale install from a fresh
+    one. The Python version was not collected at all, which meant the 3.10
+    resolution trap could not be seen, sized, or argued about with numbers.
+
+    All three are non-sensitive: a version string, an interpreter version, and a
+    one-word install label. No paths, no account data, no cost figures. Computed
+    once per process.
+    """
+    global _RUNTIME_CACHE
+    if _RUNTIME_CACHE is None:
+        import sys
+
+        try:
+            from . import __version__ as _v
+        except Exception:
+            _v = "unknown"
+        _RUNTIME_CACHE = {
+            "nable_version": _v,
+            "python_version": f"{sys.version_info.major}.{sys.version_info.minor}",
+            "install_method": _install_method(),
+            "platform": sys.platform,
+        }
+    return dict(_RUNTIME_CACHE)
+
+
 def _send_event(install_id: str, event: str, properties: dict) -> None:
     """Send a single named event to PostHog.
 
@@ -169,6 +238,9 @@ def _send_event(install_id: str, event: str, properties: dict) -> None:
         "event": event,
         "distinct_id": install_id,
         "properties": {
+            # Runtime facts first so an explicit property can still override
+            # one deliberately, and so EVERY event carries them.
+            **_runtime_props(),
             **properties,
             # PostHog is configured to drop $ip server-side
             "$ip": "0.0.0.0",
