@@ -1791,6 +1791,7 @@ from .tools.azure import (  # noqa: E402,F401
     get_azure_advisor_recommendations,
     get_azure_budgets,
     get_azure_cost_by_dimension,
+    audit_azure_reservation_scope,
     get_azure_reservation_utilization,
     get_azure_vm_rightsizing,
     get_resource_cost_breakdown_azure,
