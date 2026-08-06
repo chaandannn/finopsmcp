@@ -609,11 +609,40 @@ def run(args) -> int:
         return EXIT_OK
 
     # ── pre-flight typed probes: these drive exit codes, never engine strings ──
+    #
+    # This used to be a bare `except ImportError` reporting "boto3 is not
+    # installed". It caught EVERY ImportError raised anywhere inside boto3's own
+    # import chain (a half-installed wheel, a broken transitive dep, an
+    # architecture mismatch on the interpreter) and told all of them to reinstall
+    # a package that was already there. It also passed no exception to _fail, so
+    # exc_type arrived empty and the failures were undiagnosable: on 2026-08-05,
+    # 14 failures across 6 machines on current versions all landed here with
+    # nothing to go on. Separate "absent" from "present but will not import", and
+    # always hand the exception over so the class name is recorded.
     try:
-        import boto3
+        import boto3  # noqa: F401
         import botocore.exceptions  # noqa: F401
-    except ImportError:
-        return _fail(out, 1, ["boto3 is not installed; reinstall with `pip install finops-mcp`"], "other", t0)
+    except BaseException as exc:            # noqa: BLE001 - a probe reports, never swallows
+        import importlib.util
+
+        try:
+            installed = importlib.util.find_spec("boto3") is not None
+        except BaseException:               # a broken meta-path finder counts as unknown
+            installed = False
+
+        if not installed:
+            lines = ["boto3 is not installed; reinstall with `pip install finops-mcp`"]
+            cls = "missing_dep"
+        else:
+            lines = [
+                f"boto3 is installed but will not import ({type(exc).__name__}).",
+                "  usually a partial install or a dependency built for a different "
+                "Python or CPU architecture",
+                "  fix: `pip install --force-reinstall boto3 botocore`, or run "
+                "`uvx --python 3.12 nable scan` to get a clean environment",
+            ]
+            cls = "broken_dep"
+        return _fail(out, 1, lines, cls, t0, exc)
 
     # Connection-aware: what else is configured besides AWS? Detection uses the
     # same connected_families() the MCP server reads, so connecting on either
