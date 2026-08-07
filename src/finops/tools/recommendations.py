@@ -478,6 +478,20 @@ async def get_recommendation_learning() -> dict:
         return err
     try:
         from ..recommendations.learning import customer_signal
-        return customer_signal()
+        result = customer_signal()
+        # Record verdict transitions as durable lessons, then attach them: every
+        # learned adjustment is visible, evidenced and reversible. Best-effort;
+        # a ledger problem must never break the signal itself.
+        try:
+            from ..recommendations.learning.ledger import lessons, sync_lessons
+            sync_lessons()
+            result["lessons"] = lessons()
+            result["lessons_note"] = (
+                "Each lesson is one learned adjustment, recorded when it happened "
+                "with the evidence that caused it. Rolling one back pins that key "
+                "to standard ranking until you restore it.")
+        except Exception:
+            pass
+        return result
     except Exception as e:
         return {"error": str(e)}
