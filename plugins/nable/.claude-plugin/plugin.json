@@ -1,7 +1,7 @@
 {
  "name": "nable",
  "displayName": "nable, local-first FinOps",
- "version": "0.8.206",
+ "version": "0.8.207",
  "description": "Ask your AWS, Azure, GCP, Kubernetes, and SaaS bill, inside Claude. 180+ tools (read-only analysis; remediation drafts PRs for human approval) for cost queries, anomaly detection, rightsizing, and PRs. Runs on your machine; credentials stay on your machine.",
  "author": {
   "name": "Chandan Bukkapatnam",
@@ -15,7 +15,7 @@
  "mcpServers": {
   "nable": {
    "command": "uvx",
-   "args": ["--python", "3.12", "finops-mcp==0.8.206"]
+   "args": ["--python", "3.12", "finops-mcp==0.8.207"]
   }
  }
 }
