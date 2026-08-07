@@ -292,3 +292,33 @@ def test_the_banner_still_shows_for_setup_shaped_commands(capsys, monkeypatch):
         pass
     out = capsys.readouterr().out
     assert "nable setup" in out
+
+
+def test_guard_try_shows_all_four_beats(capsys, monkeypatch):
+    """`nable guard try` is the zero-knowledge tryout: nobody should need to
+    know EC2 flags to see what the guard does. It runs canned agent commands
+    through the REAL gate, so this output cannot drift from behaviour."""
+    import finops.setup_wizard as sw
+    monkeypatch.delenv("FINOPS_POLICY_MAX_AUTO_USD", raising=False)
+    try:
+        sw.main(["guard", "try"])
+    except SystemExit:
+        pass
+    out = capsys.readouterr().out
+    assert "nothing is executed" in out
+    assert out.count("stays silent") >= 2, "the zero-friction beats are missing"
+    assert "$191,377" in out, "the expensive-launch beat is missing"
+    assert "one-way door" in out, "the irreversibility beat is missing"
+    assert "nable guard install" in out, "the tryout must end at the install step"
+    assert "nable setup" not in out
+
+
+def test_guard_status_points_at_the_tryout(capsys, monkeypatch):
+    import finops.setup_wizard as sw
+    import finops.welcome as w
+    monkeypatch.setattr(w, "show_welcome", lambda: None)
+    try:
+        sw.main(["guard", "status"])
+    except SystemExit:
+        pass
+    assert "nable guard try" in capsys.readouterr().out
