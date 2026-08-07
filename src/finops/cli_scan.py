@@ -118,7 +118,7 @@ def _emit(event: str, props: dict, wait: bool) -> None:
 # ── failure rendering: problem + cause + exact fix + docs link, never a trace ──
 
 def _fail(out, code: int, lines: list[str], error_class: str, t0: float,
-          exc: Exception | None = None) -> int:
+          exc: Exception | None = None, props: dict | None = None) -> int:
     for line in lines:
         print(line, file=out)
     print(_dim(DOCS_LINE), file=out)
@@ -127,7 +127,9 @@ def _fail(out, code: int, lines: list[str], error_class: str, t0: float,
     # one opaque "other" bucket nobody could diagnose remotely. `site` is the
     # caller's line, stamped here so every _fail call, present and future, is
     # locatable: line numbers drift across releases, but every event also
-    # carries the version, and the pair pins the exact statement.
+    # carries the version, and the pair pins the exact statement. `props` is for
+    # extra diagnosis a specific site can add; same rule applies: names and
+    # version strings only, never a message, never a path.
     from . import __version__ as _v
     _site = ""
     try:
@@ -138,7 +140,7 @@ def _fail(out, code: int, lines: list[str], error_class: str, t0: float,
         "cli_scan_failed",
         {"error_class": error_class, "duration_s": round(time.time() - t0, 1),
          "version": _v, "exc_type": type(exc).__name__ if exc else "",
-         "site": _site},
+         "site": _site, **(props or {})},
         wait=True,
     )
     return code
@@ -609,11 +611,59 @@ def run(args) -> int:
         return EXIT_OK
 
     # ── pre-flight typed probes: these drive exit codes, never engine strings ──
+    #
+    # This used to be a bare `except ImportError` reporting "boto3 is not
+    # installed". It caught EVERY ImportError raised anywhere inside boto3's own
+    # import chain (a half-installed wheel, a broken transitive dep, an
+    # architecture mismatch on the interpreter) and told all of them to reinstall
+    # a package that was already there. It also passed no exception to _fail, so
+    # exc_type arrived empty and the failures were undiagnosable: on 2026-08-05,
+    # 14 failures across 6 machines on current versions all landed here with
+    # nothing to go on. Separate "absent" from "present but will not import", and
+    # always hand the exception over so the class name is recorded.
     try:
-        import boto3
+        import boto3  # noqa: F401
         import botocore.exceptions  # noqa: F401
-    except ImportError:
-        return _fail(out, 1, ["boto3 is not installed; reinstall with `pip install finops-mcp`"], "other", t0)
+    except BaseException as exc:            # noqa: BLE001 - a probe reports, never swallows
+        import importlib.util
+
+        try:
+            installed = importlib.util.find_spec("boto3") is not None
+        except BaseException:               # a broken meta-path finder counts as unknown
+            installed = False
+
+        # The import chain that can take boto3 down: a version skew anywhere in
+        # it produces "cannot import name X". Reproduced 2026-08-06: boto3
+        # 1.43.66 over a stale botocore 1.34.0 (a distro-owned copy pip will not
+        # upgrade) dies exactly this way. Recording the four version strings
+        # turns a remote "ImportError" into a named conflict. Versions only:
+        # no paths, no messages.
+        deps: dict[str, str] = {}
+        try:
+            from importlib.metadata import version as _pkg_version
+            for _pkg in ("boto3", "botocore", "s3transfer", "urllib3"):
+                try:
+                    deps[f"{_pkg}_version"] = _pkg_version(_pkg)
+                except Exception:
+                    deps[f"{_pkg}_version"] = "absent"
+        except Exception:
+            pass
+
+        if not installed:
+            lines = ["boto3 is not installed; reinstall with `pip install finops-mcp`"]
+            cls = "missing_dep"
+        else:
+            _b3 = deps.get("boto3_version", "?")
+            _bc = deps.get("botocore_version", "?")
+            lines = [
+                f"boto3 is installed but will not import ({type(exc).__name__}).",
+                f"  found: boto3 {_b3} with botocore {_bc}; a mismatched pair "
+                "(often a system-owned copy pip cannot upgrade) fails exactly here",
+                "  fix: `pip install --upgrade --force-reinstall boto3 botocore`",
+                "  or run isolated, no cleanup needed: `uvx --python 3.12 nable scan`",
+            ]
+            cls = "broken_dep"
+        return _fail(out, 1, lines, cls, t0, exc, props=deps)
 
     # Connection-aware: what else is configured besides AWS? Detection uses the
     # same connected_families() the MCP server reads, so connecting on either

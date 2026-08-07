@@ -465,3 +465,114 @@ def test_partial_scan_with_abandoned_threads_hard_exits(capsys):
         with pytest.raises(SystemExit):
             _run(_args(), _session(), report=rep)
     hard_exit.assert_called_once_with(cli_scan.EXIT_OK)
+
+
+# ── the boto3 preflight probe ────────────────────────────────────────────────
+
+def _run_scan_with_broken_import(monkeypatch, *, exc, boto3_found):
+    """Drive the real `nable scan` with a poisoned boto3 import.
+
+    On 2026-08-05, 14 failures across 6 machines on current versions all landed
+    on this probe reporting "boto3 is not installed" with an empty exc_type.
+    boto3 imports fine on 3.12 and 3.14, so the message was almost certainly
+    wrong and the telemetry carried nothing to prove it either way.
+    """
+    import builtins
+    import importlib.util
+    import types
+
+    real_import = builtins.__import__
+
+    def poisoned(name, *a, **k):
+        if name == "boto3" or name.startswith("botocore"):
+            raise exc
+        return real_import(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", poisoned)
+    monkeypatch.setattr(importlib.util, "find_spec",
+                        lambda n: object() if boto3_found else None)
+
+    emitted = []
+    import finops.cli_scan as cs
+
+    monkeypatch.setattr(cs, "_emit", lambda ev, props, wait=False: emitted.append((ev, props)))
+    args = types.SimpleNamespace(json=False, demo=False, spend=False, debug=False,
+                                 profile=None, regions=None)
+    # the scan writes to the real stream; the caller reads it back with capsys
+    return cs.run(args), emitted
+
+
+def test_a_missing_boto3_says_missing_and_records_the_class(monkeypatch):
+    code, emitted = _run_scan_with_broken_import(
+        monkeypatch, exc=ModuleNotFoundError("No module named 'boto3'"),
+        boto3_found=False)
+    assert code == 1
+    fails = [p for e, p in emitted if e == "cli_scan_failed"]
+    assert fails, "no failure event emitted"
+    assert fails[0]["error_class"] == "missing_dep"
+    assert fails[0]["exc_type"] == "ModuleNotFoundError"
+
+
+def test_an_installed_but_broken_boto3_is_not_reported_as_missing(monkeypatch, capsys):
+    """The bug this replaces: telling somebody to reinstall a package that is
+    already installed, and recording nothing that would reveal the real cause."""
+    code, emitted = _run_scan_with_broken_import(
+        monkeypatch, exc=ImportError("dynamic module does not define module export"),
+        boto3_found=True)
+    text = capsys.readouterr().out
+    assert code == 1
+    fails = [p for e, p in emitted if e == "cli_scan_failed"]
+    assert fails[0]["error_class"] == "broken_dep"
+    assert fails[0]["exc_type"] == "ImportError"
+    assert "is not installed" not in text
+    assert "will not import" in text
+
+
+def test_a_non_import_error_during_the_probe_is_still_caught(monkeypatch):
+    """An architecture mismatch surfaces as OSError or a bare Exception from the
+    extension loader, not ImportError. The old handler let those escape as an
+    unhandled traceback."""
+    code, emitted = _run_scan_with_broken_import(
+        monkeypatch, exc=OSError("incompatible architecture (have 'x86_64', need 'arm64')"),
+        boto3_found=True)
+    assert code == 1
+    fails = [p for e, p in emitted if e == "cli_scan_failed"]
+    assert fails[0]["exc_type"] == "OSError"
+    assert fails[0]["error_class"] == "broken_dep"
+
+
+def test_the_probe_never_leaks_the_exception_message(monkeypatch):
+    """Messages carry paths, which carry usernames. Only the class name travels."""
+    secret = "/Users/somebody/private/path/boto3.so"
+    code, emitted = _run_scan_with_broken_import(
+        monkeypatch, exc=ImportError(secret), boto3_found=True)
+    fails = [p for e, p in emitted if e == "cli_scan_failed"]
+    assert secret not in str(fails[0]), "the exception message reached telemetry"
+
+
+def test_a_broken_import_stamps_the_dep_versions(monkeypatch):
+    """The remote diagnosis: "ImportError" alone cannot distinguish a stale
+    botocore from a missing urllib3. The four version strings can. Reproduced
+    live: boto3 1.43.66 over botocore 1.34.0 dies with "cannot import name
+    'DEFAULT_CHECKSUM_ALGORITHM'"; with these props the event names the skew."""
+    import re
+
+    code, emitted = _run_scan_with_broken_import(
+        monkeypatch, exc=ImportError("cannot import name 'DEFAULT_CHECKSUM_ALGORITHM'"),
+        boto3_found=True)
+    assert code == 1
+    fails = [p for e, p in emitted if e == "cli_scan_failed"]
+    for pkg in ("boto3", "botocore", "s3transfer", "urllib3"):
+        val = fails[0].get(f"{pkg}_version")
+        assert val, f"{pkg}_version missing from the failure event"
+        assert val == "absent" or re.match(r"^\d+\.", val), (pkg, val)
+        assert "/" not in val, "a path leaked into a version field"
+
+
+def test_a_broken_import_names_the_versions_to_the_user(monkeypatch, capsys):
+    """The user sees the pair too, so "reinstall" stops being a guess."""
+    _run_scan_with_broken_import(
+        monkeypatch, exc=ImportError("cannot import name 'x'"), boto3_found=True)
+    text = capsys.readouterr().out
+    assert "found: boto3 " in text
+    assert "uvx --python 3.12 nable scan" in text
