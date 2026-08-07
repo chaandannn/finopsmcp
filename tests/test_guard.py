@@ -176,3 +176,119 @@ def test_install_preserves_existing_settings(tmp_path, monkeypatch):
     g.uninstall()
     s = json.loads(target.read_text())
     assert s["model"] == "opus" and "PreToolUse" not in s.get("hooks", {})
+
+
+# ── the cost gate: reversible is not the same as cheap ────────────────────────
+#
+# The gap these pin: `aws ec2 run-instances --instance-type p4d.24xlarge
+# --count 8` (~$191k/mo at list) classified as a reversible in-policy mutation
+# and the guard stayed silent, while the policy's dollar threshold sat
+# unreachable because the shell path never computed a dollar figure.
+
+def test_expensive_launch_asks_with_the_number(monkeypatch):
+    monkeypatch.delenv("FINOPS_POLICY_MAX_AUTO_USD", raising=False)
+    v = g.gate_command("aws ec2 run-instances --instance-type p4d.24xlarge --count 8")
+    assert v is not None, "a ~$191k/mo launch must not pass silently"
+    assert v["decision"] == "ask"
+    assert v["monthly_delta_usd"] == pytest.approx(8 * 32.77 * 730.0, rel=1e-3)
+    assert "8x p4d.24xlarge" in v["reason"]
+    assert "$191,377" in v["reason"]
+    assert "list price" in v["reason"], "an estimate must state its basis"
+
+
+def test_cheap_launch_stays_silent(monkeypatch):
+    """Zero friction survives: a t3.micro is ~$7.59/mo, far under the $500
+    default threshold, and the guard must not nag about it."""
+    monkeypatch.delenv("FINOPS_POLICY_MAX_AUTO_USD", raising=False)
+    assert g.gate_command("aws ec2 run-instances --instance-type t3.micro") is None
+
+
+def test_the_users_own_threshold_is_honoured(monkeypatch):
+    monkeypatch.setenv("FINOPS_POLICY_MAX_AUTO_USD", "1000000")
+    assert g.gate_command(
+        "aws ec2 run-instances --instance-type p4d.24xlarge --count 8") is None
+
+
+def test_count_min_max_form_prices_the_ceiling(monkeypatch):
+    """`--count 2:8` may launch 8. The guard states the ceiling a human is
+    authorising, not the floor."""
+    monkeypatch.delenv("FINOPS_POLICY_MAX_AUTO_USD", raising=False)
+    v = g.gate_command("aws ec2 run-instances --instance-type p4d.24xlarge --count 2:8")
+    assert v and "8x p4d.24xlarge" in v["reason"]
+
+
+def test_equals_style_flags_parse_too():
+    est = g.estimate_command_monthly_cost(
+        "aws ec2 run-instances --instance-type=p4d.24xlarge --count=3")
+    assert est and est["count"] == 3 and est["instance_type"] == "p4d.24xlarge"
+
+
+def test_an_unknown_type_never_invents_a_figure(monkeypatch):
+    """The chosen failure direction: unpriceable degrades to the old behaviour
+    (silent for a reversible mutation), never to a fabricated number."""
+    monkeypatch.delenv("FINOPS_POLICY_MAX_AUTO_USD", raising=False)
+    assert g.estimate_command_monthly_cost(
+        "aws ec2 run-instances --instance-type zz9.mega --count 500") is None
+    assert g.gate_command(
+        "aws ec2 run-instances --instance-type zz9.mega --count 500") is None
+
+
+def test_non_launch_commands_are_not_priced():
+    assert g.estimate_command_monthly_cost("terraform apply") is None
+    assert g.estimate_command_monthly_cost("aws s3 ls") is None
+    assert g.estimate_command_monthly_cost("aws ec2 describe-instances") is None
+
+
+def test_strict_mode_includes_the_figure_when_it_has_one(monkeypatch):
+    monkeypatch.setenv("FINOPS_GUARD_STRICT", "1")
+    monkeypatch.setenv("FINOPS_POLICY_MAX_AUTO_USD", "1000000")   # below cap: strict path
+    v = g.gate_command("aws ec2 run-instances --instance-type p4d.24xlarge --count 8")
+    assert v and v["decision"] == "ask"
+    assert "$191,377" in v["reason"]
+
+
+def test_the_hook_carries_the_cost_verdict(monkeypatch):
+    monkeypatch.delenv("FINOPS_POLICY_MAX_AUTO_USD", raising=False)
+    payload = {"tool_name": "Bash", "tool_input": {
+        "command": "aws ec2 run-instances --instance-type p4d.24xlarge --count 8"}}
+    out = io.StringIO()
+    assert g.run_hook(stdin=io.StringIO(json.dumps(payload)), stdout=out) == 0
+    verdict = json.loads(out.getvalue())["hookSpecificOutput"]
+    assert verdict["permissionDecision"] == "ask"
+    assert "$191,377" in verdict["permissionDecisionReason"]
+
+
+# ── guard output belongs to the guard ─────────────────────────────────────────
+
+def test_guard_never_opens_with_the_setup_banner(capsys, monkeypatch):
+    """`guard check` is what people put in recordings and scripts; a policy
+    verdict prefixed with an onboarding banner reads as a bug. Wiring test:
+    goes through the real CLI dispatch, not the guard module."""
+    import finops.setup_wizard as sw
+    import finops.welcome as w
+    called = []
+    monkeypatch.setattr(w, "show_welcome", lambda: called.append(True))
+    try:
+        sw.main(["guard", "check", "--command", "aws s3 ls"])
+    except SystemExit:
+        pass
+    out = capsys.readouterr().out
+    assert "nable setup" not in out, "the setup banner leaked into guard output"
+    assert not called, "guard invocations must not burn the one-time welcome"
+    assert "allow" in out
+
+
+def test_the_banner_still_shows_for_setup_shaped_commands(capsys, monkeypatch):
+    """The suppression is a guard/scan carve-out, not a global removal. A
+    deleted banner line would pass the test above for the wrong reason; this
+    one fails on that mutation."""
+    import finops.setup_scan as ss
+    import finops.setup_wizard as sw
+    monkeypatch.setattr(sw, "_check_path_warning", lambda: None)
+    monkeypatch.setattr(ss, "run_connect_command", lambda: None)
+    try:
+        sw.main(["connect"])
+    except SystemExit:
+        pass
+    out = capsys.readouterr().out
+    assert "nable setup" in out

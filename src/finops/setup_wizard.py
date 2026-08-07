@@ -2530,7 +2530,13 @@ def main(args: list[str] | None = None) -> None:
     # the one-time welcome event) when they are present.
     _help_or_version = any(a in ("-h", "--help", "--version") for a in args)
 
-    if not _help_or_version:
+    # `guard` output belongs to the guard: no first-run welcome, no PATH
+    # warning. The hook variant is parsed as JSON by the agent harness, and
+    # `guard check` is what people put in recordings and scripts. Neither
+    # should ever open with an onboarding banner.
+    _guard_invocation = bool(args) and args[0] == "guard"
+
+    if not _help_or_version and not _guard_invocation:
         from .welcome import show_welcome
         show_welcome()
         # Check PATH early so users know if the command won't be available in new shells
@@ -2787,8 +2793,11 @@ def main(args: list[str] | None = None) -> None:
 
     # Answer commands own their whole output: no setup banner ahead of `scan`,
     # its branded first line must be the first thing on screen (and in --json
-    # mode stdout must stay a single parseable document).
-    if parsed.cmd != "scan":
+    # mode stdout must stay a single parseable document). `guard` is tool
+    # output too: a policy verdict prefixed with a setup banner reads as a bug
+    # on camera and in scripts (the `guard hook` machine path already bails
+    # out above, before any output).
+    if parsed.cmd not in ("scan", "guard"):
         print("\n  nable setup: all credentials stay on your machine\n")
 
     dispatch = {

@@ -88,6 +88,62 @@ def _strict() -> bool:
     return os.getenv("FINOPS_GUARD_STRICT", "").strip().lower() in ("1", "true", "yes")
 
 
+# ── Command cost estimation ────────────────────────────────────────────────────
+# The gap this closes: `aws ec2 run-instances --instance-type p4d.24xlarge
+# --count 8` (~$191k/mo) classified as a reversible in-policy mutation and the
+# guard stayed silent, while policy.py's dollar threshold sat unreachable
+# because nothing on the shell path ever computed a dollar figure. Reversible
+# is not the same as cheap.
+
+_RUN_INSTANCES_RE = re.compile(r"\baws\s+ec2\s+run-instances\b")
+_INSTANCE_TYPE_RE = re.compile(r"--instance-type[=\s]+([a-z0-9]+\.[a-z0-9]+)")
+# `--count 8` or the min:max form `--count 2:8`; price the max, because the
+# guard's job is the ceiling a human is about to authorise, not the floor.
+_COUNT_RE = re.compile(r"--count[=\s]+(\d+)(?::(\d+))?")
+
+
+def estimate_command_monthly_cost(command: str) -> dict[str, Any] | None:
+    """A local, list-price monthly estimate for a shell command, or None.
+
+    Covers `aws ec2 run-instances` with an instance type in the local price
+    table (on-demand us-east-1 list, the same table the Terraform estimator
+    uses). Anything unpriceable returns None: an unknown type must degrade to
+    the guard's existing behaviour, never to an invented figure.
+    """
+    cmd = " ".join(command.split())
+    if not _RUN_INSTANCES_RE.search(cmd):
+        return None
+    m = _INSTANCE_TYPE_RE.search(cmd)
+    if not m:
+        return None
+    itype = m.group(1)
+    try:
+        from .connectors.terraform_estimate import HOURS_PER_MONTH, _EC2_HOURLY
+        hourly = _EC2_HOURLY.get(itype)
+    except Exception:
+        return None
+    if not hourly:
+        return None
+    count = 1
+    cm = _COUNT_RE.search(cmd)
+    if cm:
+        count = max(int(cm.group(1)), int(cm.group(2) or 0)) or 1
+    monthly = hourly * count * HOURS_PER_MONTH
+    return {
+        "monthly_usd": round(monthly, 2),
+        "hourly_usd": hourly,
+        "instance_type": itype,
+        "count": count,
+        "basis": "on-demand us-east-1 list price",
+    }
+
+
+def _cost_line(est: dict[str, Any]) -> str:
+    return (f"{est['count']}x {est['instance_type']} at "
+            f"${est['hourly_usd']:,.2f}/hr ({est['basis']}) is "
+            f"~${est['monthly_usd']:,.0f}/mo")
+
+
 def _prod_context(command: str) -> bool:
     """Does this command look aimed at production?
 
@@ -195,21 +251,41 @@ def gate_command(command: str) -> dict[str, Any] | None:
         # Reversible mutation. Zero friction by default; strict mode confirms,
         # and a production context always confirms: practitioners run agents
         # loose in staging but want a human nod before prod changes.
+        #
+        # Priceable commands additionally go through the policy's dollar
+        # threshold: reversible does not mean cheap, and launching 8x
+        # p4d.24xlarge is a ~$191k/mo decision whichever door it is. The
+        # estimate rides the same evaluate_action_gate as everything else, so
+        # the user's FINOPS_POLICY_MAX_AUTO_USD and learned adjustments apply.
+        est = estimate_command_monthly_cost(command)
+        if est is not None:
+            verdict = evaluate_action_gate(action_type,
+                                           monthly_delta_usd=est["monthly_usd"])
+            if verdict.get("gate") != GATE_ALLOW:
+                return {
+                    "decision": "ask" if verdict.get("gate") == GATE_ESCALATE else "deny",
+                    "action_type": action_type,
+                    "monthly_delta_usd": est["monthly_usd"],
+                    "reason": (f"nable guard: {_cost_line(est)}. "
+                               f"{verdict.get('reason', 'a human must review this action.')}"),
+                }
         if _strict():
+            cost = f" {_cost_line(est)}." if est else ""
             return {
                 "decision": "ask",
                 "action_type": action_type,
                 "reason": ("nable guard (strict): this changes infrastructure and "
-                           "therefore the bill. Cost it first (ask nable to "
+                           f"therefore the bill.{cost} Cost it first (ask nable to "
                            "estimate_change_cost) or confirm to proceed."),
             }
         if _prod_context(command):
+            cost = f" {_cost_line(est)}." if est else ""
             return {
                 "decision": "ask",
                 "action_type": action_type,
                 "reason": ("nable guard: this mutates infrastructure in what looks "
-                           "like a PRODUCTION context. Confirm to proceed, or cost "
-                           "it first (ask nable to estimate_change_cost)."),
+                           f"like a PRODUCTION context.{cost} Confirm to proceed, or "
+                           "cost it first (ask nable to estimate_change_cost)."),
             }
         return None
 
