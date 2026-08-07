@@ -2,6 +2,13 @@
 
 All notable changes to finops-mcp (nable).
 
+## 0.8.209
+
+- **What nable learns about you is now a ledger you control.** The learning loop already adapts to your decisions: a recommendation source you keep dismissing gets suppressed, one you act on ranks higher, and a dollar floor forms under what you have historically approved. Until now those adjustments happened silently, recomputed live, with no record of when they changed or why. Each one is now a recorded lesson: the sentence ("you acted on 0/12 commitment recs you decided on, so these are suppressed for you"), the evidence snapshot at the moment of learning, and the full history when a verdict flips.
+- **Every lesson is reversible, and a rollback sticks.** Roll a lesson back and that key returns to standard ranking everywhere: the rescorer, the watch loop, and the MCP tool all honor it because the override is applied inside the signal itself. The learning never re-learns what you told it to forget, however loudly the data argues, until you restore the lesson, and restoring hands the decision back to live evidence rather than reasserting the old verdict.
+- A bucket-level lesson is only recorded when it disagrees with its source ("spot is fine in nonprod but not prod"); agreement is the same lesson twice and is not repeated. `get_recommendation_learning` now returns the lessons alongside the signal.
+- Nothing here changes what nable can do: lessons describe ranking adjustments, they never touch detectors, policy, or any cloud. Deterministic, single-tenant, no model calls.
+
 ## 0.8.208
 
 - **The guard now prices what your agent is about to launch.** `aws ec2 run-instances --instance-type p4d.24xlarge --count 8` is ~$191,377/mo at list price, and until now the guard waved it through silently: it classifies reversibility, launching instances is reversible, and reversible meant quiet. Reversible is not the same as cheap. Launch commands now get a local list-price estimate (the same on-demand us-east-1 table the Terraform estimator uses, type x count x 730 hours) and ride the existing policy threshold, so `FINOPS_POLICY_MAX_AUTO_USD` (default $500/mo) and your learned adjustments apply. Over the threshold the agent is asked to stop, with the full breakdown in the reason: count, type, hourly rate, monthly figure, and the basis stated plainly. Under it, nothing changes: a t3.micro launch stays silent, because a guard that nags about $8 gets uninstalled.
