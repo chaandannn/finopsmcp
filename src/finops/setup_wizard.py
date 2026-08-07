@@ -2317,6 +2317,46 @@ def _run_guard(parsed) -> None:
         print()
         return
 
+    if action == "try":
+        # The tryout. Nobody should have to know EC2 flags to see what the
+        # guard does: these are the commands an AGENT produces, run through the
+        # real gate (never executed), so this output cannot drift from actual
+        # behaviour. The human's whole job is `nable guard install`.
+        try:
+            from .policy import load_policy
+            cap = float(load_policy().get("max_auto_monthly_usd", 500.0))
+        except Exception:
+            cap = 500.0
+        samples = [
+            "aws s3 ls",
+            "aws ec2 run-instances --instance-type t3.micro",
+            "aws ec2 run-instances --instance-type p4d.24xlarge --count 8",
+            "aws ec2 terminate-instances --instance-ids i-0abc123",
+        ]
+        print()
+        print("  Four commands an agent might run, through the real gate.")
+        print(dim("  Examples only: nothing is executed, nothing is installed."))
+        print()
+        for cmd in samples:
+            print(f"  $ {cmd}")
+            verdict = guard.gate_command(cmd)
+            if verdict is not None:
+                print(f"    {cyan(verdict['decision'])}   {verdict['reason']}")
+            else:
+                est = guard.estimate_command_monthly_cost(cmd)
+                if est is not None:
+                    print(f"    {green('allow')}  ~${est['monthly_usd']:,.0f}/mo at list, "
+                          f"under your ${cap:,.0f}/mo threshold: the guard stays silent")
+                elif guard.classify_command(cmd) is not None:
+                    print(f"    {green('allow')}  reversible and in policy: the guard stays silent")
+                else:
+                    print(f"    {green('allow')}  not an infra-mutating command: the guard stays silent")
+            print()
+        print("  Wire this into Claude Code so it runs on every agent command:")
+        print(f"    {cyan('nable guard install')}")
+        print()
+        return
+
     if action == "check":
         cmd = getattr(parsed, "guard_command", "")
         if not cmd:
@@ -2360,6 +2400,7 @@ def _run_guard(parsed) -> None:
         print(dim("  Claude Code skips a hook it cannot execute, silently. Re-run:"))
         print(f"  {cyan('nable guard install')}")
         print()
+    print(dim("  Try:      nable guard try                 (see it judge four commands)"))
     print(dim("  Install:  nable guard install            (this project)"))
     print(dim("            nable guard install --global    (all projects)"))
     print(dim("  The hook is Claude Code. Other MCP agents (Cursor, etc.) get the same"))
@@ -2760,7 +2801,7 @@ def main(args: list[str] | None = None) -> None:
     sub.add_parser("tools",        help="Show example questions you can ask nable in Claude")
 
     guard_p = sub.add_parser("guard", help="Agent cost guardrail: auto-check infra commands against your policy")
-    guard_p.add_argument("guard_action", choices=["install", "uninstall", "status", "hook", "check"],
+    guard_p.add_argument("guard_action", choices=["install", "uninstall", "status", "hook", "check", "try"],
                          nargs="?", default="status")
     guard_p.add_argument("--global", dest="guard_global", action="store_true",
                          help="Install into ~/.claude/settings.json instead of this project")
