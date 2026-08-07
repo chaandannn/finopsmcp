@@ -548,3 +548,31 @@ def test_the_probe_never_leaks_the_exception_message(monkeypatch):
         monkeypatch, exc=ImportError(secret), boto3_found=True)
     fails = [p for e, p in emitted if e == "cli_scan_failed"]
     assert secret not in str(fails[0]), "the exception message reached telemetry"
+
+
+def test_a_broken_import_stamps_the_dep_versions(monkeypatch):
+    """The remote diagnosis: "ImportError" alone cannot distinguish a stale
+    botocore from a missing urllib3. The four version strings can. Reproduced
+    live: boto3 1.43.66 over botocore 1.34.0 dies with "cannot import name
+    'DEFAULT_CHECKSUM_ALGORITHM'"; with these props the event names the skew."""
+    import re
+
+    code, emitted = _run_scan_with_broken_import(
+        monkeypatch, exc=ImportError("cannot import name 'DEFAULT_CHECKSUM_ALGORITHM'"),
+        boto3_found=True)
+    assert code == 1
+    fails = [p for e, p in emitted if e == "cli_scan_failed"]
+    for pkg in ("boto3", "botocore", "s3transfer", "urllib3"):
+        val = fails[0].get(f"{pkg}_version")
+        assert val, f"{pkg}_version missing from the failure event"
+        assert val == "absent" or re.match(r"^\d+\.", val), (pkg, val)
+        assert "/" not in val, "a path leaked into a version field"
+
+
+def test_a_broken_import_names_the_versions_to_the_user(monkeypatch, capsys):
+    """The user sees the pair too, so "reinstall" stops being a guess."""
+    _run_scan_with_broken_import(
+        monkeypatch, exc=ImportError("cannot import name 'x'"), boto3_found=True)
+    text = capsys.readouterr().out
+    assert "found: boto3 " in text
+    assert "uvx --python 3.12 nable scan" in text
