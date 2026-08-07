@@ -41,7 +41,7 @@ dependencies = [
     # the server), so this was invisible to `nable ai-budget` and fatal to
     # every Claude/Cursor user. Lift the cap only alongside a port to the 2.x
     # server API, never on its own.
-    "mcp[cli]>=1.28.1,<2",
+    "mcp[cli]>=1.28.1,<3",
     # cloud providers. AWS ships in core (the common path); the Azure and Google
     # Cloud SDKs are optional extras (finops-mcp[azure] / [gcp]) so the default
     # install stays small and the first cold `uvx` launch is fast. They are
