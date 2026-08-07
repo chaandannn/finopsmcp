@@ -169,10 +169,14 @@ def _entry(source: str, bucket: str | None, c: dict, acc_list: list[float]) -> d
     return e
 
 
-def customer_signal() -> dict[str, Any]:
+def customer_signal(apply_learned_overrides: bool = True) -> dict[str, Any]:
     """Per-source AND per-(source, bucket) learning signal for this install. The bucket
     breakdown lets the loop learn e.g. spot is fine for nonprod-batch but not prod-steady.
-    See module docstring."""
+    See module docstring.
+
+    apply_learned_overrides: rolled-back lessons (ledger.py) pin their keys to
+    neutral. On by default so every consumer honors a customer's rollback; the
+    ledger's own sync passes False, because it must diff the raw signal."""
     sr = savings_recommendations
     engine = get_engine()
     with engine.connect() as conn:
@@ -231,7 +235,7 @@ def customer_signal() -> dict[str, Any]:
                  for (src, bkt), c in sorted(bucket_counts.items())]
     total_realized = sum(c["realized"] for c in source_counts.values())
 
-    return {
+    result = {
         "by_source": by_source,
         "by_bucket": by_bucket,
         "approval_profile": approval_profile(),
@@ -250,6 +254,15 @@ def customer_signal() -> dict[str, Any]:
                  "a good source down. A source/bucket stays on blanket behavior until it "
                  f"has >= {WARM_FLOOR} resolved recs; only then can it be suppressed for you."),
     }
+    if apply_learned_overrides:
+        # Lazy import: ledger imports this module, and a broken ledger must
+        # degrade to the un-overridden signal, never break ranking.
+        try:
+            from .ledger import apply_overrides
+            result = apply_overrides(result)
+        except Exception:
+            pass
+    return result
 
 
 def approval_profile() -> dict[str, Any]:

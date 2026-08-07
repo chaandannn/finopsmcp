@@ -337,6 +337,35 @@ pattern_findings = Table(
     Column("dedup_key", String(64), nullable=False),   # SHA256 of account+pattern
 )
 
+# ── Learning lessons — the durable record of what nable learned about this org ─
+#
+# The learning signal (recommendations/learning/signal.py) recomputes verdicts
+# live from the ledger, so without this table they change silently: a source
+# gets suppressed one day and nobody can point at when or why. Each row records
+# one learned adjustment as a first-class object: what changed, the evidence at
+# the moment it changed, and a status the customer controls. rolled_back is a
+# standing override (the signal pins that key to neutral until restored), which
+# is what makes the learning trustworthy: every lesson is visible, evidenced,
+# and reversible. Single-tenant like everything else in this DB.
+
+learning_lessons = Table(
+    "learning_lessons", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    # "source:idle" | "bucket:idle|prod|steady" | "approval_floor"
+    Column("key", String(256), nullable=False),
+    Column("kind", String(24), nullable=False),          # verdict | approval_floor
+    Column("from_verdict", String(16), nullable=True),   # what it was before (None = neutral)
+    Column("to_verdict", String(16), nullable=False),    # boost | suppress | floor
+    Column("lesson", Text, nullable=False, default=""),  # the human sentence (signal's why)
+    Column("evidence", Text, nullable=False, default="{}"),  # JSON snapshot: acted/resolved/accuracy/...
+    Column("first_seen", DateTime, nullable=False),
+    Column("last_confirmed", DateTime, nullable=False),
+    Column("status", String(16), nullable=False, default="active"),  # active | superseded | rolled_back
+    Column("superseded_at", DateTime, nullable=True),
+    Column("rolled_back_at", DateTime, nullable=True),
+    Column("rollback_note", Text, nullable=False, default=""),
+)
+
 # ── Alert policies — per-service anomaly thresholds and mute rules ────────────
 
 alert_policies = Table(
