@@ -2,6 +2,13 @@
 
 All notable changes to finops-mcp (nable).
 
+## 0.8.207
+
+- **Fixed: the first wall almost every new user hit.** Field telemetry showed 30 machines ran `nable scan` in the last two weeks and 29 of them never completed one. Every instrumented failure across five releases died on the same line: the boto3 preflight, which reported "boto3 is not installed; reinstall with `pip install finops-mcp`". boto3 was installed on those machines. The real cause, reproduced end to end: a version-skewed boto3/botocore pair, typically a new boto3 imported over a stale botocore that pip will not upgrade because the system owns it. The import dies with `ImportError: cannot import name ...`, the old handler caught it, and the advice it printed was a provable no-op, because pip considers everything already satisfied and touches nothing.
+- The preflight now separates "absent" from "present but will not import". When the package is present it names the installed pair (`found: boto3 1.43.66 with botocore 1.34.0`), prints the fix that was verified to cure the reproduced machine (`pip install --upgrade --force-reinstall boto3 botocore`), and offers the isolation escape that always works (`uvx --python 3.12 nable scan`).
+- The failure event now carries the exception class name and the version strings of the four packages in the import chain (boto3, botocore, s3transfer, urllib3). Versions and class names only: never a message, never a path, because messages carry usernames. Until this release the event carried `error_class: "other"` and nothing else, which is why a wall 29 machines hit in two weeks was invisible for a month.
+- A probe failure that is not an ImportError (an extension built for the wrong CPU architecture surfaces as OSError) is now caught and reported the same way instead of escaping as a raw traceback.
+
 ## 0.8.206
 
 - **Three detections that look where native advisors never do.** Cloud advisors report utilisation of running compute; almost nothing watches billing configuration and per-operation charges. All three ship with the trust envelope on: a figure is only precise when it was measured, everything else is an honest size band with the exact confirm step that turns it into a number, and every finding survives the adversarial critique pass before you see it.
