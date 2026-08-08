@@ -107,23 +107,25 @@ def _twilio(monkeypatch, **env):
 def test_restricted_api_key_is_preferred_over_the_auth_token(monkeypatch):
     """Both present means the user has done the safer thing. Use it."""
     conn = _twilio(monkeypatch, TWILIO_ACCOUNT_SID="AC1",
-                   TWILIO_AUTH_TOKEN="tok", TWILIO_API_KEY="SK1",
-                   TWILIO_API_SECRET="sec")
+                   TWILIO_AUTH_TOKEN="tok",  # pragma: allowlist secret
+                   TWILIO_API_KEY="SK1",
+                   TWILIO_API_SECRET="sec")  # pragma: allowlist secret
     assert conn._auth() == ("SK1", "sec")
     assert conn.uses_restricted_key()
 
 
 def test_auth_token_still_works_alone(monkeypatch):
     """Nobody's existing setup breaks because a better option now exists."""
-    conn = _twilio(monkeypatch, TWILIO_ACCOUNT_SID="AC1", TWILIO_AUTH_TOKEN="tok")
+    conn = _twilio(monkeypatch, TWILIO_ACCOUNT_SID="AC1",
+                   TWILIO_AUTH_TOKEN="tok")  # pragma: allowlist secret
     assert conn._auth() == ("AC1", "tok")
     assert not conn.uses_restricted_key()
     assert asyncio.run(conn.is_configured())
 
 
 def test_restricted_key_alone_is_a_complete_credential(monkeypatch):
-    conn = _twilio(monkeypatch, TWILIO_ACCOUNT_SID="AC1",
-                   TWILIO_API_KEY="SK1", TWILIO_API_SECRET="sec")
+    conn = _twilio(monkeypatch, TWILIO_ACCOUNT_SID="AC1", TWILIO_API_KEY="SK1",
+                   TWILIO_API_SECRET="sec")  # pragma: allowlist secret
     assert asyncio.run(conn.is_configured())
     assert conn._auth() == ("SK1", "sec")
 
@@ -138,8 +140,8 @@ def test_half_a_key_pair_is_not_a_credential(monkeypatch):
 def test_account_sid_stays_in_the_path_not_the_credential(monkeypatch):
     """Twilio authenticates a key as (key SID, secret) while the account SID
     stays in the URL. Swapping the credential must not move the account SID."""
-    conn = _twilio(monkeypatch, TWILIO_ACCOUNT_SID="AC1",
-                   TWILIO_API_KEY="SK1", TWILIO_API_SECRET="sec")
+    conn = _twilio(monkeypatch, TWILIO_ACCOUNT_SID="AC1", TWILIO_API_KEY="SK1",
+                   TWILIO_API_SECRET="sec")  # pragma: allowlist secret
     assert conn._account_sid == "AC1"
     assert "AC1" not in conn._auth()
 
@@ -152,7 +154,7 @@ def test_scan_finds_a_machine_holding_only_the_safer_credential(monkeypatch):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("TWILIO_ACCOUNT_SID", "AC1234567890")
     monkeypatch.setenv("TWILIO_API_KEY", "SK1234567890")
-    monkeypatch.setenv("TWILIO_API_SECRET", "secret-value")
+    monkeypatch.setenv("TWILIO_API_SECRET", "secret-value")  # pragma: allowlist secret
 
     found = {f["slug"]: f for f in scan_ambient_credentials()}
     assert "twilio" in found
@@ -166,7 +168,7 @@ def test_scan_still_finds_the_auth_token_setup(monkeypatch):
                 "TWILIO_API_KEY", "TWILIO_API_SECRET"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("TWILIO_ACCOUNT_SID", "AC1234567890")
-    monkeypatch.setenv("TWILIO_AUTH_TOKEN", "auth-token-value")
+    monkeypatch.setenv("TWILIO_AUTH_TOKEN", "auth-token-value")  # pragma: allowlist secret
 
     found = {f["slug"] for f in scan_ambient_credentials()}
     assert "twilio" in found
