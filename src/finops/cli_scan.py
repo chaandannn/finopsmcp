@@ -650,7 +650,21 @@ def run(args) -> int:
             pass
 
         if not installed:
-            lines = ["boto3 is not installed; reinstall with `pip install finops-mcp`"]
+            # boto3 is a hard dependency and the published wheel declares it, so
+            # "absent" means this environment installed the package without its
+            # dependencies. Name that, because "reinstall" alone sends people to
+            # repeat the command that already skipped them.
+            from .install_health import missing_core_dependencies
+            others = [d for d in missing_core_dependencies() if d not in ("boto3", "botocore")]
+            lines = ["nable is installed but its dependencies are not."]
+            if others:
+                lines.append(f"  also missing: {', '.join(others)}")
+            lines += [
+                "  usually a `pip install --no-deps`, a pruned container layer, "
+                "or a partial copy of site-packages",
+                "  fix: `pip install --upgrade --force-reinstall finops-mcp`",
+                "  or run isolated, no cleanup needed: `uvx --python 3.12 nable scan`",
+            ]
             cls = "missing_dep"
         else:
             _b3 = deps.get("boto3_version", "?")
