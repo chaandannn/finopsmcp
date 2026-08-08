@@ -212,3 +212,98 @@ def test_a_hidden_cost_tool_is_still_callable(monkeypatch):
     text = "".join(getattr(c, "text", "") for c in r.content)
     assert text, "a hidden tool returned nothing; it was not resolvable"
     assert "Unknown tool" not in text and "not found" not in text.lower()
+
+
+# ── advertised descriptions: trim what the model already has ─────────────────
+#
+# Measured on a connected install before this: 147 advertised tools carried
+# ~25,300 tokens of description on EVERY message, of which ~24% was a prose
+# Args: block duplicating the inputSchema and ~23% was five-deep example lists.
+
+from finops.tool_surface import compact_description  # noqa: E402
+
+_DOC = """
+    Get cost breakdown for any named cloud service on AWS, Azure, or GCP.
+
+    Short names are resolved automatically:
+      "MSK" -> "Amazon Managed Streaming for Apache Kafka"
+
+    Args:
+        service_name: Name of the service (short or full).
+        provider:     "aws", "azure", "gcp", or blank to auto-detect.
+        start_date:   ISO date. Defaults to 30 days ago.
+
+    Examples:
+        - "How much did we spend on ElastiCache this month?"
+        - "Show me AppSync costs for the last 7 days"
+        - "What's our MSK spend?"
+        - "How much are we spending on Azure Cognitive Services?"
+        - "Show me GCP BigQuery costs"
+"""
+
+
+def test_the_args_block_is_dropped_because_the_schema_carries_it():
+    out = compact_description(_DOC)
+    assert "Args:" not in out
+    assert "service_name:" not in out
+    assert "auto-detect" not in out
+
+
+def test_the_summary_and_disambiguation_survive():
+    """What the model actually needs to pick this tool over a neighbour."""
+    out = compact_description(_DOC)
+    assert "Get cost breakdown for any named cloud service" in out
+    assert "MSK" in out and "Kafka" in out
+
+
+def test_examples_are_capped_not_deleted():
+    out = compact_description(_DOC)
+    assert "Examples:" in out
+    assert "ElastiCache" in out and "AppSync" in out       # first two kept
+    assert "BigQuery" not in out and "Cognitive" not in out  # tail dropped
+    assert out.count("- \"") == 2
+
+
+def test_use_when_is_kept_in_full():
+    """It is 1% of the weight and it is the single best selection signal."""
+    doc = 'Do a thing.\n\n    Use when:\n        - "the user asks X"\n        - "or Y"\n        - "or Z"\n'
+    out = compact_description(doc)
+    assert out.count("- \"") == 3
+
+
+def test_a_description_with_no_sections_is_untouched():
+    plain = "Return the current spend total."
+    assert compact_description(plain) == plain
+
+
+@pytest.mark.parametrize("bad", ["", None])
+def test_empty_input_is_safe(bad):
+    assert compact_description(bad) == bad
+
+
+def test_the_advertised_surface_actually_shrank():
+    """The wiring test: trimming the helper but never calling it would leave
+    every user paying the same per-message tax."""
+    import asyncio, json
+    from finops.server import mcp
+    from finops.tool_surface import advertise
+    try:
+        from finops.token_budget import estimate_tokens
+    except Exception:
+        estimate_tokens = lambda s: len(s) // 4  # noqa: E731
+
+    raw = [t for t in mcp._tool_manager.list_tools() if advertise(t.name)]
+    adv = asyncio.run(mcp.list_tools())
+    before = sum(estimate_tokens(t.description or "") for t in raw)
+    after = sum(estimate_tokens(t.description or "") for t in adv)
+    assert after < before * 0.85, f"expected a real cut, got {before} -> {after}"
+    # and the tools themselves are all still advertised
+    assert len(adv) == len(raw)
+
+
+def test_trimming_never_empties_a_description():
+    """A tool advertised with no description is worse than a fat one."""
+    import asyncio
+    from finops.server import mcp
+    for t in asyncio.run(mcp.list_tools()):
+        assert (t.description or "").strip(), f"{t.name} lost its description"

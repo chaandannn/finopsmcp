@@ -75,9 +75,17 @@ class _SurfacedFastMCP(FastMCP):
     async def list_tools(self):  # type: ignore[override]
         from mcp.types import ToolAnnotations
 
-        from .tool_surface import advertise, tool_annotation
+        from .tool_surface import advertise, compact_description, tool_annotation
 
         tools = await super().list_tools()
+        # Trim the ADVERTISED description to what helps the model choose. The
+        # source docstrings keep their full text for `nable tools`, the docs
+        # generator and anyone reading the code; only this copy is compacted.
+        for t in tools:
+            try:
+                t.description = compact_description(t.description or "")
+            except Exception:
+                pass  # a description is never worth failing tools/list over
         # Annotate every tool with a title + readOnlyHint/destructiveHint. The
         # Connectors Directory requires these, and they double as a trust signal:
         # nable is read-only + propose-only, so nearly every tool is readOnlyHint.
