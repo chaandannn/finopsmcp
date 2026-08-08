@@ -64,7 +64,20 @@ def test_no_tool_in_two_families():
 # ── filtering behavior ─────────────────────────────────────────────────────────
 
 def _advertised_names():
-    return {t.name for t in asyncio.run(server.mcp.list_tools())}
+    """Names advertised with the FAMILY gate under test and the TIER gate stood
+    down. Tiering (tool_surface.TIER1) narrows this file's subject further, and
+    is covered on its own in tests/test_tool_tiers.py. Keeping the two layers in
+    separate files means a change to one cannot silently pass by being masked by
+    the other: without FINOPS_FLAT_TOOLS here, every family assertion below would
+    hold trivially because the tier gate had already hidden the tool."""
+    import os
+    os.environ["FINOPS_FLAT_TOOLS"] = "1"
+    tool_surface._reset_cache_for_tests()
+    try:
+        return {t.name for t in asyncio.run(server.mcp.list_tools())}
+    finally:
+        os.environ.pop("FINOPS_FLAT_TOOLS", None)
+        tool_surface._reset_cache_for_tests()
 
 
 def test_clean_machine_advertises_core_only():
@@ -125,7 +138,13 @@ def test_demo_mode_advertises_everything(monkeypatch):
     assert _advertised_names() == registered
 
 
-def test_unmapped_tool_fails_open():
+def test_unmapped_tool_fails_open_at_the_family_layer(monkeypatch):
+    """Family classification fails OPEN: an unmapped tool is still usable, and
+    the completeness test above is the enforcement. The tier layer deliberately
+    fails SHUT on the same name, so the composite answer is False; assert the
+    family layer alone here, and see test_tool_tiers for the other half."""
+    monkeypatch.setenv("FINOPS_FLAT_TOOLS", "1")
+    tool_surface._reset_cache_for_tests()
     assert advertise("some_future_tool_nobody_classified") is True
 
 
