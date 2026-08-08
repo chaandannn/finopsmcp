@@ -67,8 +67,14 @@ def test_telemetry_opted_out_in_airgap():
 
 
 def test_telemetry_not_opted_out_without_airgap():
-    """Without air-gap, NO_TELEMETRY, or CI, telemetry is enabled (given a key)."""
-    env_overrides = {"FINOPS_AIRGAP": "", "NABLE_NO_TELEMETRY": ""}
+    """With an explicit opt-in and no air-gap/NO_TELEMETRY/CI, telemetry sends.
+
+    Telemetry became opt-in on 2026-08-08, so NABLE_TELEMETRY=1 is now part of
+    the baseline here. This test isolates the AIR-GAP path, so the opt-in is set
+    to keep that the only variable under test.
+    """
+    env_overrides = {"FINOPS_AIRGAP": "", "NABLE_NO_TELEMETRY": "",
+                     "NABLE_TELEMETRY": "1"}
     # This test itself runs in CI, where telemetry is (correctly) off. Clear the
     # CI signals so we isolate the air-gap path, which is what this asserts.
     import finops.telemetry as _t

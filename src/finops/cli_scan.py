@@ -37,9 +37,13 @@ Exit codes (pinned contract; argparse owns 2 for usage errors):
 
 Failure states never stack-trace; every one ends with a docs link. Telemetry
 events (cli_scan_started / _completed / _failed) carry only event name, error
-class and flags: no dollar figures, no account IDs, and they honor
-NABLE_NO_TELEMETRY. The terminal event is sent synchronously before exit so
-slow-account runs never lose their completion mark.
+class and flags: no dollar figures, no account IDs. Telemetry is OPT-IN
+(NABLE_TELEMETRY=1); nothing is sent otherwise. The terminal event is sent
+synchronously before exit so slow-account runs never lose their completion mark.
+
+`--dry-run` prints every API call and IAM permission a scan would make and
+returns before reading credentials, so the question "what will this touch?"
+can be answered on a machine that has granted nothing.
 """
 
 from __future__ import annotations
@@ -739,6 +743,11 @@ def run(args) -> int:
                 "  looked in: env vars, ~/.aws/credentials, ~/.aws/config (SSO), instance metadata",
                 "  fix: `aws configure sso` (company SSO) or `aws configure` (access key)",
                 "  then: `nable connect` waits and connects the moment they appear",
+                # Someone with no credentials is often deciding whether to grant
+                # any, not failing to use the tool. Point them at the manifest
+                # rather than only at how to hand over access.
+                "  evaluating first? `nable scan --dry-run` lists every API call "
+                "and permission a scan needs, without running one",
             ], "no-creds", t0)
         sts = session.client("sts")
         ident = sts.get_caller_identity()
@@ -759,7 +768,8 @@ def run(args) -> int:
         if klass == "denied":
             return _fail(out, EXIT_DENIED, [
                 "this AWS identity cannot call sts:GetCallerIdentity",
-                "  fix: `nable iam-template` prints the read-only policy nable needs",
+                "  fix: `nable scan --dry-run --json` prints the exact least-privilege",
+                "       policy for the calls this scan makes, ready to paste",
             ], "permission", t0)
         if klass == "profile-missing":
             # The single most common instant failure: AWS_PROFILE is exported in

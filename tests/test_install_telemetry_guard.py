@@ -31,6 +31,9 @@ def test_ci_opts_out_of_all_telemetry(monkeypatch):
     monkeypatch.delenv("FINOPS_AIRGAP", raising=False)
     monkeypatch.delenv(tel._OPT_OUT_ENV, raising=False)
     _clear_ci(monkeypatch)
+    # Telemetry is opt-in as of 2026-08-08, so the baseline is OFF; opt in
+    # explicitly, then prove CI still overrides it.
+    monkeypatch.setenv(tel._OPT_IN_ENV, "1")
     assert not tel._is_opted_out()
     monkeypatch.setenv("CI", "1")
     assert tel._is_opted_out()
@@ -56,23 +59,44 @@ def test_send_event_itself_honors_opt_out(monkeypatch):
     tel._send_event("install-id", "setup_wizard_started", {})
     assert posted == []
 
-    # and with CI cleared plus a key, it does send
+    # Clearing CI is no longer enough: telemetry is opt-in, so still nothing.
     _clear_ci(monkeypatch)
     monkeypatch.delenv("FINOPS_AIRGAP", raising=False)
     monkeypatch.delenv(tel._OPT_OUT_ENV, raising=False)
+    monkeypatch.delenv(tel._OPT_IN_ENV, raising=False)
+    tel._send_event("install-id", "setup_wizard_started", {})
+    assert posted == [], "opt-in missing, so _send_event must still send nothing"
+
+    # Only an explicit opt-in produces a call.
+    monkeypatch.setenv(tel._OPT_IN_ENV, "1")
     tel._send_event("install-id", "setup_wizard_started", {})
     assert len(posted) == 1
 
 
-def test_no_telemetry_env_zero_means_on(monkeypatch):
-    """NABLE_NO_TELEMETRY=0 must NOT opt out, matching FINOPS_AIRGAP parsing."""
+def test_no_telemetry_env_zero_does_not_by_itself_turn_it_on(monkeypatch):
+    """Under opt-in, NABLE_NO_TELEMETRY=0 only means "not force-disabled"; it is
+    not consent. Consent is NABLE_TELEMETRY=1 and nothing else."""
     monkeypatch.setattr(tel, "_POSTHOG_KEY", "phc_x")
     monkeypatch.delenv("FINOPS_AIRGAP", raising=False)
     _clear_ci(monkeypatch)
+    monkeypatch.delenv(tel._OPT_IN_ENV, raising=False)
     monkeypatch.setenv(tel._OPT_OUT_ENV, "0")
+    assert tel._is_opted_out(), "0 on the opt-out var must not imply consent"
+    monkeypatch.setenv(tel._OPT_IN_ENV, "1")
     assert not tel._is_opted_out()
+    # and the hard override still beats an explicit opt-in
     monkeypatch.setenv(tel._OPT_OUT_ENV, "1")
     assert tel._is_opted_out()
+
+
+def test_nothing_is_sent_by_default(monkeypatch):
+    """The change itself: a clean machine sends nothing until asked."""
+    monkeypatch.setattr(tel, "_POSTHOG_KEY", "phc_x")
+    monkeypatch.delenv("FINOPS_AIRGAP", raising=False)
+    monkeypatch.delenv(tel._OPT_OUT_ENV, raising=False)
+    monkeypatch.delenv(tel._OPT_IN_ENV, raising=False)
+    _clear_ci(monkeypatch)
+    assert tel._is_opted_out(), "telemetry must be off with nothing configured"
 
 
 def _run_show_welcome(monkeypatch, *, first_run, ci, stdin_tty, stdout_tty):

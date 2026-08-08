@@ -108,3 +108,23 @@ def test_every_check_says_what_it_finds_in_plain_terms(check):
     """A permission list nobody can read is not disclosure."""
     what, calls = SCAN_CHECKS[check]
     assert len(what) > 15 and calls
+
+
+# ── surfacing: an evaluator has to find this without reading the README ──────
+
+def test_the_no_credentials_path_offers_the_dry_run():
+    """Someone with no credentials is often deciding whether to grant any. That
+    message pointed only at how to hand over access."""
+    import inspect
+    import finops.cli_scan as cs
+    src = inspect.getsource(cs.run)
+    i = src.index("no AWS credentials found on this machine")
+    assert "--dry-run" in src[i:i + 900]
+
+
+def test_the_permission_denied_path_points_at_the_exact_policy():
+    import inspect
+    import finops.cli_scan as cs
+    src = inspect.getsource(cs.run)
+    i = src.index("cannot call sts:GetCallerIdentity")
+    assert "--dry-run --json" in src[i:i + 400]
