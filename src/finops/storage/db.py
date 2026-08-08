@@ -463,9 +463,41 @@ context_annotations = Table(
 # itself, so each card re-runs live on load. owner is a local identity or
 # "instance" for shared team pins (single-tenant / local-first; never a
 # multi-tenant tenant id).
+# ── Dashboards — the container a saved card belongs to ───────────────────────
+#
+# Cards used to pin into one flat list per owner, so an install had exactly one
+# wall of charts: no way to keep "Platform team weekly" apart from "CFO monthly
+# review", no way to name or filter a set, and nothing to link to. A dashboard
+# is that container: a named, addressable object with its own scope.
+#
+# `filters` and `date_range` are the dashboard's scope, applied on top of every
+# card it holds (SliceSpec.with_scope). Storing scope here rather than editing
+# each card means one team filter narrows twenty charts at once, and removing it
+# restores exactly what the cards said before.
+
+dashboards = Table(
+    "dashboards", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("slug", String(96), nullable=False, unique=True),   # URL identity, stable across renames
+    Column("title", String(256), nullable=False, default="Untitled dashboard"),
+    Column("description", Text, nullable=False, default=""),
+    Column("owner", String(128), nullable=False, default="instance"),
+    Column("scope", String(16), nullable=False, default="instance"),  # me | instance
+    Column("filters", Text, nullable=False, default="[]"),      # JSON [FilterClause]
+    Column("date_range", Text, nullable=False, default="{}"),   # JSON DateRange
+    Column("position", Integer, nullable=False, default=0),
+    Column("created_at", DateTime, nullable=False),
+    Column("updated_at", DateTime, nullable=False),
+    Column("created_by", String(128), nullable=False, default=""),
+    Index("ix_dashboards_owner", "owner"),
+)
+
 dashboard_views = Table(
     "dashboard_views", metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
+    # NULL keeps every card pinned before dashboards existed working exactly as
+    # it did: it belongs to no dashboard and still renders on the overview.
+    Column("dashboard_id", Integer, nullable=True),
     Column("owner", String(128), nullable=False, default="instance"),
     Column("scope", String(16), nullable=False, default="instance"),   # me | instance
     Column("title", String(256), nullable=False, default=""),
@@ -723,6 +755,10 @@ def _run_sqlite_migrations(engine: Engine) -> None:
         # inferred from a re-opened row.
         ("savings_recommendations", "regressed_at"),
         ("savings_recommendations", "regression_count"),
+        # Dashboards: a saved card now belongs to one. Nullable on purpose, so
+        # cards pinned before dashboards existed keep working and stay on the
+        # overview instead of vanishing into a dashboard nobody created.
+        ("dashboard_views", "dashboard_id"),
     ]
 
     inspector = inspect(engine)
