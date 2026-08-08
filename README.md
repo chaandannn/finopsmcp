@@ -14,7 +14,7 @@ You do not need to be a cloud-cost expert. nable does three things:
 - **Finds what you are wasting** (idle servers, oversized databases, forgotten storage) and puts a dollar figure on each one.
 - **Fixes it, with your approval,** by opening a pull request, then checks your next bill to prove the saving was real.
 
-Built for the engineer who owns the bill, not a dedicated FinOps team. Everything runs on your machine, read-only, and your billing data never leaves it.
+Everything runs on your machine, read-only, and your billing data never leaves it.
 
 ## Try it
 
