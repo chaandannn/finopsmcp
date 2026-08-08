@@ -2793,7 +2793,9 @@ def main(args: list[str] | None = None) -> None:
                          help="Serve a populated sample dashboard, no cloud account needed "
                               "(demo data only, auth off, opens your browser)")
 
-    sub.add_parser("connect", help="Scan this machine for provider credentials and connect them all in one keystroke")
+    connect_p = sub.add_parser("connect", help="Scan this machine for provider credentials and connect them all in one keystroke")
+    connect_p.add_argument("--scopes", action="store_true",
+                           help="Print the tightest credential each provider can be given, and what nable calls with it")
     sub.add_parser("agents",  help="The agent team: Budget Guard, Savings Analyst, the Ledger, and their setup status")
     welcome_p = sub.add_parser("welcome", help="Guided onboarding: connect your first provider (and your editor)")
     welcome_p.add_argument("--demo", action="store_true", help="Show nable on sample data, no account needed")
@@ -2876,9 +2878,13 @@ def main(args: list[str] | None = None) -> None:
             ("MONGODB_ATLAS_PRIVATE_KEY", "Private Key", True),
             ("MONGODB_ATLAS_ORG_IDS", "Organization IDs (comma-separated)", False),
         ]),
+        # The Restricted API key is offered first because the Auth Token cannot
+        # be scoped: it can send messages and spend money. Either works.
         "twilio": lambda: setup_saas_api_key("Twilio", [
             ("TWILIO_ACCOUNT_SID", "Account SID (ACxxxx...)", False),
-            ("TWILIO_AUTH_TOKEN", "Auth Token", True),
+            ("TWILIO_API_KEY", "Restricted API Key SID (SKxxxx..., blank to use the Auth Token)", False),
+            ("TWILIO_API_SECRET", "Restricted API Key Secret", True),
+            ("TWILIO_AUTH_TOKEN", "Auth Token (only if you skipped the API key)", True),
         ]),
         "cloudflare": lambda: setup_saas_api_key("Cloudflare", [
             ("CLOUDFLARE_API_TOKEN", "API Token", True),
@@ -3076,6 +3082,11 @@ def main(args: list[str] | None = None) -> None:
         run_welcome_flow(demo=getattr(parsed, "demo", False))
         return
     elif parsed.cmd == "connect":
+        if getattr(parsed, "scopes", False):
+            # Before any credential is read: what to create, and what it can do.
+            from .connector_scopes import render
+            print(render())
+            return
         from .setup_scan import run_connect_command
         run_connect_command()
         return

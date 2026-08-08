@@ -20,17 +20,30 @@ import os
 import re
 from pathlib import Path
 
+from .connector_scopes import CONNECTOR_SCOPES
+
+
+def _perm(slug: str) -> str:
+    """The exact permission to pick, read from the least-privilege manifest.
+
+    Interpolated rather than retyped so the hint a user follows and the scope
+    the trust page publishes cannot drift apart.
+    """
+    scope = CONNECTOR_SCOPES.get(slug)
+    return scope.permission if scope else ""
+
+
 # ── Where to mint a key, per provider (display-name keyed) ────────────────────
 # Used by setup_saas_api_key deep links and by the "not found" section of the
 # scan report. url may be None when there is no key page (e.g. self-hosted).
 KEY_HELP: dict[str, tuple[str | None, str]] = {
     "Notion":        ("https://www.notion.so/my-integrations", "Create an internal integration, copy the token."),
-    "Datadog":       ("https://app.datadoghq.com/organization-settings/api-keys", "App key lives next door under Application Keys."),
+    "Datadog":       ("https://app.datadoghq.com/organization-settings/api-keys", f"App key lives next door under Application Keys. Scope it to {_perm('datadog')} and it reads cost only."),
     "Langfuse":      ("https://cloud.langfuse.com", "Project → Settings → API Keys."),
-    "Snowflake":     (None, "Your regular Snowflake login; the account identifier is in your Snowflake URL (e.g. xy12345.us-east-1)."),
-    "MongoDB Atlas": ("https://cloud.mongodb.com", "Organization → Access Manager → API Keys (Org Billing Viewer role)."),
-    "Twilio":        ("https://console.twilio.com", "Account SID and Auth Token are on the console home page."),
-    "Cloudflare":    ("https://dash.cloudflare.com/profile/api-tokens", "Create Token → Permissions: Account, Billing, Read. The Account ID is on the dashboard overview page."),
+    "Snowflake":     (None, f"The account identifier is in your Snowflake URL (e.g. xy12345.us-east-1). Set SNOWFLAKE_ROLE to a role with {_perm('snowflake')}."),
+    "MongoDB Atlas": ("https://cloud.mongodb.com", f"Organization → Access Manager → API Keys. Role: {_perm('mongodb')}."),
+    "Twilio":        ("https://console.twilio.com/us1/account/keys-credentials/api-keys", f"Prefer a Restricted API key ({_perm('twilio')}); the Auth Token on the console home page cannot be scoped."),
+    "Cloudflare":    ("https://dash.cloudflare.com/profile/api-tokens", f"Create Token with {_perm('cloudflare')}. The Account ID is on the dashboard overview page."),
     "Vercel":        ("https://vercel.com/account/tokens", "The invoice API needs a Vercel Enterprise plan."),
     "OpenAI":        ("https://platform.openai.com/settings/organization/admin-keys", "Billing data needs an ADMIN key (sk-admin-…), a regular key is not enough."),
     "Anthropic":     ("https://console.anthropic.com/settings/admin-keys", "Cost data needs an Admin key plus your Organization ID."),
@@ -41,8 +54,8 @@ KEY_HELP: dict[str, tuple[str | None, str]] = {
     "Replicate":     ("https://replicate.com/account/api-tokens", ""),
     "Cohere":        ("https://dashboard.cohere.com/api-keys", ""),
     "Mistral AI":    ("https://console.mistral.ai/api-keys", ""),
-    "New Relic":     ("https://one.newrelic.com/api-keys", "Use a USER key (NRAK-…)."),
-    "Databricks":    ("https://docs.databricks.com/en/dev-tools/auth/pat.html", "Workspace → Settings → Developer → Access tokens; nable also reads ~/.databrickscfg."),
+    "New Relic":     ("https://one.newrelic.com/api-keys", f"Use a USER key (NRAK-…). {_perm('newrelic')}."),
+    "Databricks":    ("https://docs.databricks.com/en/dev-tools/auth/pat.html", f"Workspace → Settings → Developer → Access tokens; nable also reads ~/.databrickscfg. Billable usage needs {_perm('databricks')}."),
     "GCP":           ("https://console.cloud.google.com/iam-admin/serviceaccounts", "Or run `gcloud auth application-default login`, nable detects it."),
 }
 
@@ -66,7 +79,7 @@ PROVIDER_ENV: dict[str, tuple[str, list[str], list[str]]] = {
                                                                                        ["SNOWFLAKE_WAREHOUSE", "SNOWFLAKE_ROLE", "SNOWFLAKE_CREDIT_PRICE"]),
     "mongodb":    ("MongoDB Atlas", ["MONGODB_ATLAS_PUBLIC_KEY", "MONGODB_ATLAS_PRIVATE_KEY"],
                                                                                        ["MONGODB_ATLAS_ORG_IDS"]),
-    "twilio":     ("Twilio",        ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"],       []),
+    "twilio":     ("Twilio",        ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"],       ["TWILIO_API_KEY", "TWILIO_API_SECRET"]),
     # Account ID is required, not optional: every billing endpoint is
     # account-scoped, and treating it as optional made the scan report
     # Cloudflare as found while the connector reported itself unconfigured.
@@ -74,6 +87,15 @@ PROVIDER_ENV: dict[str, tuple[str, list[str], list[str]]] = {
     "vercel":     ("Vercel",        ["VERCEL_TOKEN"],                                  ["VERCEL_TEAM_ID"]),
     "newrelic":   ("New Relic",     ["NEW_RELIC_API_KEY"],                             ["NEW_RELIC_ACCOUNT_ID"]),
     "databricks": ("Databricks",    ["DATABRICKS_HOST", "DATABRICKS_TOKEN"],           ["DATABRICKS_ACCOUNT_ID", "DATABRICKS_ACCOUNT_TOKEN", "DATABRICKS_DBU_PRICE"]),
+}
+
+# slug -> other complete key sets, any one of which is enough on its own.
+# Twilio is the only provider with two, and the difference is the whole point of
+# having this: a Restricted API key can be scoped to Usage read, the Auth Token
+# cannot be scoped at all. A machine holding only the safer credential must
+# still be found by the scan, or the scan quietly punishes the better choice.
+PROVIDER_ENV_ALT: dict[str, list[list[str]]] = {
+    "twilio": [["TWILIO_ACCOUNT_SID", "TWILIO_API_KEY", "TWILIO_API_SECRET"]],
 }
 
 
@@ -160,23 +182,25 @@ def scan_ambient_credentials(home: Path | None = None) -> list[dict]:
         if _vault_get(required[0]):
             continue  # already connected
 
-        # 1) environment variables (all required present)
-        env_vals = {k: os.environ.get(k, "") for k in required}
-        if all(_plausible(v) for v in env_vals.values()):
+        # 1) environment variables (any one complete key set present)
+        for key_set in [required, *PROVIDER_ENV_ALT.get(slug, [])]:
+            env_vals = {k: os.environ.get(k, "") for k in key_set}
+            if not all(_plausible(v) for v in env_vals.values()):
+                continue
             captured = dict(env_vals)
             for k in optional:
                 if _plausible(os.environ.get(k)):
                     captured[k] = os.environ[k]
             findings.append({"slug": slug, "name": name, "source": "environment", "env": captured})
-            continue
-
-        # 2) well-known credential files
-        probe = _FILE_PROBES.get(slug)
-        if probe:
-            file_env = probe(home)
-            if file_env:
-                src = {"modal": "~/.modal.toml", "databricks": "~/.databrickscfg"}[slug]
-                findings.append({"slug": slug, "name": name, "source": src, "env": file_env})
+            break
+        else:
+            # 2) well-known credential files
+            probe = _FILE_PROBES.get(slug)
+            if probe:
+                file_env = probe(home)
+                if file_env:
+                    src = {"modal": "~/.modal.toml", "databricks": "~/.databrickscfg"}[slug]
+                    findings.append({"slug": slug, "name": name, "source": src, "env": file_env})
 
     findings.sort(key=lambda f: f["name"].lower())
     return findings

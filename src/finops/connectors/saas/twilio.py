@@ -16,12 +16,30 @@ class TwilioConnector(BaseConnector):
     def __init__(self) -> None:
         self._account_sid = os.getenv("TWILIO_ACCOUNT_SID", "")
         self._auth_token = os.getenv("TWILIO_AUTH_TOKEN", "")
+        # A Restricted API key can be limited to Usage, read. The Auth Token
+        # cannot be limited at all: it can send messages, buy numbers and spend
+        # money, which is far more than reading a bill needs.
+        self._api_key = os.getenv("TWILIO_API_KEY", "")
+        self._api_secret = os.getenv("TWILIO_API_SECRET", "")
 
     async def is_configured(self) -> bool:
-        return bool(self._account_sid and self._auth_token)
+        return bool(self._account_sid and (
+            (self._api_key and self._api_secret) or self._auth_token))
 
     def _auth(self) -> tuple:
+        """Basic auth: the restricted key pair when present, else the Auth Token.
+
+        Twilio authenticates an API key as (key SID, secret) while the account
+        SID stays in the path, so this is a straight swap of the credential with
+        no change to any URL.
+        """
+        if self._api_key and self._api_secret:
+            return (self._api_key, self._api_secret)
         return (self._account_sid, self._auth_token)
+
+    def uses_restricted_key(self) -> bool:
+        """True when the tighter credential is the one actually in use."""
+        return bool(self._api_key and self._api_secret)
 
     async def get_costs(
         self,
