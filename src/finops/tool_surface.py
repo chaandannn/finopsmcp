@@ -318,6 +318,154 @@ _FAMILY_OF: dict[str, str] = {
     name: family for family, names in FAMILY_TOOLS.items() for name in names
 }
 
+# ── the tier map (the funnel) ─────────────────────────────────────────────────
+# Family answers "can this user use it at all". Tier answers a different
+# question: should the model see it BEFORE it knows what it is looking for.
+#
+# Filtering by family narrowed the surface but left it flat. Measured on main:
+# 198 advertised tools, ~46,700 tokens a message, and 59 of those tools have
+# cost/spend/bill in the name. That is a third of the surface spent on doors into
+# one question. get_cost_summary, get_costs_by_service, get_top_cost_drivers,
+# get_cost_trends, get_service_cost and get_total_spend_all_sources are not six
+# capabilities, they are six phrasings, and the model is left guessing between
+# them instead of choosing between things it can actually do.
+#
+#   TIER 1  The front door: one way in per question a user actually asks.
+#           Advertised, subject to the family gate.
+#   TIER 2  Everything else. Registered, callable by name, not advertised.
+#           Reached because tier 1 named it in a response.
+#   TIER 3  Forensics and long-tail leaves. Same advertisement rule as tier 2,
+#           called out separately because these are the expensive, precise ones
+#           that should only ever be reached with a handle from the layer above.
+#
+# Unlisted means tier 2, and that default is deliberate. For families an unmapped
+# tool fails OPEN (advertised, noisy, caught by a test). For tiers it fails SHUT,
+# because a new tool quietly joining the front door is the failure that costs
+# every user tokens on every message. The guard that matters is not completeness,
+# it is the budget test in tests/test_tool_tiers.py: the front door has a token
+# ceiling and CI fails when it creeps.
+
+TIER1: frozenset[str] = frozenset({
+    # ── Getting started, and the questions you can ask with nothing connected
+    "nable_setup_status",
+    "what_can_nable_do",           # detailed=True lists the deeper tools by name
+    "list_connected_providers",
+    "connect_aws",
+    "connect_azure",
+    "connect_gcp",
+
+    # ── "What are we spending?" The promoted door. Returns ranked drivers, and
+    #    names the tool that expands each one, so the layer below stays reachable
+    #    without being advertised.
+    "get_cost_summary",
+
+    # ── The other questions a human actually opens with, one door each
+    "explain_cost_change",         # why did it go up
+    "get_anomalies",               # is anything weird
+    "list_savings_recommendations",# what should we do
+    "check_budget_status",         # are we going to blow the budget
+    "forecast_costs",              # where does this land
+    "run_full_cost_audit",         # find everything
+    "slice_costs",                 # slice it my way, the general-purpose escape
+
+    # ── The agent-facing surface. These are called by an agent mid-task, not by
+    #    a human browsing, so they have to be visible without a prior question.
+    "estimate_change_cost",
+    "check_action_policy",
+    "check_ai_budget",
+})
+
+# Expensive and precise. Advertisement-wise identical to tier 2 today; named
+# separately so the handle requirement in the drill-down work has a list to
+# enforce against, rather than that list being invented later at the call site.
+TIER3: frozenset[str] = frozenset({
+    "get_instance_deep_analysis",
+    "get_resource_cost_breakdown_aws",
+    "get_resource_cost_breakdown_azure",
+    "get_tag_cost_breakdown_cur",
+    "get_ri_waste_detail",
+    "get_effective_rate_profile",
+    "get_commitment_coverage_by_tag",
+    "get_traffic_cost_breakdown",
+    "get_data_transfer_costs",
+    "audit_textract_environment_waste",
+    "get_textract_costs",
+    # get_kendra_costs, get_documentdb_costs and get_marketplace_costs are
+    # deliberately absent: they live in _EXTRA_TOOLS and are not registered
+    # unless FINOPS_ALL_TOOLS is set. Tiering is about advertisement, and a tier
+    # cannot promise a route to a tool the registry does not hold.
+    "get_databricks_job_costs",
+    "get_helm_release_costs",
+    "get_langfuse_trace_volume",
+})
+
+
+def tier(tool_name: str) -> int:
+    """1 = front door, 3 = forensics, 2 = everything in between."""
+    if tool_name in TIER1:
+        return 1
+    if tool_name in TIER3:
+        return 3
+    return 2
+
+
+# ── drill-down routing: which tool expands a given answer ─────────────────────
+# A hidden tool is only hidden well if the layer above says its name. These are
+# the edges of the funnel and they live beside the tier map deliberately: a tool
+# demoted out of tier 1 must not also lose the only route back to it.
+#
+# Keyed on what shows up in a real bill, so the suggestion is about the user's
+# actual top service rather than a generic menu. A generic menu is just the flat
+# surface again, moved into the response body.
+
+_SERVICE_LEAVES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("textract",        ("get_textract_costs", "audit_textract_environment_waste")),
+    ("bedrock",         ("get_bedrock_costs", "recommend_bedrock_model_routing")),
+    ("sagemaker",       ("get_gpu_infra_costs",)),
+    ("data transfer",   ("get_data_transfer_costs", "get_traffic_cost_breakdown")),
+    ("cloudfront",      ("get_traffic_cost_breakdown",)),
+    ("elastic compute", ("get_rightsizing_recommendations", "get_instance_deep_analysis")),
+    ("ec2",             ("get_rightsizing_recommendations", "get_instance_deep_analysis")),
+    ("relational database", ("get_rds_rightsizing_recommendations", "get_idle_rds_instances")),
+    ("rds",             ("get_rds_rightsizing_recommendations", "get_idle_rds_instances")),
+    ("simple storage",  ("get_storage_info",)),
+    ("s3",              ("get_storage_info",)),
+    ("load balancing",  ("get_idle_load_balancers",)),
+    ("container service", ("get_ecs_rightsizing_recommendations",)),
+    ("fargate",         ("get_ecs_rightsizing_recommendations",)),
+    ("kubernetes",      ("get_kubernetes_costs", "get_kubernetes_cost_trends")),
+    ("elastic kubernetes", ("get_kubernetes_costs",)),
+    ("databricks",      ("get_databricks_job_costs",)),
+)
+
+# Offered on any cost answer, because these questions follow every total
+# regardless of what is at the top of it.
+_ALWAYS_NEXT: tuple[tuple[str, str], ...] = (
+    ("get_costs_by_service", "the same period broken out per service"),
+    ("get_cost_trends", "how this moved day by day"),
+    ("get_tag_cost_breakdown_cur", "the same spend split by tag, from the CUR"),
+)
+
+
+def drilldown_for(service_names) -> dict[str, str]:
+    """Tool name -> what it expands, for the services present in one answer.
+
+    Returned in the payload of a front-door tool so the model reads the next hop
+    off the answer it already has instead of guessing whether a tool exists.
+    """
+    out: dict[str, str] = {}
+    lowered = [str(s).lower() for s in (service_names or [])]
+    for needle, tools in _SERVICE_LEAVES:
+        match = next((s for s in lowered if needle in s), None)
+        if match is None:
+            continue
+        for tool_name in tools:
+            out.setdefault(tool_name, f"detail on {match}")
+    for tool_name, why in _ALWAYS_NEXT:
+        out.setdefault(tool_name, why)
+    return out
+
+
 # ── read/write classification for MCP tool annotations ─────────────────────────
 # The Anthropic Connectors Directory requires every tool to carry a title and a
 # readOnlyHint (or destructiveHint). nable is read-only + propose-only by design,
@@ -538,8 +686,22 @@ def compact_description(desc: str, keep_examples: int = _KEEP_EXAMPLES) -> str:
     return "".join(out).strip()
 
 
+def _flat_surface_forced() -> bool:
+    """FINOPS_FLAT_TOOLS=1 keeps the old flat surface without unhiding tools the
+    user cannot use. Narrower than FINOPS_ALL_TOOLS, which also ignores families:
+    someone who dislikes the funnel should not have to also take the Azure tools
+    on an AWS-only machine to escape it."""
+    return os.getenv("FINOPS_FLAT_TOOLS", "").strip().lower() in ("1", "true", "yes")
+
+
 def advertise(tool_name: str) -> bool:
-    """Should this tool appear in tools/list right now?"""
+    """Should this tool appear in tools/list right now?
+
+    Two gates, and both must pass. Family asks whether this user could use the
+    tool at all. Tier asks whether the model should see it before it knows what
+    it is looking for. A tool that fails the tier gate is not gone: the MCP call
+    path resolves against the registry, so it runs the moment something names it.
+    """
     if _all_tools_forced():
         return True
     try:
@@ -549,6 +711,9 @@ def advertise(tool_name: str) -> bool:
             return True  # the demo showcases the whole product
     except Exception:
         pass
+
+    if tier(tool_name) != 1 and not _flat_surface_forced():
+        return False
 
     family = _FAMILY_OF.get(tool_name)
     if family is None:

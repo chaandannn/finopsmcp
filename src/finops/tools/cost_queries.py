@@ -109,6 +109,12 @@ async def get_cost_summary(
         "by_provider": by_provider,
         "grand_by_service": {k: round(v, 4) for k, v in _ranked_services[:50]},
     }
+    # This is the front door of the funnel, so it carries the map to the next
+    # room. nable advertises only entry points; the drill-down tools are callable
+    # but unlisted, and naming the ones that fit THIS answer is what keeps them
+    # reachable without paying for 130 tool definitions on every message.
+    from ..tool_surface import drilldown_for
+    result["next_tools"] = drilldown_for(k for k, _ in _ranked_services[:8])
     if _failed:
         # Some read, some did not. The total is real but incomplete, and nothing
         # downstream may present it as the whole bill.
