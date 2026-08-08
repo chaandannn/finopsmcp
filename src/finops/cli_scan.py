@@ -37,9 +37,13 @@ Exit codes (pinned contract; argparse owns 2 for usage errors):
 
 Failure states never stack-trace; every one ends with a docs link. Telemetry
 events (cli_scan_started / _completed / _failed) carry only event name, error
-class and flags: no dollar figures, no account IDs, and they honor
-NABLE_NO_TELEMETRY. The terminal event is sent synchronously before exit so
-slow-account runs never lose their completion mark.
+class and flags: no dollar figures, no account IDs. Telemetry is OPT-IN
+(NABLE_TELEMETRY=1); nothing is sent otherwise. The terminal event is sent
+synchronously before exit so slow-account runs never lose their completion mark.
+
+`--dry-run` prints every API call and IAM permission a scan would make and
+returns before reading credentials, so the question "what will this touch?"
+can be answered on a machine that has granted nothing.
 """
 
 from __future__ import annotations
@@ -568,6 +572,25 @@ def _json_payload(spend, report, *, demo, profile, account_id, duration_s, extra
 def run(args) -> int:
     t0 = time.time()
     as_json = bool(getattr(args, "json", False))
+
+    # --dry-run answers "what will this touch?" before anything is touched, and
+    # returns before credentials are read, before any client is built, and before
+    # a single network call. Asked for by a security-minded reader who could not
+    # evaluate the tool without it, which is the correct reason to want it.
+    if getattr(args, "dry_run", False):
+        from .scan_manifest import iam_policy, render_dry_run
+        want = bool(getattr(args, "spend", False))
+        if as_json:
+            print(json.dumps({
+                "dry_run": True,
+                "executed": False,
+                "iam_policy": iam_policy(want),
+                "cost_explorer_called": want,
+            }, indent=2))
+        else:
+            print(render_dry_run(want))
+        return EXIT_OK
+
     demo = bool(getattr(args, "demo", False)) or os.getenv("FINOPS_DEMO") == "1"
     want_spend = bool(getattr(args, "spend", False))
     profile = getattr(args, "profile", None) or os.getenv("AWS_PROFILE") or "default"
@@ -720,6 +743,11 @@ def run(args) -> int:
                 "  looked in: env vars, ~/.aws/credentials, ~/.aws/config (SSO), instance metadata",
                 "  fix: `aws configure sso` (company SSO) or `aws configure` (access key)",
                 "  then: `nable connect` waits and connects the moment they appear",
+                # Someone with no credentials is often deciding whether to grant
+                # any, not failing to use the tool. Point them at the manifest
+                # rather than only at how to hand over access.
+                "  evaluating first? `nable scan --dry-run` lists every API call "
+                "and permission a scan needs, without running one",
             ], "no-creds", t0)
         sts = session.client("sts")
         ident = sts.get_caller_identity()
@@ -740,7 +768,8 @@ def run(args) -> int:
         if klass == "denied":
             return _fail(out, EXIT_DENIED, [
                 "this AWS identity cannot call sts:GetCallerIdentity",
-                "  fix: `nable iam-template` prints the read-only policy nable needs",
+                "  fix: `nable scan --dry-run --json` prints the exact least-privilege",
+                "       policy for the calls this scan makes, ready to paste",
             ], "permission", t0)
         if klass == "profile-missing":
             # The single most common instant failure: AWS_PROFILE is exported in
@@ -926,6 +955,8 @@ def add_parser(sub) -> None:
         "--spend", action="store_true",
         help="add a month-to-date spend breakdown (uses Cost Explorer, ~$0.02 on your AWS bill)",
     )
+    p.add_argument("--dry-run", action="store_true",
+                   help="list every API call and IAM permission a scan needs, and exit")
     p.add_argument("--debug", action="store_true", help="full tracebacks and per-check timing")
     p.add_argument("--profile", help="AWS profile to use (default: $AWS_PROFILE or 'default')")
     p.add_argument(

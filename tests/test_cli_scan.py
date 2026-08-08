@@ -306,10 +306,14 @@ def test_expired_token_client_error_exit_three():
     assert code == cli_scan.EXIT_EXPIRED
 
 
-def test_access_denied_exit_four_names_iam_template(capsys):
+def test_access_denied_exit_four_points_at_the_exact_policy(capsys):
+    """A denied identity needs the policy for the calls THIS scan makes, which
+    --dry-run --json prints. The old generic iam-template was a superset."""
     code, _, _ = _run(_args(), _session(sts_exc=_client_error("AccessDenied")))
     assert code == cli_scan.EXIT_DENIED
-    assert "nable iam-template" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "--dry-run --json" in out
+    assert "least-privilege" in out
 
 
 def test_no_creds_error_from_sts_exit_six():

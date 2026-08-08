@@ -1,5 +1,5 @@
 """
-nable anonymous telemetry — opt-OUT, not opt-in.
+nable anonymous telemetry — OPT-IN. Nothing is sent unless you switch it on.
 
 What we collect (and only this):
   - A random install ID (UUID4, generated once, stored locally — never your email or keys)
@@ -23,12 +23,17 @@ What we never collect:
   - IP addresses (PostHog is configured to drop them server-side)
   - Email addresses (unless you've identified yourself via the website)
 
-How to disable:
-  export NABLE_NO_TELEMETRY=1
-  # or add to your shell profile / .env
+How to turn it ON (it is off by default):
+  export NABLE_TELEMETRY=1
 
-This is standard practice for developer tools (VS Code, dbt, Homebrew, Vercel CLI).
-It lets us know how many installs are active so we can prioritise what to build.
+How to guarantee it stays off, even if something else sets the above:
+  export NABLE_NO_TELEMETRY=1
+
+Flipped to opt-in on 2026-08-08. This runs on an operator's own machine against
+their own cloud account, and the people most likely to install it are the least
+willing to have it phone home by default. The cost is ours to carry: field
+diagnosis gets harder, and a month of scan failures was already invisible partly
+because events carried too little. Better than a default nobody agreed to.
 """
 from __future__ import annotations
 
@@ -46,7 +51,8 @@ from typing import Optional
 _POSTHOG_KEY  = os.environ.get("NABLE_POSTHOG_KEY", "phc_zcaQqoAXrSghjtbE6VB83p4RjfmcpqezKWV9GdZy4dPv")
 _POSTHOG_HOST = "https://us.i.posthog.com"
 _ID_FILE      = Path.home() / ".config" / "finops" / ".install_id"
-_OPT_OUT_ENV  = "NABLE_NO_TELEMETRY"
+_OPT_OUT_ENV  = "NABLE_NO_TELEMETRY"   # hard override, always wins
+_OPT_IN_ENV   = "NABLE_TELEMETRY"      # opt-in: nothing is sent without it
 
 # ─── Install ID ──────────────────────────────────────────────────────────────
 
@@ -74,6 +80,24 @@ def _get_install_id() -> str:
 
 
 def _is_opted_out() -> bool:
+    """Telemetry is OFF unless explicitly switched on. Opt-in, not opt-out.
+
+    Changed 2026-08-08. It used to send unless NABLE_NO_TELEMETRY was set, and
+    that default is wrong for what this tool is: it runs on an operator's own
+    machine against their own cloud account, and the people most likely to
+    install it are the people least willing to have it phone home by default.
+    Asked directly on r/selfhosted whether telemetry was disabled by default;
+    "no, but here is what it doesn't collect" is a much weaker answer than "yes".
+
+    The cost is real and worth stating: field diagnosis gets harder. A month of
+    scan failures was invisible partly because the events carried too little,
+    and this reduces volume on top of that. The trade is deliberate. Anyone who
+    wants to help sets one variable, and the events still carry no cost figures,
+    no account IDs, no resource names and no paths.
+
+    NABLE_NO_TELEMETRY keeps working as a hard override, so a user who already
+    set it in a dotfile or an image stays off no matter what else is configured.
+    """
     if not _POSTHOG_KEY:
         return True  # no key configured — silently skip all telemetry
     _airgap = os.environ.get("FINOPS_AIRGAP", "").strip()
@@ -81,8 +105,13 @@ def _is_opted_out() -> bool:
         return True  # air-gap mode: no non-provider outbound allowed
     if is_ci():
         return True  # CI / build runners are not users; never count or ping
-    _opt = os.environ.get(_OPT_OUT_ENV, "").strip()
-    return _opt not in ("", "0", "false", "no")
+    # The explicit opt-out still wins, even against an explicit opt-in: someone
+    # who set it once meant it, and a later env var should not quietly undo it.
+    _out = os.environ.get(_OPT_OUT_ENV, "").strip()
+    if _out not in ("", "0", "false", "no"):
+        return True
+    _in = os.environ.get(_OPT_IN_ENV, "").strip()
+    return _in in ("", "0", "false", "no")
 
 
 # Build and CI runners fire the CLI on every cold job, which used to look like
