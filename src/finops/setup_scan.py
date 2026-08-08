@@ -30,7 +30,7 @@ KEY_HELP: dict[str, tuple[str | None, str]] = {
     "Snowflake":     (None, "Your regular Snowflake login; the account identifier is in your Snowflake URL (e.g. xy12345.us-east-1)."),
     "MongoDB Atlas": ("https://cloud.mongodb.com", "Organization → Access Manager → API Keys (Org Billing Viewer role)."),
     "Twilio":        ("https://console.twilio.com", "Account SID and Auth Token are on the console home page."),
-    "Cloudflare":    ("https://dash.cloudflare.com/profile/api-tokens", "Create Token with billing read access."),
+    "Cloudflare":    ("https://dash.cloudflare.com/profile/api-tokens", "Create Token → Permissions: Account, Billing, Read. The Account ID is on the dashboard overview page."),
     "Vercel":        ("https://vercel.com/account/tokens", "The invoice API needs a Vercel Enterprise plan."),
     "OpenAI":        ("https://platform.openai.com/settings/organization/admin-keys", "Billing data needs an ADMIN key (sk-admin-…), a regular key is not enough."),
     "Anthropic":     ("https://console.anthropic.com/settings/admin-keys", "Cost data needs an Admin key plus your Organization ID."),
@@ -67,7 +67,10 @@ PROVIDER_ENV: dict[str, tuple[str, list[str], list[str]]] = {
     "mongodb":    ("MongoDB Atlas", ["MONGODB_ATLAS_PUBLIC_KEY", "MONGODB_ATLAS_PRIVATE_KEY"],
                                                                                        ["MONGODB_ATLAS_ORG_IDS"]),
     "twilio":     ("Twilio",        ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"],       []),
-    "cloudflare": ("Cloudflare",    ["CLOUDFLARE_API_TOKEN"],                          ["CLOUDFLARE_ACCOUNT_ID"]),
+    # Account ID is required, not optional: every billing endpoint is
+    # account-scoped, and treating it as optional made the scan report
+    # Cloudflare as found while the connector reported itself unconfigured.
+    "cloudflare": ("Cloudflare",    ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"], []),
     "vercel":     ("Vercel",        ["VERCEL_TOKEN"],                                  ["VERCEL_TEAM_ID"]),
     "newrelic":   ("New Relic",     ["NEW_RELIC_API_KEY"],                             ["NEW_RELIC_ACCOUNT_ID"]),
     "databricks": ("Databricks",    ["DATABRICKS_HOST", "DATABRICKS_TOKEN"],           ["DATABRICKS_ACCOUNT_ID", "DATABRICKS_ACCOUNT_TOKEN", "DATABRICKS_DBU_PRICE"]),
