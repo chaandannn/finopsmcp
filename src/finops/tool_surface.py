@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 from pathlib import Path
 
@@ -487,6 +488,54 @@ def connected_families() -> frozenset[str]:
 
 def _all_tools_forced() -> bool:
     return os.getenv("FINOPS_ALL_TOOLS", "").strip().lower() in ("1", "true", "yes")
+
+
+_SECTION = re.compile(
+    r"\n[ \t]*(Args|Arguments|Parameters|Returns|Raises|Examples?|Notes?|Use when)"
+    r"[ \t]*:[ \t]*\n", re.IGNORECASE)
+# Dropped outright: MCP already sends the inputSchema, which carries every
+# parameter's name, type, required-ness and description. A prose Args: block is
+# the same information a second time, and on this install that duplicate is
+# ~6,300 tokens riding in context on every single message.
+_DROP = {"args", "arguments", "parameters", "returns", "raises"}
+_KEEP_EXAMPLES = 2      # the first two map user phrasing to tool; the rest repeat
+
+
+def compact_description(desc: str, keep_examples: int = _KEEP_EXAMPLES) -> str:
+    """The advertised form of a tool description: what helps the model CHOOSE.
+
+    A description exists so the model can pick the right tool. It does not need
+    to teach the domain or re-state the schema. Measured on a connected install:
+    147 advertised tools carried ~25,300 tokens of description, of which ~24%
+    was a prose copy of the inputSchema and ~23% was five-deep example lists.
+
+    Source docstrings keep their full text. This trims only the ADVERTISED copy,
+    so `nable tools`, the docs generator and anyone reading the code still get
+    the long form. Reversible by not calling it.
+    """
+    if not desc:
+        return desc
+    marks = [(m.start(), m.end(), m.group(1).lower()) for m in _SECTION.finditer(desc)]
+    if not marks:
+        return desc.strip()
+
+    out, cursor = [desc[:marks[0][0]]], None
+    for i, (start, end, name) in enumerate(marks):
+        body_end = marks[i + 1][0] if i + 1 < len(marks) else len(desc)
+        if name in _DROP:
+            continue
+        body = desc[end:body_end]
+        if name.startswith("example"):
+            # Keep the first N bullets. A tool whose examples are prose rather
+            # than a list keeps the first line, which is the same idea.
+            lines = [ln for ln in body.splitlines() if ln.strip()]
+            body = "\n".join(lines[:keep_examples])
+            if not body.strip():
+                continue
+        out.append(desc[start:end] + body.rstrip() + "\n")
+        cursor = i
+    _ = cursor
+    return "".join(out).strip()
 
 
 def advertise(tool_name: str) -> bool:
