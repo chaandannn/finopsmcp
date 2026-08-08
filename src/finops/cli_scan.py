@@ -568,6 +568,25 @@ def _json_payload(spend, report, *, demo, profile, account_id, duration_s, extra
 def run(args) -> int:
     t0 = time.time()
     as_json = bool(getattr(args, "json", False))
+
+    # --dry-run answers "what will this touch?" before anything is touched, and
+    # returns before credentials are read, before any client is built, and before
+    # a single network call. Asked for by a security-minded reader who could not
+    # evaluate the tool without it, which is the correct reason to want it.
+    if getattr(args, "dry_run", False):
+        from .scan_manifest import iam_policy, render_dry_run
+        want = bool(getattr(args, "spend", False))
+        if as_json:
+            print(json.dumps({
+                "dry_run": True,
+                "executed": False,
+                "iam_policy": iam_policy(want),
+                "cost_explorer_called": want,
+            }, indent=2))
+        else:
+            print(render_dry_run(want))
+        return EXIT_OK
+
     demo = bool(getattr(args, "demo", False)) or os.getenv("FINOPS_DEMO") == "1"
     want_spend = bool(getattr(args, "spend", False))
     profile = getattr(args, "profile", None) or os.getenv("AWS_PROFILE") or "default"
@@ -926,6 +945,8 @@ def add_parser(sub) -> None:
         "--spend", action="store_true",
         help="add a month-to-date spend breakdown (uses Cost Explorer, ~$0.02 on your AWS bill)",
     )
+    p.add_argument("--dry-run", action="store_true",
+                   help="list every API call and IAM permission a scan needs, and exit")
     p.add_argument("--debug", action="store_true", help="full tracebacks and per-check timing")
     p.add_argument("--profile", help="AWS profile to use (default: $AWS_PROFILE or 'default')")
     p.add_argument(
