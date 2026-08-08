@@ -33,7 +33,26 @@ async def nable_setup_status() -> dict:
         - "What providers am I missing?"
         - "Finish setting up nable"
     """
+    from ..install_health import install_health
     from ..setup_scan import scan_ambient_credentials
+
+    # A dependency-less install advertises every tool and answers tools/list
+    # looking healthy, then dies on the first cloud call. Lead with that when it
+    # is true: no amount of connecting providers fixes a broken install, so the
+    # agent must not walk the user through setup on top of it.
+    health = install_health()
+    if not health["ok"]:
+        return {
+            "install_broken": True,
+            "detail": health["detail"],
+            "fix": health["fix"],
+            "isolated_fix": health["isolated_fix"],
+            "missing_packages": health["missing"],
+            "next_step": ("Tell the user their nable install is missing "
+                          "dependencies and give them the fix command. Do not "
+                          "attempt to connect providers until it is repaired."),
+        }
+
     connected = []
     not_connected = []
     for name, conn in _srv._ALL_CONNECTORS.items():
