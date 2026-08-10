@@ -819,7 +819,7 @@ async def open_terraform_tag_pr(
         }
 
     # 2. Git: checkout branch, stage, commit, push
-    def _git(*args: str) -> str:
+    def run_git(*args: str) -> str:
         result = _sp.run(
             ["git", *args], cwd=tf_dir, capture_output=True, text=True
         )
@@ -835,16 +835,16 @@ async def open_terraform_tag_pr(
             return {"error": f"Unsafe {_kind} {_ref!r}: refs may use [A-Za-z0-9._/-] and must not start with '-'."}
 
     try:
-        _git("checkout", "-b", branch)
-        _git("add", "--", *modified_files)
-        _git(
+        run_git("checkout", "-b", branch)
+        run_git("add", "--", *modified_files)
+        run_git(
             "commit", "-m",
             f"fix: add required tags to Terraform resources\n\n"
             f"Fixed {len(violations)} missing tag violations across "
             f"{len(modified_files)} file(s).\n\n"
             f"Co-Authored-By: nable FinOps MCP <noreply@nable.dev>",
         )
-        _git("push", "-u", "origin", branch)
+        run_git("push", "-u", "origin", branch)
     except Exception as exc:
         return {"error": f"Git operation failed: {exc}", "branch": branch}
 

@@ -70,7 +70,7 @@ def test_dry_run_returns_diffs_without_writing(tmp_path: Path) -> None:
          patch("finops.remediation.rightsizing_pr.build_id_map", return_value={}), \
          patch("finops.remediation.rightsizing_pr.resolve_recommendation", return_value=None), \
          patch("finops.remediation.rightsizing_pr.find_resource_file", return_value=str(tf)), \
-         patch("finops.remediation.rightsizing_pr._git") as mock_git:
+         patch("finops.remediation.rightsizing_pr.run_git") as mock_git:
 
         result = open_rightsizing_pr(
             tf_dir=str(tmp_path),
@@ -98,7 +98,7 @@ def test_patch_only_writes_files_without_git(tmp_path: Path) -> None:
          patch("finops.remediation.rightsizing_pr.resolve_recommendation", return_value=None), \
          patch("finops.remediation.rightsizing_pr.find_resource_file", return_value=str(tf)), \
          patch("finops.remediation.rightsizing_pr.mark_acted_on", return_value=True), \
-         patch("finops.remediation.rightsizing_pr._git") as mock_git:
+         patch("finops.remediation.rightsizing_pr.run_git") as mock_git:
 
         result = open_rightsizing_pr(
             tf_dir=str(tmp_path),
@@ -136,7 +136,7 @@ def test_resource_resolved_from_recommended_config(tmp_path: Path) -> None:
          patch("finops.remediation.rightsizing_pr.build_id_map", side_effect=RuntimeError("no state")), \
          patch("finops.remediation.rightsizing_pr.find_resource_file", return_value=str(tf)), \
          patch("finops.remediation.rightsizing_pr.mark_acted_on", return_value=True), \
-         patch("finops.remediation.rightsizing_pr._git"):
+         patch("finops.remediation.rightsizing_pr.run_git"):
 
         result = open_rightsizing_pr(
             tf_dir=str(tmp_path),
@@ -179,7 +179,7 @@ def test_resolves_from_terraform_state_without_cfg_tf_fields(tmp_path: Path) -> 
 
     with _patch_db([row]), \
          patch("finops.remediation.rightsizing_pr.mark_acted_on", return_value=True), \
-         patch("finops.remediation.rightsizing_pr._git"):
+         patch("finops.remediation.rightsizing_pr.run_git"):
         result = open_rightsizing_pr(tf_dir=str(tmp_path), patch_only=True)
 
     assert result.get("files_modified"), result

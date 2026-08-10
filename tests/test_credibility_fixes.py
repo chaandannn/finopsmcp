@@ -86,13 +86,13 @@ def test_resolver_prefers_explicit_id():
 
 def test_resolver_auto_discovers_from_sts():
     from finops import server as srv
-    with patch.dict(srv._CLOUD_CONNECTORS, {"aws": _aws_stub()}):
+    with patch.dict(srv.CLOUD_CONNECTORS, {"aws": _aws_stub()}):
         assert asyncio.run(srv._resolve_account_id(None)) == "123456789012"
 
 
 def test_resolver_empty_when_nothing_connected():
     from finops import server as srv
-    with patch.dict(srv._CLOUD_CONNECTORS, {"aws": _aws_stub(configured=False)}):
+    with patch.dict(srv.CLOUD_CONNECTORS, {"aws": _aws_stub(configured=False)}):
         assert asyncio.run(srv._resolve_account_id(None)) == ""
 
 

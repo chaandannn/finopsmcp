@@ -39,7 +39,7 @@ def test_active_with_explicit_empty_dict_stays_empty():
     # Even with real connectors configured elsewhere, an explicitly empty
     # subset (e.g. an invalid provider name resolved to {}) must never fall
     # back to them.
-    with patch.dict(srv._CLOUD_CONNECTORS, {"aws": SimpleNamespace(is_configured=_configured)}):
+    with patch.dict(srv.CLOUD_CONNECTORS, {"aws": SimpleNamespace(is_configured=_configured)}):
         result = asyncio.run(srv._active({}))
     assert result == {}
 
@@ -60,8 +60,8 @@ def test_get_cost_summary_rejects_unknown_provider_instead_of_returning_everythi
         )
 
     aws_stub = SimpleNamespace(is_configured=_configured, get_costs=_get_costs)
-    with patch.dict(srv._CLOUD_CONNECTORS, {"aws": aws_stub}, clear=True), \
-         patch.dict(srv._SAAS_CONNECTORS, {}, clear=True):
+    with patch.dict(srv.CLOUD_CONNECTORS, {"aws": aws_stub}, clear=True), \
+         patch.dict(srv.SAAS_CONNECTORS, {}, clear=True):
         result = asyncio.run(srv.get_cost_summary(provider="not-a-real-provider"))
 
     assert "error" in result, (

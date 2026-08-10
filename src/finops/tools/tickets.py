@@ -92,7 +92,7 @@ async def generate_account_dashboard(
     import subprocess
     import sys
 
-    aws = _srv._CLOUD_CONNECTORS.get("aws")
+    aws = _srv.CLOUD_CONNECTORS.get("aws")
     aws_configured = aws and await aws.is_configured()
 
     try:
@@ -507,7 +507,7 @@ async def start_dashboard_server(
             }
         # Inject the MCP server's already-initialized connectors so the
         # dashboard uses the correct vault/keyring credentials.
-        set_connectors({**_srv._CLOUD_CONNECTORS, **_srv._SAAS_CONNECTORS})
+        set_connectors({**_srv.CLOUD_CONNECTORS, **_srv.SAAS_CONNECTORS})
         # Default to loopback. Only bind all interfaces on explicit opt-in, so a
         # casual "start the dashboard" never exposes a listener on the whole LAN.
         bind_host = "0.0.0.0" if expose else host

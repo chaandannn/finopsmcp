@@ -52,7 +52,7 @@ _RETRY_ATTEMPTS = 3
 _RETRY_BACKOFF = [1, 2, 4]  # seconds
 
 
-def _http_with_retry(method: str, url: str, **kwargs: Any) -> httpx.Response:
+def http_with_retry(method: str, url: str, **kwargs: Any) -> httpx.Response:
     """Execute an HTTP request with exponential backoff retry."""
     last_exc: Exception | None = None
     for attempt in range(_RETRY_ATTEMPTS):
@@ -373,7 +373,7 @@ def _post_jira(title: str, body: str, priority: str, labels: list[str]) -> str |
         payload["fields"]["assignee"] = {"id": assignee_id}
 
     try:
-        r = _http_with_retry(
+        r = http_with_retry(
             "POST",
             f"{base_url}/rest/api/3/issue",
             json=payload,
@@ -419,7 +419,7 @@ def _post_linear(title: str, body: str, priority: str, labels: list[str]) -> str
         variables["input"]["assigneeId"] = assignee_id  # type: ignore[index]
 
     try:
-        r = _http_with_retry(
+        r = http_with_retry(
             "POST",
             "https://api.linear.app/graphql",
             json={"query": _LINEAR_CREATE_ISSUE, "variables": variables},
@@ -455,7 +455,7 @@ def _post_github(title: str, body: str, priority: str, labels: list[str]) -> str
         payload["assignees"] = [a.strip() for a in assignees_raw.split(",")]
 
     try:
-        r = _http_with_retry(
+        r = http_with_retry(
             "POST",
             f"https://api.github.com/repos/{repo}/issues",
             json=payload,
@@ -657,7 +657,7 @@ def create_github_pr(
         "base": base,
     }
 
-    r = _http_with_retry(
+    r = http_with_retry(
         "POST",
         f"https://api.github.com/repos/{repo}/pulls",
         json=payload,
@@ -682,3 +682,12 @@ def list_configured_providers() -> list[str]:
     if all([_env("GITHUB_TOKEN"), _env("GITHUB_FINOPS_REPO")]):
         configured.append("github")
     return configured
+
+# ── Deprecated aliases ────────────────────────────────────────────────────────
+# These names were private (leading underscore) while the enterprise provider
+# imported them anyway, so a legitimate rename here broke a repo this CI cannot
+# see. The names above are the promoted, supported ones. These aliases exist for
+# one release so a provider pinned to an older core keeps working, and are
+# covered by tests/test_extension_surface.py::DEPRECATED_ALIASES. Delete them
+# once no released provider imports the underscore form.
+_http_with_retry = http_with_retry

@@ -153,10 +153,10 @@ def test_audit_duplicate_spend_wires_all_three_clusters_together():
         return {"by_provider": {"bedrock": 3568.13, "anthropic": 42.10}}
 
     with patch("finops.connectors.llm_costs.get_all_llm_costs", _fake_llm_costs), \
-         patch.dict(srv._CLOUD_CONNECTORS, {
+         patch.dict(srv.CLOUD_CONNECTORS, {
              "aws": _aws_stub({"Amazon Kendra": 260.40, "Amazon OpenSearch Service": 172.80})
          }), \
-         patch.dict(srv._SAAS_CONNECTORS, {
+         patch.dict(srv.SAAS_CONNECTORS, {
              "databricks": _saas_stub("databricks", 5100.0),
              "snowflake": _saas_stub("snowflake", 4200.0),
          }, clear=True):
@@ -179,8 +179,8 @@ def test_audit_duplicate_spend_handles_no_aws_or_saas_connected():
         return {"by_provider": {"bedrock": 3568.13, "anthropic": 42.10}}
 
     with patch("finops.connectors.llm_costs.get_all_llm_costs", _fake_llm_costs), \
-         patch.dict(srv._CLOUD_CONNECTORS, {"aws": _aws_stub({}, configured=False)}), \
-         patch.dict(srv._SAAS_CONNECTORS, {}, clear=True):
+         patch.dict(srv.CLOUD_CONNECTORS, {"aws": _aws_stub({}, configured=False)}), \
+         patch.dict(srv.SAAS_CONNECTORS, {}, clear=True):
         result = asyncio.run(srv.audit_duplicate_spend(days=30))
 
     assert result["checked"]["aws_connected"] is False

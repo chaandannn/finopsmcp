@@ -271,7 +271,7 @@ def _get_cloudwatch_cpu(cw_client: Any, instance_id: str, days: int) -> tuple[fl
     return sum(avgs) / len(avgs), max(maxs)
 
 
-def _monthly_cost(instance_type: str) -> float:
+def monthly_cost(instance_type: str) -> float:
     return _HOURLY_PRICE.get(instance_type, 0.0) * _HOURS_PER_MONTH
 
 
@@ -345,7 +345,7 @@ def _analyze_cloudwatch_fallback(
             recommended = _DOWNSIZE_MAP.get(itype)
             if not recommended or recommended == itype:
                 continue
-            savings = _monthly_cost(itype) - _monthly_cost(recommended)
+            savings = monthly_cost(itype) - monthly_cost(recommended)
             if savings <= 0:
                 continue
             results.append(RightsizingRecommendation(
@@ -359,8 +359,8 @@ def _analyze_cloudwatch_fallback(
                 avg_cpu_pct=round(avg_cpu, 1),
                 max_cpu_pct=round(max_cpu, 1),
                 recommended_type=recommended,
-                current_monthly_cost=round(_monthly_cost(itype), 2),
-                recommended_monthly_cost=round(_monthly_cost(recommended), 2),
+                current_monthly_cost=round(monthly_cost(itype), 2),
+                recommended_monthly_cost=round(monthly_cost(recommended), 2),
                 monthly_savings=round(savings, 2),
                 confidence="high" if avg_cpu < 10 and max_cpu < 30 else "medium",
             ))
@@ -554,3 +554,12 @@ def rightsizing_summary(
             f"avg_cpu_threshold or scope to fewer accounts to see the rest."
         )
     return out
+
+# ── Deprecated aliases ────────────────────────────────────────────────────────
+# These names were private (leading underscore) while the enterprise provider
+# imported them anyway, so a legitimate rename here broke a repo this CI cannot
+# see. The names above are the promoted, supported ones. These aliases exist for
+# one release so a provider pinned to an older core keeps working, and are
+# covered by tests/test_extension_surface.py::DEPRECATED_ALIASES. Delete them
+# once no released provider imports the underscore form.
+_monthly_cost = monthly_cost

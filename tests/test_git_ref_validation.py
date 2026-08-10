@@ -7,7 +7,7 @@ Covers the remediation PR tools (open_rightsizing_pr / open_terraform_tag_pr).
 """
 import pytest
 
-from finops.remediation.rightsizing_pr import _validate_git_ref
+from finops.remediation.rightsizing_pr import validate_git_ref
 
 
 @pytest.mark.parametrize(
@@ -29,7 +29,7 @@ from finops.remediation.rightsizing_pr import _validate_git_ref
 )
 def test_rejects_unsafe_git_refs(bad):
     with pytest.raises(ValueError):
-        _validate_git_ref(bad, "branch")
+        validate_git_ref(bad, "branch")
 
 
 @pytest.mark.parametrize(
@@ -37,4 +37,4 @@ def test_rejects_unsafe_git_refs(bad):
     ["main", "nable/rightsizing-fixes", "feature/abc-123", "release_1.2.3", "a/b/c"],
 )
 def test_accepts_real_git_refs(good):
-    _validate_git_ref(good, "branch")  # must not raise
+    validate_git_ref(good, "branch")  # must not raise

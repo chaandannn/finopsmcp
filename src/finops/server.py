@@ -405,13 +405,13 @@ mcp.tool = _instrumented_tool  # type: ignore[method-assign]
 
 # ── connector registry ───────────────────────────────────────────────────────
 
-_CLOUD_CONNECTORS: dict[str, Any] = {
+CLOUD_CONNECTORS: dict[str, Any] = {
     "aws": AWSConnector(),
     "azure": AzureConnector(),
     "gcp": GCPConnector(),
 }
 
-_SAAS_CONNECTORS: dict[str, Any] = {
+SAAS_CONNECTORS: dict[str, Any] = {
     "datadog": DatadogConnector(),
     "langfuse": LangfuseConnector(),
     "snowflake": SnowflakeConnector(),
@@ -423,7 +423,7 @@ _SAAS_CONNECTORS: dict[str, Any] = {
     "databricks": DatabricksConnector(),
 }
 
-_ALL_CONNECTORS: dict[str, Any] = {**_CLOUD_CONNECTORS, **_SAAS_CONNECTORS}
+_ALL_CONNECTORS: dict[str, Any] = {**CLOUD_CONNECTORS, **SAAS_CONNECTORS}
 
 # ── startup: air-gap notice + telemetry ──────────────────────────────────────
 _check_airgap()
@@ -670,7 +670,7 @@ async def _resolve_account_id(account_id: str | None) -> str:
     nothing resolves; the caller decides how to phrase the error."""
     if account_id:
         return account_id
-    aws = _CLOUD_CONNECTORS.get("aws")
+    aws = CLOUD_CONNECTORS.get("aws")
     try:
         if aws and await aws.is_configured():
             return aws._account_id() or ""
@@ -679,7 +679,7 @@ async def _resolve_account_id(account_id: str | None) -> str:
     return ""
 
 
-def _nudge_url(context: str) -> str:
+def nudge_url(context: str) -> str:
     """The upgrade URL tagged with which moment produced the nudge, so a checkout
     click in PostHog can be attributed to it. utm params go BEFORE the #pricing
     fragment or the fragment eats them."""
@@ -731,7 +731,7 @@ def _team_nudge(message: str, context: str = "") -> str | None:
             })
         except Exception:
             pass
-        url = _nudge_url(context)
+        url = nudge_url(context)
         if found >= _PRO_MONTHLY_USD:
             return (
                 f"{_NUDGE_PREFIX}nable has already found ${found:,.0f}/mo in savings here, "
@@ -1519,7 +1519,7 @@ _VIEWS: dict[str, dict] = {
 async def _fetch_focus_records(sd: date, ed: date, provider: str | None = None):
     """Fan out get_costs_as_focus across active cloud connectors. Returns
     (records, errors, provider_names). Shared by get_focus_costs and slice_costs."""
-    _focus_capable = {n: c for n, c in {**_CLOUD_CONNECTORS, **_SAAS_CONNECTORS}.items()
+    _focus_capable = {n: c for n, c in {**CLOUD_CONNECTORS, **SAAS_CONNECTORS}.items()
                       if hasattr(c, "get_costs_as_focus")}
     active_cloud = await _active(subset=_focus_capable)
 
@@ -1977,6 +1977,18 @@ from .tools.tickets import (  # noqa: E402,F401
     start_dashboard_server,
 )
 # <<< EXTRACTED TOOL REGISTRATION
+
+# ── Deprecated aliases ────────────────────────────────────────────────────────
+# These names were private (leading underscore) while the enterprise provider
+# imported them anyway, so a legitimate rename here broke a repo this CI cannot
+# see. The names above are the promoted, supported ones. These aliases exist for
+# one release so a provider pinned to an older core keeps working, and are
+# covered by tests/test_extension_surface.py::DEPRECATED_ALIASES. Delete them
+# once no released provider imports the underscore form.
+_CLOUD_CONNECTORS = CLOUD_CONNECTORS
+_SAAS_CONNECTORS = SAAS_CONNECTORS
+_nudge_url = nudge_url
+
 
 # Enterprise plugin seam. Every built-in tool above is now registered on `mcp`
 # (and `mcp.tool` is the instrumented shim), so an installed provider package

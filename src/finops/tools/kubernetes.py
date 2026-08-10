@@ -939,7 +939,7 @@ async def get_databricks_cluster_efficiency() -> dict:
     """
     from ..connectors.databricks import DatabricksConnector
 
-    conn: DatabricksConnector = _srv._SAAS_CONNECTORS.get("databricks")  # type: ignore
+    conn: DatabricksConnector = _srv.SAAS_CONNECTORS.get("databricks")  # type: ignore
     if not conn or not await conn.is_configured():
         return {
             "error": "Databricks not configured. Set DATABRICKS_HOST and DATABRICKS_TOKEN.",

@@ -71,7 +71,7 @@ def audit_env(monkeypatch):
 
     aws = MagicMock()
     aws.is_configured = AsyncMock(return_value=True)
-    monkeypatch.setitem(_srv._CLOUD_CONNECTORS, "aws", aws)
+    monkeypatch.setitem(_srv.CLOUD_CONNECTORS, "aws", aws)
     monkeypatch.setattr("finops.recommendations.learning.signal.customer_signal",
                         lambda: {"by_source": []}, raising=False)
     return monkeypatch

@@ -604,7 +604,7 @@ async def export_cost_report_csv(
     if err := _srv.require_role("analyst"):
         return err
 
-    aws = _srv._CLOUD_CONNECTORS.get("aws")
+    aws = _srv.CLOUD_CONNECTORS.get("aws")
     if aws is None or not await aws.is_configured():
         return "AWS is not connected. Call connect_aws right here in the chat (it detects credentials already on this machine), or run 'uvx nable' in a terminal."
 
@@ -898,7 +898,7 @@ async def push_to_n8n(
         findings = report.get("findings", [])
         monthly_savings = report.get("total_estimated_monthly_savings", 0.0)
 
-        aws = _srv._CLOUD_CONNECTORS.get("aws")
+        aws = _srv.CLOUD_CONNECTORS.get("aws")
         account = ""
         if aws is not None:
             try:
@@ -965,7 +965,7 @@ async def publish_cost_report_to_notion(
             "or run: finops setup notion"
         )
 
-    aws = _srv._CLOUD_CONNECTORS.get("aws")
+    aws = _srv.CLOUD_CONNECTORS.get("aws")
     if aws is None or not await aws.is_configured():
         return "AWS is not connected. Call connect_aws right here in the chat (it detects credentials already on this machine), or run 'uvx nable' in a terminal."
 

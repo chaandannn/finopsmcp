@@ -61,10 +61,10 @@ async def get_cost_summary(
         pool = {provider: _srv._ALL_CONNECTORS[provider]} if provider in _srv._ALL_CONNECTORS else {}
         targets = await _srv._active(pool)
     elif category == "cloud":
-        pool = _srv._CLOUD_CONNECTORS
+        pool = _srv.CLOUD_CONNECTORS
         targets = await _srv._active(pool)
     elif category == "saas":
-        pool = _srv._SAAS_CONNECTORS
+        pool = _srv.SAAS_CONNECTORS
         targets = await _srv._active(pool)
     else:
         pool = _srv._ALL_CONNECTORS
@@ -213,9 +213,9 @@ async def get_costs_by_service(
         pool = {provider: _srv._ALL_CONNECTORS[provider]} if provider in _srv._ALL_CONNECTORS else {}
         targets = await _srv._active(pool)
     elif category == "cloud":
-        targets = await _srv._active(_srv._CLOUD_CONNECTORS)
+        targets = await _srv._active(_srv.CLOUD_CONNECTORS)
     elif category == "saas":
-        targets = await _srv._active(_srv._SAAS_CONNECTORS)
+        targets = await _srv._active(_srv.SAAS_CONNECTORS)
     else:
         targets = await _srv._active(_srv._ALL_CONNECTORS)
     if not targets:
@@ -343,7 +343,7 @@ async def get_cost_trends(
     end = _srv.date.today()
     start = end - _srv.timedelta(days=days)
 
-    pool = _srv._CLOUD_CONNECTORS if category == "cloud" else _srv._SAAS_CONNECTORS if category == "saas" else _srv._ALL_CONNECTORS
+    pool = _srv.CLOUD_CONNECTORS if category == "cloud" else _srv.SAAS_CONNECTORS if category == "saas" else _srv._ALL_CONNECTORS
     if provider and provider in pool:
         pool = {provider: pool[provider]}
 
@@ -493,12 +493,12 @@ async def get_total_spend_all_sources(
 
     cloud_total = sum(
         by_provider[p]["total_usd"]
-        for p in _srv._CLOUD_CONNECTORS
+        for p in _srv.CLOUD_CONNECTORS
         if p in by_provider and "total_usd" in by_provider[p]
     )
     saas_total = sum(
         by_provider[p]["total_usd"]
-        for p in _srv._SAAS_CONNECTORS
+        for p in _srv.SAAS_CONNECTORS
         if p in by_provider and "total_usd" in by_provider[p]
     )
 
@@ -1370,7 +1370,7 @@ async def get_focus_costs(
         perr = errors.get(p)
         _llm_names = set(_LLM_FOCUS_NAMES) | {v.lower() for v in _LLM_FOCUS_NAMES.values()}
         if perr == "unknown provider" and p not in _llm_names and p not in ("llm", "ai"):
-            _capable = sorted(n for n, c in {**_srv._CLOUD_CONNECTORS, **_srv._SAAS_CONNECTORS}.items()
+            _capable = sorted(n for n, c in {**_srv.CLOUD_CONNECTORS, **_srv.SAAS_CONNECTORS}.items()
                               if hasattr(c, "get_costs_as_focus"))
             return {"error": f"Provider {provider!r} does not emit FOCUS yet. FOCUS-capable: "
                              f"{', '.join(_capable) or 'none'}, plus AI providers "
@@ -1744,7 +1744,7 @@ async def run_full_cost_audit(
     if err := _srv.require_role("analyst"):
         return err
 
-    aws = _srv._CLOUD_CONNECTORS.get("aws")
+    aws = _srv.CLOUD_CONNECTORS.get("aws")
     if aws is None or not await aws.is_configured():
         return "AWS is not connected. Call connect_aws right here in the chat (it detects credentials already on this machine), or run 'uvx nable' in a terminal."
 

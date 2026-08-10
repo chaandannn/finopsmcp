@@ -418,7 +418,7 @@ async def get_langfuse_model_costs(
         - "What's our cost per 1k tokens for GPT-4 vs Claude?"
     """
     try:
-        connector: _srv.LangfuseConnector = _srv._SAAS_CONNECTORS["langfuse"]  # type: ignore
+        connector: _srv.LangfuseConnector = _srv.SAAS_CONNECTORS["langfuse"]  # type: ignore
         if not await connector.is_configured():
             return {
                 "error": "Langfuse not configured",
@@ -476,7 +476,7 @@ async def get_langfuse_trace_volume(
         - "Was there a spike in Langfuse traces last week?"
     """
     try:
-        connector: _srv.LangfuseConnector = _srv._SAAS_CONNECTORS["langfuse"]  # type: ignore
+        connector: _srv.LangfuseConnector = _srv.SAAS_CONNECTORS["langfuse"]  # type: ignore
         if not await connector.is_configured():
             return {
                 "error": "Langfuse not configured",

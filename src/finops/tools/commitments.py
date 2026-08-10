@@ -314,7 +314,7 @@ async def recommend_lambda_snapstart(
     try:
         from ..recommendations.lambda_snapstart import recommend_lambda_snapstart as _scan
 
-        aws = _srv._CLOUD_CONNECTORS.get("aws")
+        aws = _srv.CLOUD_CONNECTORS.get("aws")
         if aws is None or not await aws.is_configured():
             return {"error": "AWS connector is not configured."}
 
@@ -363,7 +363,7 @@ async def scan_graviton_migration_opportunities(
     try:
         from ..recommendations.graviton import scan_graviton_opportunities
 
-        aws = _srv._CLOUD_CONNECTORS.get("aws")
+        aws = _srv.CLOUD_CONNECTORS.get("aws")
         if aws is None or not await aws.is_configured():
             return "AWS is not connected. Call connect_aws right here in the chat (it detects credentials already on this machine), or run 'uvx nable' in a terminal."
 
@@ -554,7 +554,7 @@ async def recommend_database_savings_plans() -> dict:
             recommend_database_savings_plans as _recommend,
         )
 
-        aws = _srv._CLOUD_CONNECTORS.get("aws")
+        aws = _srv.CLOUD_CONNECTORS.get("aws")
         if aws is None or not await aws.is_configured():
             return {"error": "AWS is not connected. Call connect_aws right here in the chat (it detects credentials already on this machine), or run 'uvx nable' in a terminal."}
 

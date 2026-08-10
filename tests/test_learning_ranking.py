@@ -82,7 +82,7 @@ def test_summary_annotation_never_changes_spend_numbers(ledger):
 @pytest.fixture
 def audit_env(monkeypatch):
     monkeypatch.setattr(server, "require_role", lambda *a, **k: None)
-    aws = server._CLOUD_CONNECTORS.get("aws")
+    aws = server.CLOUD_CONNECTORS.get("aws")
 
     async def _configured():
         return True
