@@ -3,7 +3,7 @@ name: Build container image (GHCR)
 # Build the nable container image once, in CI, and push it to GHCR. Hosted boxes
 # then PULL this prebuilt, tested artifact (docker compose pull) instead of each
 # box compiling it from source. That is what makes updating N single-tenant boxes
-# one command (see deploy/fleet-update.sh and docs/FLEET.md) instead of N manual
+# one command (the fleet runbook lives in the private repo) instead of N manual
 # rebuilds. Runs on every release tag; the workflow_dispatch input lets you build
 # the image for an already-tagged version retroactively from the selected ref.
 
