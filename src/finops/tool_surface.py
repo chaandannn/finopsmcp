@@ -524,14 +524,36 @@ def tool_title(name: str) -> str:
     return " ".join(out)
 
 
+# Tools a provider plugin registers that mutate something. WRITE_TOOLS is a
+# closed literal of core tool names, so a plugin-registered tool was absent from
+# it and inherited readOnlyHint=True: a tool that pushes a branch to a customer's
+# repository was advertised to MCP clients as safe to auto-approve. A plugin
+# declares its own write tools here, from its register() hook, before the tools
+# are registered.
+_PLUGIN_WRITE_TOOLS: set[str] = set()
+_PLUGIN_DESTRUCTIVE_TOOLS: set[str] = set()
+
+
+def declare_write_tools(*names: str, destructive: bool = False) -> None:
+    """Called by a provider plugin so its mutating tools are annotated honestly.
+
+    Read-only is the safe default for a tool nobody has classified, but "nobody
+    classified it" and "it does not write" are different facts, and only the
+    plugin knows which applies to its own tools.
+    """
+    _PLUGIN_WRITE_TOOLS.update(names)
+    if destructive:
+        _PLUGIN_DESTRUCTIVE_TOOLS.update(names)
+
+
 def tool_annotation(name: str) -> dict:
     """Annotation fields for a tool: (title, readOnlyHint, destructiveHint).
     Read-only is the default; only WRITE_TOOLS mutate, only DESTRUCTIVE_TOOLS delete."""
-    write = name in WRITE_TOOLS
+    write = name in WRITE_TOOLS or name in _PLUGIN_WRITE_TOOLS
     return {
         "title": tool_title(name),
         "readOnlyHint": not write,
-        "destructiveHint": name in DESTRUCTIVE_TOOLS,
+        "destructiveHint": name in DESTRUCTIVE_TOOLS or name in _PLUGIN_DESTRUCTIVE_TOOLS,
     }
 
 # ── local connection signals per family ────────────────────────────────────────
