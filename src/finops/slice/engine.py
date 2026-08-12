@@ -108,6 +108,10 @@ def run_slice(spec: SliceSpec, records: list) -> SliceResult:
         dimensions=list(spec.dimensions),
         record_count=len(kept),
         truncated=truncated,
+        # Both engines answer the same question, so both must report the same two
+        # figures. `total` is already the grand total over the kept set here,
+        # independent of grouping and limit; this is what the shown rows add to.
+        total_shown=round(sum(float(r.get(metric, 0.0) or 0.0) for r in rows), 4),
     )
 
 

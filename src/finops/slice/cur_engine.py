@@ -110,6 +110,13 @@ def build_cur_sql(spec: SliceSpec, sd: date, ed: date) -> tuple[str, list[tuple[
         select_cols.append(f"{expr} AS {al}")
         group_cols.append(expr)
     select_cols.append(f"SUM({_METRIC_COL}) AS metric")
+    # The grand total, computed over the grouped set BEFORE the LIMIT applies.
+    # Without this, `total` was the sum of the top-N rows we happened to show, so
+    # a slice over ten thousand usage types reported the biggest fifty as the
+    # whole bill. A second query would answer it too, but Athena bills per byte
+    # scanned and this rides along on the scan already being paid for.
+    if group_cols:
+        select_cols.append(f"SUM(SUM({_METRIC_COL})) OVER () AS grand_total")
 
     where = [
         f"({_partition_filter(sd, ed)})",
@@ -147,17 +154,27 @@ def run_slice_cur(spec: SliceSpec, sd: date, ed: date) -> SliceResult:
     rows = _athena_query(sql)
     out_rows: list[dict] = []
     total = 0.0
+    grand: float | None = None
     for r in rows:
         try:
             m = float(r.get("metric") or 0.0)
         except (TypeError, ValueError):
             m = 0.0
         total += m
+        if grand is None and r.get("grand_total") is not None:
+            try:
+                grand = float(r["grand_total"])
+            except (TypeError, ValueError):
+                grand = None
         row = {dim: (r.get(al) or "") for dim, al in aliases}
         row["metric"] = round(m, 4)
         out_rows.append(row)
     truncated = bool(spec.dimensions) and len(out_rows) >= spec.limit
+    # `total` is the whole slice; `total_shown` is what these rows add up to. An
+    # ungrouped query returns one row that already IS the total, so they agree.
+    shown = round(total, 4)
     return SliceResult(
-        rows=out_rows, total=round(total, 4), metric=spec.metric,
-        dimensions=list(spec.dimensions), record_count=len(out_rows), truncated=truncated,
+        rows=out_rows, total=round(grand if grand is not None else total, 4),
+        metric=spec.metric, dimensions=list(spec.dimensions),
+        record_count=len(out_rows), truncated=truncated, total_shown=shown,
     )
