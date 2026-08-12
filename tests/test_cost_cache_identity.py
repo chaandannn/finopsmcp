@@ -90,23 +90,48 @@ def test_no_session_falls_back_to_the_env_role_set(monkeypatch):
     assert "111122223333" in AWSConnector().cache_identity()
 
 
-def test_the_all_accounts_loop_passes_an_identity():
-    """The call site, not just the helper.
+def test_every_per_account_connector_passes_an_identity():
+    """The call site, not just the helper, and by AST rather than by string.
 
-    Testing cache_identity alone would leave the loop free to keep constructing
-    AWSConnector(session=...) with no identity, which is exactly the shape of the
-    original bug.
+    Testing cache_identity alone would leave any loop free to keep constructing
+    AWSConnector(session=...) with no identity, which is the exact shape of the
+    original bug. An earlier version of this test matched a source string, which
+    is whitespace sensitive: a reformat would have turned it red for a reason
+    that has nothing to do with cache correctness, and a differently indented
+    call site would have slipped past it green. Both are failures for the wrong
+    reason.
+
+    So this parses the tree and checks the property directly: anywhere in the
+    package, a connector built with an injected session must also be told whose
+    account it is. That holds under any formatting, and it covers call sites
+    nobody has written yet.
     """
-    # Read the file rather than import it: importing finops.tools.cost_queries
-    # directly pulls in server.py, which imports back, and the circular import
-    # fails. The call site is what is under test, and it is right there on disk.
+    import ast
+
     import finops
 
-    src = (pathlib.Path(finops.__file__).parent / "tools" / "cost_queries.py").read_text()
-    assert "AWSConnector(\n                session=session, identity=" in src or \
-           "AWSConnector(session=session, identity=" in src, (
-        "get_cost_summary_all_accounts must pass identity= when it builds a "
-        "connector per account, or every account shares one cache entry again"
+    root = pathlib.Path(finops.__file__).parent
+    offenders = []
+    for path in root.rglob("*.py"):
+        try:
+            tree = ast.parse(path.read_text())
+        except SyntaxError:  # pragma: no cover
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            name = getattr(fn, "id", None) or getattr(fn, "attr", None)
+            if name != "AWSConnector":
+                continue
+            kwargs = {k.arg for k in node.keywords if k.arg}
+            if "session" in kwargs and "identity" not in kwargs:
+                offenders.append(f"{path.relative_to(root)}:{node.lineno}")
+
+    assert not offenders, (
+        "These build an AWSConnector with an injected session but never say which "
+        "account it reads, so every one of them shares a cache entry keyed on an "
+        "env var they all have in common:\n  " + "\n  ".join(offenders)
     )
 
 
