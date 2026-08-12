@@ -1709,6 +1709,60 @@ async def get_service_cost(
     )
 
 
+def _collapse_per_resource(findings: list[dict]) -> tuple[list[dict], int]:
+    """Keep one finding per resource: the largest saving, alternatives attached.
+
+    Findings with no resource_id are aggregates ("delete 12 orphaned alarms") and
+    cannot double count a single resource, so they pass through untouched.
+
+    Returns (kept, n_collapsed). n_collapsed is how many claims were folded away,
+    which the caller reports rather than silently dropping: a total that quietly
+    shrank is as hard to trust as one that was quietly inflated.
+    """
+    best: dict[str, dict] = {}
+    passthrough: list[dict] = []
+    order: list[str] = []
+
+    for f in findings:
+        rid = (f.get("resource_id") or "").strip()
+        if not rid:
+            passthrough.append(f)
+            continue
+        cur = best.get(rid)
+        if cur is None:
+            best[rid] = dict(f)
+            order.append(rid)
+            continue
+        loser, winner = (cur, f) if (f.get("monthly_savings") or 0) > (cur.get("monthly_savings") or 0) else (f, cur)
+        merged = dict(winner)
+        alts = list(merged.get("alternatives") or []) + list(loser.get("alternatives") or [])
+        alts.append({"title": loser.get("title", ""),
+                     "monthly_savings": loser.get("monthly_savings")})
+        merged["alternatives"] = alts
+        best[rid] = merged
+
+    collapsed = sum(len(b.get("alternatives") or []) for b in best.values())
+
+    # Order is not ours to choose. By the time findings reach here the learning
+    # rescorer has already ranked them by what this customer's ledger says gets
+    # acted on and turns out accurate, which is worth more than sorting by the
+    # biggest claim. Re-sorting on monthly_savings threw that away and put the
+    # suppressed source back on top. So: rebuild in the incoming order, with each
+    # resource represented once, at the position its best-ranked finding held.
+    seen: set[str] = set()
+    kept: list[dict] = []
+    for f in findings:
+        rid = (f.get("resource_id") or "").strip()
+        if not rid:
+            kept.append(f)
+            continue
+        if rid in seen:
+            continue
+        seen.add(rid)
+        kept.append(best[rid])
+    return kept, collapsed
+
+
 @_srv.mcp.tool()
 async def run_full_cost_audit(
     regions: list[str] | None = None,
@@ -1852,18 +1906,18 @@ async def run_full_cost_audit(
                 for r in data:
                     s = r.get("wasted_monthly_cost", 0) or 0
                     if s > 0:
-                        out.append({"title": f"Reduce provisioned concurrency on {r.get('function_name','?')}", "monthly_savings": s, "category": "Compute", "detail": f"{r.get('avg_utilization_pct',0)*100:.0f}% utilization"})
+                        out.append({"title": f"Reduce provisioned concurrency on {r.get('function_name','?')}", "monthly_savings": s, "category": "Compute", "resource_id": r.get("function_name", ""), "detail": f"{r.get('avg_utilization_pct',0)*100:.0f}% utilization"})
             elif name == "s3_bucket_keys" and isinstance(data, list):
                 for r in data:
                     s = r.get("estimated_savings", 0) or 0
                     if s > 0:
-                        out.append({"title": f"Enable S3 Bucket Key on {r.get('bucket_name','?')}", "monthly_savings": s, "category": "Storage", "detail": "Up to 99% KMS cost reduction"})
+                        out.append({"title": f"Enable S3 Bucket Key on {r.get('bucket_name','?')}", "monthly_savings": s, "category": "Storage", "resource_id": r.get("bucket_name", ""), "detail": "Up to 99% KMS cost reduction"})
             elif name == "nonprod":
                 items = data.get("schedulable_instances", []) if isinstance(data, dict) else []
                 for r in items:
                     s = r.get("potential_monthly_savings", 0) or 0
                     if s > 0:
-                        out.append({"title": f"Schedule non-prod instance {r.get('name', r.get('instance_id','?'))}", "monthly_savings": s, "category": "Compute", "detail": f"env={r.get('environment','?')}, {r.get('idle_hours_per_week',0):.0f} idle hrs/wk"})
+                        out.append({"title": f"Schedule non-prod instance {r.get('name', r.get('instance_id','?'))}", "monthly_savings": s, "category": "Compute", "resource_id": r.get("instance_id", ""), "detail": f"env={r.get('environment','?')}, {r.get('idle_hours_per_week',0):.0f} idle hrs/wk"})
             elif name == "rds_snapshots":
                 items = data.get("orphaned_snapshots", []) + data.get("old_snapshots", []) if isinstance(data, dict) else []
                 total = data.get("potential_monthly_savings", 0) if isinstance(data, dict) else 0
@@ -1873,7 +1927,7 @@ async def run_full_cost_audit(
                 for r in data:
                     s = r.get("monthly_savings", 0) or 0
                     if s > 0 and r.get("recommendation") == "RECOMMENDED":
-                        out.append({"title": f"Convert {r.get('instance_id','?')} ({r.get('instance_type','?')}) to Spot", "monthly_savings": s, "category": "Compute", "detail": f"{r.get('savings_pct',0)*100:.0f}% saving"})
+                        out.append({"title": f"Convert {r.get('instance_id','?')} ({r.get('instance_type','?')}) to Spot", "monthly_savings": s, "category": "Compute", "resource_id": r.get("instance_id", ""), "detail": f"{r.get('savings_pct',0)*100:.0f}% saving"})
             elif name == "cw_cardinality" and isinstance(data, list):
                 for r in data:
                     s = r.get("estimated_monthly_cost", 0) or 0
@@ -1896,7 +1950,7 @@ async def run_full_cost_audit(
                 for r in data:
                     s = r.get("estimated_cross_az_cost", 0) or 0
                     if s > 10:
-                        out.append({"title": f"Disable cross-zone on NLB {r.get('nlb_name','?')}", "monthly_savings": s, "category": "Network", "detail": f"${s:.2f}/mo cross-AZ charges"})
+                        out.append({"title": f"Disable cross-zone on NLB {r.get('nlb_name','?')}", "monthly_savings": s, "category": "Network", "resource_id": r.get("nlb_name", ""), "detail": f"${s:.2f}/mo cross-AZ charges"})
             elif name == "s3_it" and isinstance(data, list):
                 waste = [r for r in data if isinstance(r.get("recommendation"), str) and r["recommendation"].startswith("LIKELY_WASTE")]
                 total = sum((r.get("net_monthly_cost") or 0) for r in waste)
@@ -2007,6 +2061,18 @@ async def run_full_cost_audit(
     # A finding the critique retracted carries None, not a number, and it must not
     # be counted toward a total we are asking someone to believe. `or 0` keeps it
     # out of the headline while the row below still shows its magnitude band.
+    #
+    # Collapse first. Twenty-one scanners each look at the same account from a
+    # different angle, and several of them land on the same resource with answers
+    # that are alternatives, not additions: an instance can be migrated to
+    # Graviton, or converted to Spot, or scheduled off out of hours, or shut down
+    # as idle. You can bank one of those, not all four. Summed raw, the audit
+    # claimed 141-156% of an instance's own cost as savings on it, which is not a
+    # number anyone can act on and not a number that survives a customer checking
+    # it. Counting only the best per resource is conservative and defensible; the
+    # alternatives stay attached to the winner so nothing is hidden.
+    top, collapsed = _collapse_per_resource(top)
+
     total_monthly = sum(f.get("monthly_savings") or 0 for f in top)
     total_annual = total_monthly * 12
 
@@ -2035,7 +2101,8 @@ async def run_full_cost_audit(
 
     lines = [
         f"## Cost Audit, Top {len(top)} Opportunities",
-        f"**Estimated monthly saving: ${total_monthly:,.2f} | Annual: ${total_annual:,.2f}**",
+        f"**Estimated monthly saving: ${total_monthly:,.2f} | Annual: ${total_annual:,.2f}**"
+        + (f"  \n*{collapsed} alternative fix(es) on the same resources are not counted in this total: you can bank one fix per resource, not all of them. They are listed against the winning row.*" if collapsed else ""),
         "",
     ]
     if show_confidence:
