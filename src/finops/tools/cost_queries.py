@@ -405,7 +405,10 @@ async def get_cost_summary_all_accounts(
     for acct in accounts:
         try:
             session = get_boto3_session(acct)
-            connector = AWSConnector(session=session)
+            # Identity is what keeps this loop from serving account #1's spend
+            # for every account: one connector per account, one cache entry each.
+            connector = AWSConnector(
+                session=session, identity=acct.account_id or acct.name)
             summary = await connector.get_costs(sd, ed, granularity=granularity)
             top_services = sorted(summary.by_service.items(), key=lambda x: -x[1])[:5]
             results.append({

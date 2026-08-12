@@ -808,7 +808,15 @@ async def _fetch_costs_cached(name: str, connector: Any, start: date, end: date,
     Hard timeout per provider so one hung API cannot stall the whole query."""
     import copy as _copy
     from . import cache as _cache
-    _ck = _cache.make_key("connector.get_costs", name, start.isoformat(), end.isoformat(), granularity)
+    # `name` is the provider ("aws"), not the account. Without an identity every
+    # account in a multi-account org shared one entry, so the first fetch answered
+    # for all of them. A connector that cannot identify itself returns a token
+    # unique to its instance, which opts it out of sharing rather than guessing.
+    _ident = getattr(connector, "cache_identity", None)
+    _ck = _cache.make_key(
+        "connector.get_costs", name,
+        _ident() if callable(_ident) else f"unshared:{id(connector)}",
+        start.isoformat(), end.isoformat(), granularity)
 
     async def _produce():
         try:

@@ -195,7 +195,13 @@ def _disk_conn() -> "sqlite3.Connection | None":
     data_dir = os.getenv("FINOPS_DATA_DIR") or os.path.join(os.path.expanduser("~"), ".nable")
     try:
         os.makedirs(data_dir, exist_ok=True)
-        conn = sqlite3.connect(os.path.join(data_dir, "cache.db"), timeout=2.0)
+        # storage/db.py gives each FINOPS_PROFILE its own database and vault, but
+        # this file was keyed only on FINOPS_DATA_DIR, so two profiles pointed at
+        # two different customers shared one cache. The profile belongs in the
+        # filename for the same reason it belongs in the DB name.
+        _profile = (os.getenv("FINOPS_PROFILE") or "").strip()
+        _cache_name = f"cache-{_profile}.db" if _profile else "cache.db"
+        conn = sqlite3.connect(os.path.join(data_dir, _cache_name), timeout=2.0)
         if not _disk_ready:
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS kv "
