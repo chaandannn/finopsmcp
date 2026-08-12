@@ -206,30 +206,47 @@ def _fetch_compute_optimizer_recommendations(session) -> list[dict]:
     """
     findings: list[dict] = []
 
+    # Hoisted above the per-service try blocks on purpose. Inside one of them, a
+    # failure here would surface as a NameError in the NEXT block and be swallowed
+    # by that block's own except, which is precisely the silent-death pattern this
+    # commit removes.
+    from ..recommendations.rightsizing import (
+        CO_EC2_OVERPROVISIONED, CO_RDS_OVERPROVISIONED,
+        _co_monthly_savings, _co_pages,
+    )
+
     try:
         co = session.client("compute-optimizer", region_name="us-east-1")
 
         # EC2 instance recommendations
         try:
-            paginator = co.get_paginator("get_ec2_instance_recommendations")
-            for page in paginator.paginate():
+            # get_ec2_instance_recommendations has no botocore paginator, so
+            # get_paginator raised OperationNotPageableError straight into the
+            # except below, at DEBUG. This whole block has never produced a
+            # finding, while waste_evidence rates compute_optimizer_* MEASURED
+            # and high.
+            for page in _co_pages(co, "get_ec2_instance_recommendations"):
                 for rec in page.get("instanceRecommendations", []):
-                    if rec.get("finding") in ("OVER_PROVISIONED",):
+                    # The API enum is Underprovisioned | Overprovisioned |
+                    # Optimized | NotOptimized. "OVER_PROVISIONED" is not a value
+                    # AWS returns, so this never matched even on a live account.
+                    if rec.get("finding") == CO_EC2_OVERPROVISIONED:
                         instance_id = rec.get("instanceArn", "").split("/")[-1]
                         current_type = rec.get("currentInstanceType", "unknown")
                         options = rec.get("recommendationOptions", [])
                         if options:
                             best = options[0]
                             recommended_type = best.get("instanceType", "unknown")
-                            savings_pct = best.get("estimatedMonthlySavings", {}).get("value", 0.0)
-                            savings_currency = best.get("estimatedMonthlySavings", {}).get("currency", "USD")
+                            # estimatedMonthlySavings is nested under
+                            # savingsOpportunity, not on the option itself.
+                            savings_pct, savings_currency = _co_monthly_savings(best)
                             findings.append({
                                 "resource_id": instance_id,
                                 "resource_type": "EC2 Instance",
                                 "waste_type": "compute_optimizer_overprovisioned_ec2",
                                 "estimated_monthly_savings": round(float(savings_pct), 2),
                                 "detail": (
-                                    f"AWS Compute Optimizer: {instance_id} is OVER_PROVISIONED. "
+                                    f"AWS Compute Optimizer: {instance_id} is over-provisioned. "
                                     f"Current: {current_type} → Recommended: {recommended_type}. "
                                     f"Estimated savings: ${savings_pct:.2f}/mo ({savings_currency}). "
                                     f"Performance risk: {best.get('performanceRisk', 'unknown')}."
@@ -249,20 +266,21 @@ def _fetch_compute_optimizer_recommendations(session) -> list[dict]:
             paginator = co.get_paginator("get_lambda_function_recommendations")
             for page in paginator.paginate():
                 for rec in page.get("lambdaFunctionRecommendations", []):
-                    if rec.get("finding") in ("OVER_PROVISIONED",):
+                    # Lambda's enum is Optimized | NotOptimized | Unavailable.
+                    if rec.get("finding") == "NotOptimized":
                         fn_arn = rec.get("functionArn", "")
                         fn_name = fn_arn.split(":")[-1] if ":" in fn_arn else fn_arn
                         options = rec.get("memorySizeRecommendationOptions", [])
                         if options:
                             best = options[0]
-                            savings = best.get("estimatedMonthlySavings", {}).get("value", 0.0)
+                            savings, _cur = _co_monthly_savings(best)
                             findings.append({
                                 "resource_id": fn_name,
                                 "resource_type": "Lambda Function",
                                 "waste_type": "compute_optimizer_overprovisioned_lambda",
                                 "estimated_monthly_savings": round(float(savings), 2),
                                 "detail": (
-                                    f"AWS Compute Optimizer: Lambda '{fn_name}' is OVER_PROVISIONED. "
+                                    f"AWS Compute Optimizer: Lambda '{fn_name}' is not optimized. "
                                     f"Current memory: {rec.get('currentMemorySize', '?')} MB → "
                                     f"Recommended: {best.get('memorySize', '?')} MB. "
                                     f"Estimated savings: ${savings:.2f}/mo."
@@ -277,20 +295,31 @@ def _fetch_compute_optimizer_recommendations(session) -> list[dict]:
 
         # RDS recommendations (newer API — may not be available in all accounts)
         try:
-            paginator = co.get_paginator("get_rds_database_recommendations")
-            for page in paginator.paginate():
-                for rec in page.get("recommendations", []):
-                    if rec.get("finding") in ("OVER_PROVISIONED",):
+            # Four separate faults in six lines, each of which alone made this
+            # block return nothing: there is no paginator for this operation; the
+            # response key is rdsDBRecommendations, not recommendations; the field
+            # is instanceFinding, not finding; and the savings live on a
+            # recommendation OPTION under savingsOpportunity, not on the
+            # recommendation itself.
+            for page in _co_pages(co, "get_rds_database_recommendations"):
+                for rec in page.get("rdsDBRecommendations", []):
+                    if rec.get("instanceFinding") == CO_RDS_OVERPROVISIONED:
                         resource_arn = rec.get("resourceArn", "")
                         db_id = resource_arn.split(":")[-1] if ":" in resource_arn else resource_arn
-                        savings = rec.get("estimatedMonthlySavings", {}).get("value", 0.0)
+                        _opts = sorted(
+                            rec.get("instanceRecommendationOptions", []),
+                            key=lambda opt: opt.get("rank", 99),
+                        )
+                        if not _opts:
+                            continue
+                        savings, _cur = _co_monthly_savings(_opts[0])
                         findings.append({
                             "resource_id": db_id,
                             "resource_type": "RDS Instance",
                             "waste_type": "compute_optimizer_overprovisioned_rds",
                             "estimated_monthly_savings": round(float(savings), 2),
                             "detail": (
-                                f"AWS Compute Optimizer: RDS '{db_id}' is OVER_PROVISIONED. "
+                                f"AWS Compute Optimizer: RDS '{db_id}' is over-provisioned. "
                                 f"Estimated savings: ${savings:.2f}/mo. "
                                 f"Check Compute Optimizer console for instance class recommendation."
                             ),

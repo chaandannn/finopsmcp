@@ -120,11 +120,57 @@ def _co_utilization(metrics: list[dict]) -> dict[str, float]:
     return out
 
 
+# ── Compute Optimizer paging ──────────────────────────────────────────────────
+# Only get_lambda_function_recommendations has a botocore paginator. EC2 and RDS
+# do not, so get_paginator() on them raises OperationNotPageableError, and both
+# call sites had that inside a broad except. Compute Optimizer has therefore
+# never returned a single EC2 recommendation in this product, while the trust
+# envelope rates compute_optimizer_* findings MEASURED/high.
+#
+# One helper so there is one paging implementation to get right. It works for
+# every operation, paginated or not, because nextToken is in the API contract.
+def _co_pages(co_client, op_name: str, **kwargs):
+    """Yield every page of a Compute Optimizer operation via its nextToken."""
+    token = None
+    fn = getattr(co_client, op_name)
+    while True:
+        page = fn(**kwargs, **({"nextToken": token} if token else {}))
+        yield page
+        token = page.get("nextToken")
+        if not token:
+            return
+
+
+# The finding values AWS actually returns. The code compared against
+# "OVER_PROVISIONED" and "VERY_OVER_PROVISIONED", neither of which exists in the
+# API: the enum is Underprovisioned | Overprovisioned | Optimized | NotOptimized.
+# So even once paging worked, the filter would have matched nothing, and the
+# confidence line keyed on VERY_OVER_PROVISIONED could never fire.
+CO_EC2_OVERPROVISIONED = "Overprovisioned"
+CO_RDS_OVERPROVISIONED = "Overprovisioned"
+CO_LAMBDA_NOT_OPTIMIZED = "NotOptimized"
+
+
+def _co_monthly_savings(option: dict) -> tuple[float, str]:
+    """Savings from a recommendation option.
+
+    The figure is nested under savingsOpportunity, not on the option itself.
+    Reading option["estimatedMonthlySavings"] returns {} and then 0.0, which is
+    why every Lambda recommendation reported $0.00 rather than being dropped.
+    """
+    info = (option.get("savingsOpportunity") or {}).get("estimatedMonthlySavings") or {}
+    try:
+        value = float(info.get("value", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        value = 0.0
+    return value, info.get("currency", "USD")
+
+
 def _fetch_ec2_from_co(co_client: Any, account_id: str) -> list[RightsizingRecommendation]:
     results = []
-    paginator = co_client.get_paginator("get_ec2_instance_recommendations")
-    pages = paginator.paginate(
-        filters=[{"name": "Finding", "values": ["OVER_PROVISIONED", "VERY_OVER_PROVISIONED"]}]
+    pages = _co_pages(
+        co_client, "get_ec2_instance_recommendations",
+        filters=[{"name": "Finding", "values": [CO_EC2_OVERPROVISIONED]}],
     )
     for page in pages:
         for rec in page.get("instanceRecommendations", []):
@@ -145,17 +191,15 @@ def _fetch_ec2_from_co(co_client: Any, account_id: str) -> list[RightsizingRecom
                 continue
             best   = options[0]
             rtype  = best.get("instanceType", "")
-            savings_info = (
-                best.get("savingsOpportunity", {})
-                    .get("estimatedMonthlySavings", {})
-            )
-            monthly_savings = float(savings_info.get("value", 0.0))
-            currency        = savings_info.get("currency", "USD")
+            monthly_savings, currency = _co_monthly_savings(best)
             if currency != "USD":
                 monthly_savings = 0.0  # don't guess FX
 
             rec_util  = _co_utilization(best.get("projectedUtilizationMetrics", []))
-            confidence = "high" if finding == "VERY_OVER_PROVISIONED" else "medium"
+            # AWS has no "very over-provisioned" finding. Confidence comes from
+            # the option's own performance risk instead, which is a real field.
+            risk = str(best.get("performanceRisk", "")).lower()
+            confidence = "high" if risk in ("very_low", "low", "0", "1") else "medium"
 
             results.append(RightsizingRecommendation(
                 instance_id=iid,
@@ -180,9 +224,13 @@ def _fetch_ec2_from_co(co_client: Any, account_id: str) -> list[RightsizingRecom
 def _fetch_lambda_from_co(co_client: Any, account_id: str) -> list[RightsizingRecommendation]:
     results = []
     try:
+        # This one genuinely has a paginator, so it keeps using it.
         paginator = co_client.get_paginator("get_lambda_function_recommendations")
+        # Lambda's finding enum is Optimized | NotOptimized | Unavailable. There
+        # is no OVER_PROVISIONED, so this filter matched nothing and the block
+        # returned an empty list on every run.
         pages = paginator.paginate(
-            filters=[{"name": "Finding", "values": ["OVER_PROVISIONED"]}]
+            filters=[{"name": "Finding", "values": [CO_LAMBDA_NOT_OPTIMIZED]}]
         )
         for page in pages:
             for rec in page.get("lambdaFunctionRecommendations", []):
@@ -199,11 +247,9 @@ def _fetch_lambda_from_co(co_client: Any, account_id: str) -> list[RightsizingRe
                     continue
                 best        = options_sorted[0]
                 rec_mb      = best.get("memorySize", current_mb)
-                savings_info = (
-                    best.get("savingsOpportunity", {})
-                        .get("estimatedMonthlySavings", {})
-                )
-                monthly_savings = float(savings_info.get("value", 0.0))
+                monthly_savings, currency = _co_monthly_savings(best)
+                if currency != "USD":
+                    monthly_savings = 0.0  # don't guess FX
 
                 results.append(RightsizingRecommendation(
                     instance_id=arn,
