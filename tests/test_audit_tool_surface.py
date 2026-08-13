@@ -287,10 +287,25 @@ def fake_terraform(tmp_path, monkeypatch):
     argv_log.write_text("")
 
     shim = tmp_path / "terraform"
+    # The plan file goes wherever -out= says, which is what real terraform does.
+    # This shim used to write `.plan.tmp` into the cwd unconditionally, ignoring
+    # -out entirely. That happened to be right while the code passed
+    # `-out=.plan.tmp` with cwd inside the customer's repo, and it made the test
+    # unfixable once the code started writing to a temp dir: the assertion was
+    # measuring the stub's hardcoded filename, not the argument under test.
+    #
+    # Modelling -out properly keeps the original defect detectable. Put
+    # `-out=.plan.tmp` back in estimate_from_dir and this goes red again, which
+    # was checked rather than assumed.
     shim.write_text(
         "#!/bin/sh\n"
         f'printf "%s\\n" "$*" >> "{argv_log}"\n'
-        'if [ "$1" = "plan" ]; then echo fake >.plan.tmp; exit 0; fi\n'
+        'if [ "$1" = "plan" ]; then\n'
+        '  out=""\n'
+        '  for a in "$@"; do case "$a" in -out=*) out="${a#-out=}";; esac; done\n'
+        '  if [ -n "$out" ]; then echo fake > "$out"; fi\n'
+        '  exit 0\n'
+        'fi\n'
         'if [ "$1" = "show" ]; then echo \'{"resource_changes": []}\'; exit 0; fi\n'
         "exit 1\n"
     )
@@ -315,7 +330,6 @@ def _run_against_fake_terraform(tool, extra, fake):
 
 
 @pytest.mark.parametrize("tool,extra", _TF_TOOLS)
-@pytest.mark.xfail(strict=True, reason="audit finding, not yet fixed. strict=True so that fixing it FAILS here until this marker is removed: the marker count is the work list.")
 def test_estimating_terraform_does_not_write_into_the_callers_repo(
     isolated_db, fake_terraform, tool, extra
 ):
