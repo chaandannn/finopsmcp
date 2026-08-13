@@ -134,16 +134,20 @@ async def test_audit_with_all_scanners_silent_still_answers(audit_env):
 def test_the_scanner_stub_list_matches_the_real_spec_list():
     """Self-healing: if a scanner is added to run_full_cost_audit without being
     stubbed here, this test names it instead of the e2e tests hitting AWS."""
-    import inspect
-    import re
+    from finops.recommendations.sweep import build_specs
 
-    fn = cq.run_full_cost_audit.fn if hasattr(cq.run_full_cost_audit, "fn") else cq.run_full_cost_audit
-    src = inspect.getsource(fn)
-    specs_block = src[src.index("specs = ["):src.index("]", src.index("specs = ["))]
-    spec_count = len(re.findall(r'\("([a-z0-9_]+)",', specs_block))
-    assert spec_count == len(_SCANNERS), (
-        f"run_full_cost_audit has {spec_count} scanners but the e2e stub list has "
-        f"{len(_SCANNERS)}; update _SCANNERS or an unstubbed scanner will call AWS")
+    # Ask the real table for its names rather than regexing the source: the spec
+    # list is now built by a function, so it can be called, and calling it also
+    # proves every scanner import in it resolves. That is not incidental here.
+    # Both exports carried a spec list importing `scan_spot_adoption_opportunities`,
+    # a name that never existed, and a source-text count would have happily
+    # counted the broken entry.
+    spec_paths = {f"{fn.__module__}.{fn.__name__}" for _, fn, _ in build_specs(object(), None)}
+    assert spec_paths == set(_SCANNERS), (
+        f"the sweep and the e2e stub list disagree.\n"
+        f"  only in sweep: {sorted(spec_paths - set(_SCANNERS))}\n"
+        f"  only in stubs: {sorted(set(_SCANNERS) - spec_paths)}\n"
+        f"update _SCANNERS or an unstubbed scanner will call AWS")
 
 
 def test_norm_carries_the_falsifier_inputs_for_idle_and_graviton():

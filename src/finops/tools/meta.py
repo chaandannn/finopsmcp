@@ -1304,12 +1304,13 @@ async def get_view(
 
     # ── waste ────────────────────────────────────────────────────────────────
     if view == "waste":
-        try:
-            from ..analyzers.waste import scan_waste
-            result = scan_waste()
-            return {"view": meta["name"], **result}
-        except Exception as e:
-            return {"view": meta["name"], "error": str(e)}
+        # Routed through the registered tool, the same way the rightsizing view
+        # above is. This used to call `analyzers.waste.scan_waste`, which does
+        # not exist: that module exposes per-detector check_* functions and no
+        # aggregate. The except swallowed the ImportError into an error string,
+        # so this view has answered `{"error": "cannot import name 'scan_waste'"}`
+        # to every user who asked for it, and looked like a runtime hiccup.
+        return await _srv.scan_waste_patterns()
 
     # ── saas ─────────────────────────────────────────────────────────────────
     if view == "saas":

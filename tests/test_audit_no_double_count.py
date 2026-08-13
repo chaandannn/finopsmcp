@@ -98,15 +98,19 @@ def test_a_retracted_claim_carrying_none_does_not_crash_the_collapse():
 def test_the_per_resource_normalisers_emit_a_resource_id():
     """Without an id there is nothing to collapse on, so the fix is inert.
 
-    Checked by AST so it holds under reformatting and covers the whole file,
-    rather than matching one hand-picked source string.
+    Checked by AST so it holds under reformatting, and pointed at the module
+    that owns the normalisers rather than at wherever they happened to live when
+    this was written. The normalisers moved once already, from cost_queries.py to
+    recommendations/sweep.py, when the audit and the two exports were collapsed
+    onto one sweep. A test naming the old file would have gone green over an
+    empty search space.
     """
     import ast
-    import pathlib
+    import inspect
 
-    import finops
+    from finops.recommendations import sweep as _sweep
 
-    src = (pathlib.Path(finops.__file__).parent / "tools" / "cost_queries.py").read_text()
+    src = inspect.getsource(_sweep.normalise)
     tree = ast.parse(src)
     # every dict literal that has both "title" and "monthly_savings" is a finding
     findings_without_id = 0

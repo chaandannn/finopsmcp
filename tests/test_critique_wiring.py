@@ -26,6 +26,26 @@ from finops.tools import cost_queries as cq
 from finops.tools import meta
 
 
+def _path_source(fn) -> str:
+    """The source of a tool AND of the sweep it delegates to.
+
+    The scanning half of run_full_cost_audit now lives in recommendations.sweep,
+    shared with the CSV and Notion exports. Asserting on the tool's own source
+    alone would go red for a move that changed no behaviour, and, worse, would go
+    GREEN if someone re-inlined a broken copy of the sweep into the tool while
+    the shared one still passed. So the chain is followed: the tool must reach
+    the sweep, and the guarantee must hold somewhere along it.
+    """
+    import inspect
+
+    target = fn.fn if hasattr(fn, "fn") else fn
+    src = inspect.getsource(target)
+    if "sweep(" in src:
+        from finops.recommendations import sweep as _sweep
+        src += "\n" + inspect.getsource(_sweep.sweep)
+    return src
+
+
 # ── the field-name trap ───────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("key", [
@@ -87,16 +107,13 @@ def test_the_audit_call_site_actually_calls_the_critique():
     # Mutating the module is not enough; assert the call exists with the right
     # key, and that it runs BEFORE rescore. Ordering matters: a retracted claim
     # ranked on the figure it just lost would sort to the top of the list.
-    import inspect
-
-    src = inspect.getsource(cq.run_full_cost_audit.fn
-                            if hasattr(cq.run_full_cost_audit, "fn") else cq.run_full_cost_audit)
+    src = _path_source(cq.run_full_cost_audit)
     # Assert the WHOLE call, not the pieces. Checking for `savings_key="..."`
     # anywhere in the source passes even when the critique is called with the
     # wrong key, because rescore on the next line uses the same string. That
     # false green is exactly what this test exists to prevent.
-    assert 'critique(findings, savings_key="monthly_savings")' in src, (
-        "run_full_cost_audit does not call critique with its own savings key")
+    assert 'critique(out.findings, savings_key="monthly_savings")' in src, (
+        "the audit path does not call critique with its own savings key")
     assert src.index("critique(") < src.index("rescore("), "critique must run before rescore"
 
 
@@ -145,11 +162,9 @@ def test_the_ledger_total_excludes_what_it_retracted():
 def test_both_call_sites_survive_a_broken_critique(monkeypatch):
     # The critic is a guard, not a dependency. If it throws, the audit and the
     # ledger must still answer; the guarantee is degraded, not the product.
-    import inspect
-
     for fn in (cq.run_full_cost_audit, meta.list_savings_recommendations):
         target = fn.fn if hasattr(fn, "fn") else fn
-        src = inspect.getsource(target)
+        src = _path_source(fn)
         assert "critique(" in src, f"{target.__name__} no longer calls critique at all"
         head = src[src.index("critique("):]
         assert "except Exception" in head, (
