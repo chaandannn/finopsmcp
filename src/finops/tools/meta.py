@@ -752,7 +752,10 @@ def create_api_key(
       analyst , viewer + attribution writes, budget management, snapshot triggers
       admin   , full access, can manage keys and connectors
 
-    The raw key (nbl_...) is shown ONCE, it is not stored. Save it immediately.
+    The raw key is written to a file on this machine, readable only by you. It is
+    never returned through this conversation: a tool result is serialised to the
+    model provider and kept in its history, and this key is a bearer credential
+    for your cost data. The response gives you the path to read it from.
 
     Examples:
         - "Create a viewer key for Alice scoped to the platform team"
@@ -773,7 +776,67 @@ def create_api_key(
         scope_team=scope_team, scope_provider=scope_provider,
         created_by=_srv.current_identity().name if _srv.current_identity() else "admin",
     )
+    if isinstance(result, dict) and result.get("error"):
+        return result
+
+    # The raw key never travels through the model. It is a bearer credential for
+    # this customer's cost data, and a tool result goes to the model provider
+    # before it reaches the user and stays in that conversation history, so
+    # returning it here is the same defect that connect_azure and activate_pro
+    # were both rewritten to avoid. It goes to a file the user owns instead.
+    import os
+    import stat
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    raw = (result or {}).pop("key", "") or ""
+    safe_name = "".join(c for c in name if c.isalnum() or c in "-_") or "key"
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    try:
+        from ..storage.db import data_dir
+        dest_dir = Path(data_dir()) / "api-keys"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        os.chmod(dest_dir, stat.S_IRWXU)                      # 0700
+        dest = dest_dir / f"{safe_name}-{stamp}.key"
+        # Open with the mode set at creation, not chmod after: between the write
+        # and the chmod the key would be world-readable on a shared box.
+        fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(raw + "\n")
+    except Exception as exc:
+        # The key now exists in the database and nobody can ever read it. Say so
+        # loudly and revoke it, rather than leaving a live credential nobody
+        # holds. Silently returning it here would undo the whole point.
+        _srv.log.error("create_api_key: could not write the key file: %s", exc)
+        try:
+            # create_key returns the row id under "id", not "key_id". Getting
+            # this wrong leaves a live credential nobody holds, silently.
+            _srv.revoke_key(result.get("id"))
+            revoked = True
+        except Exception:
+            revoked = False
+        return {
+            "error": f"Could not write the key file: {exc}",
+            "key_revoked": revoked,
+            "detail": ("The key was created but could not be saved anywhere you "
+                       "could read it, so it was revoked rather than left live "
+                       "and unreachable. nable will not return it in this "
+                       "conversation: that would hand a bearer credential to the "
+                       "model provider."),
+        }
+
     _srv.audit("key_create", name, f"role={role} scope_team={scope_team}")
+    result["key_file"] = str(dest)
+    # No fingerprint. The obvious one is a prefix plus the last few characters,
+    # which is a slice of the secret in the transcript for no real benefit: the
+    # key_id and the filename already identify which key this is.
+    result["how_to_read_it"] = f"cat {dest}"
+    result["note"] = (
+        "The key is in that file, readable only by you. It is deliberately not in "
+        "this response: tool results are sent to the model provider and kept in "
+        "conversation history, and this key grants access to your cost data. "
+        "Move it into your secret store and delete the file."
+    )
     return result
 
 

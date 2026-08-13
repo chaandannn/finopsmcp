@@ -493,7 +493,6 @@ def test_the_demo_chokepoint_control_passes_for_a_tool_that_gets_it_right(
 # 5. create_api_key hands the raw credential to the model
 # ══════════════════════════════════════════════════════════════════════════════
 
-@pytest.mark.xfail(strict=True, reason="audit finding, not yet fixed. strict=True so that fixing it FAILS here until this marker is removed: the marker count is the work list.")
 def test_create_api_key_does_not_hand_the_raw_key_to_the_model(isolated_db):
     """FAILS NOW, the bug is real.
 
@@ -554,7 +553,6 @@ def fake_server_web(monkeypatch):
     return types.SimpleNamespace(module=sw, bound=bound)
 
 
-@pytest.mark.xfail(strict=True, reason="audit finding, not yet fixed. strict=True so that fixing it FAILS here until this marker is removed: the marker count is the work list.")
 def test_start_dashboard_server_does_not_return_an_operator_chosen_password(
     isolated_db, fake_server_web
 ):
@@ -578,7 +576,6 @@ def test_start_dashboard_server_does_not_return_an_operator_chosen_password(
 
 
 @pytest.mark.parametrize("host", ["0.0.0.0", "::"])
-@pytest.mark.xfail(strict=True, reason="audit finding, not yet fixed. strict=True so that fixing it FAILS here until this marker is removed: the marker count is the work list.")
 def test_the_host_argument_cannot_bypass_the_expose_optin(
     isolated_db, fake_server_web, host
 ):

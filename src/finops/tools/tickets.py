@@ -508,28 +508,59 @@ async def start_dashboard_server(
         # Inject the MCP server's already-initialized connectors so the
         # dashboard uses the correct vault/keyring credentials.
         set_connectors({**_srv.CLOUD_CONNECTORS, **_srv.SAAS_CONNECTORS})
-        # Default to loopback. Only bind all interfaces on explicit opt-in, so a
-        # casual "start the dashboard" never exposes a listener on the whole LAN.
-        bind_host = "0.0.0.0" if expose else host
+        # expose is the gate, and it has to be the ONLY gate. This used to read
+        # `"0.0.0.0" if expose else host`, so the else branch passed `host`
+        # through untouched and `host="0.0.0.0", expose=False` bound every
+        # interface: the opt-in was bypassed by the argument it was meant to
+        # guard. `::` did the same thing for IPv6 and was not even covered by the
+        # warning below, which compared against the literal "0.0.0.0".
+        _LOOPBACK = {"127.0.0.1", "localhost", "::1", ""}
+        if expose:
+            bind_host = "0.0.0.0"
+        elif host in _LOOPBACK:
+            bind_host = host or "127.0.0.1"
+        else:
+            # A non-loopback host without the opt-in is a mistake, not a request.
+            # Bind loopback and say so, rather than silently doing the widest
+            # possible thing on the user's behalf.
+            bind_host = "127.0.0.1"
+            ignored_host = host
+
         _, actual_port = start_server_background(host=bind_host, port=port)
         local_url = f"http://127.0.0.1:{actual_port}"
         result = {
             "status": "running",
             "local_url": local_url,
+            "bound_to": bind_host,
         }
-        # Surface the password so the user can actually log in. The background path
-        # never printed it, which previously left users locked out and nudged toward
-        # disabling auth.
-        if getattr(_sw, "_AUTH_DISABLED", False):
-            result["auth"] = "DISABLED (FINOPS_DASHBOARD_PASSWORD=off). Anyone who can reach the port has full access."
-        else:
-            result["password"] = getattr(_sw, "_DASHBOARD_PASSWORD", "")
-            result["auth"] = (
-                "Auto-generated password for this session (set FINOPS_DASHBOARD_PASSWORD to choose your own)."
-                if getattr(_sw, "_PASSWORD_AUTO_GENERATED", False)
-                else "Password from FINOPS_DASHBOARD_PASSWORD."
+        if not expose and host not in _LOOPBACK:
+            result["host_ignored"] = (
+                f"host={ignored_host!r} was ignored and the server bound to "
+                f"127.0.0.1. Binding past loopback needs expose=true, so that "
+                f"exposing the dashboard is always a deliberate choice."
             )
-        if bind_host == "0.0.0.0":
+
+        # The password is NOT returned. It is a live credential for a surface
+        # that serves the customer's whole bill, and a tool result goes to the
+        # model provider and stays in that history. When the operator set it
+        # themselves via FINOPS_DASHBOARD_PASSWORD it is very likely a password
+        # they use elsewhere, and nable would be the thing that published it.
+        if getattr(_sw, "_AUTH_DISABLED", False):
+            result["auth"] = ("DISABLED (FINOPS_DASHBOARD_PASSWORD=off). Anyone who can "
+                              "reach the port has full access.")
+        elif getattr(_sw, "_PASSWORD_AUTO_GENERATED", False):
+            result["auth"] = (
+                "An auto-generated password was printed to the terminal running "
+                "nable. Read it there, or set FINOPS_DASHBOARD_PASSWORD to choose "
+                "your own. It is not repeated here: this response is sent to the "
+                "model provider and kept in its history."
+            )
+        else:
+            result["auth"] = (
+                "Log in with the password you set in FINOPS_DASHBOARD_PASSWORD."
+            )
+
+        if bind_host not in _LOOPBACK:
             result["share_url"] = f"http://{_local_ip()}:{actual_port}"
             result["exposure_warning"] = (
                 "Bound to all interfaces. The dashboard is reachable across your LAN/VPN over plain "
@@ -538,7 +569,9 @@ async def start_dashboard_server(
             )
         result["message"] = (
             f"Dashboard running at {local_url}. "
-            + ("Auth is OFF." if getattr(_sw, "_AUTH_DISABLED", False) else "Log in with the password above.")
+            + ("Auth is OFF."
+               if getattr(_sw, "_AUTH_DISABLED", False)
+               else "See `auth` for where to get the password.")
         )
         return result
     except Exception as exc:
