@@ -161,7 +161,7 @@ def find_duplicate_search_services(aws_by_service: dict[str, float]) -> Finding 
     )
 
 
-# SaaS provider keys (as used in server._SAAS_CONNECTORS / get_cost_summary's
+# SaaS provider keys (as used in server.SAAS_CONNECTORS / get_cost_summary's
 # by_provider) that are alternative data platforms / lakehouses.
 _DATA_PLATFORM_LABELS = {
     "databricks": "Databricks",

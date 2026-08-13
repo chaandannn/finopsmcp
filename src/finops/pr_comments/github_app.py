@@ -131,7 +131,12 @@ def _diff_tf_costs(pr_files: list[dict], headers: dict) -> dict[str, Any]:
     We parse resource blocks from both before (base) and after (head) versions
     and compute the monthly cost change per resource.
     """
-    from .parser import parse_terraform_resources   # existing parser
+    # No parser import: this function does its own regex pass over the diff
+    # lines below, deliberately, because a unified diff is not valid HCL and the
+    # full parser cannot read one. The line that used to sit here imported
+    # `parse_terraform_resources` from .parser, a name that has never existed
+    # there, and nothing called it. It raised ImportError on entry, so every PR
+    # comment this function was supposed to produce was never produced.
     from ..connectors.terraform_estimate import _ESTIMATORS, ResourceChange, CostLine
 
     adds:    list[dict] = []

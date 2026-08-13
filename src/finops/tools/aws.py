@@ -81,7 +81,7 @@ async def get_traffic_cost_breakdown(
     from datetime import date as _date, timedelta
     from ..analyzers.traffic import build_traffic_breakdown
 
-    aws = _srv._CLOUD_CONNECTORS.get("aws")
+    aws = _srv.CLOUD_CONNECTORS.get("aws")
     if aws is None:
         return {"error": "AWS is not connected. Call connect_aws right here in the chat (it detects credentials already on this machine), or run 'uvx nable' in a terminal."}
 

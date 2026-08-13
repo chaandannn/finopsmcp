@@ -161,6 +161,11 @@ class SliceResult:
     record_count: int = 0
     currency: str = "USD"
     truncated: bool = False         # True if more groups existed than the limit
+    # The sum of the rows actually returned. When `truncated` is True this is a
+    # top-N subtotal and `total` is the real figure for the whole slice; they are
+    # separate fields because the CUR path used to report the first as the second
+    # and there was no way for a caller to tell.
+    total_shown: float | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)

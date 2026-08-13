@@ -34,7 +34,7 @@ async def audit_gcp_waste(
         - "Find unattached GCP disks and idle static IPs"
         - "Which GCP VMs are idle this month?"
     """
-    gcp = _srv._CLOUD_CONNECTORS.get("gcp")
+    gcp = _srv.CLOUD_CONNECTORS.get("gcp")
     if gcp is None or not await gcp.is_configured():
         return {"error": "GCP is not connected. Call connect_gcp right here in the chat (it reads your gcloud login), or run 'uvx nable gcp' in a terminal."}
     try:
@@ -124,7 +124,7 @@ async def get_gcp_recommendations(
         - "Any committed-use discounts worth buying on GCP?"
         - "Show GCP rightsizing recommendations from the Recommender API"
     """
-    gcp = _srv._CLOUD_CONNECTORS.get("gcp")
+    gcp = _srv.CLOUD_CONNECTORS.get("gcp")
     if gcp is None or not await gcp.is_configured():
         return {"error": "GCP is not connected. Call connect_gcp right here in the chat (it reads your gcloud login), or run 'uvx nable gcp' in a terminal."}
     try:

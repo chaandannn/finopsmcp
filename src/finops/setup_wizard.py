@@ -3060,8 +3060,8 @@ def main(args: list[str] | None = None) -> None:
         # canonical connector set. Without this the serve process ran with an empty
         # environment, so Azure, GCP, and SaaS providers (which read credentials
         # from env) showed $0 or disconnected on the dashboard even when set up.
-        from .server import _CLOUD_CONNECTORS, _SAAS_CONNECTORS
-        set_connectors({**_CLOUD_CONNECTORS, **_SAAS_CONNECTORS})
+        from .server import CLOUD_CONNECTORS, SAAS_CONNECTORS
+        set_connectors({**CLOUD_CONNECTORS, **SAAS_CONNECTORS})
         run_server(
             host=getattr(parsed, "host", "127.0.0.1"),
             port=getattr(parsed, "port", 8080),

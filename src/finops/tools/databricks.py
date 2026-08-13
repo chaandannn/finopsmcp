@@ -33,7 +33,7 @@ async def get_databricks_costs(
     """
     from ..connectors.databricks import DatabricksConnector
 
-    conn: DatabricksConnector = _srv._SAAS_CONNECTORS.get("databricks")  # type: ignore
+    conn: DatabricksConnector = _srv.SAAS_CONNECTORS.get("databricks")  # type: ignore
     if not conn or not await conn.is_configured():
         return {
             "error": "Databricks not configured. Set DATABRICKS_HOST and DATABRICKS_TOKEN.",
@@ -90,7 +90,7 @@ async def get_databricks_dbu_breakdown(
     """
     from ..connectors.databricks import DatabricksConnector
 
-    conn: DatabricksConnector = _srv._SAAS_CONNECTORS.get("databricks")  # type: ignore
+    conn: DatabricksConnector = _srv.SAAS_CONNECTORS.get("databricks")  # type: ignore
     if not conn or not await conn.is_configured():
         return {
             "error": "Databricks not configured. Set DATABRICKS_HOST and DATABRICKS_TOKEN.",
@@ -165,7 +165,7 @@ async def get_databricks_job_costs(
     """
     from ..connectors.databricks import DatabricksConnector
 
-    conn: DatabricksConnector = _srv._SAAS_CONNECTORS.get("databricks")  # type: ignore
+    conn: DatabricksConnector = _srv.SAAS_CONNECTORS.get("databricks")  # type: ignore
     if not conn or not await conn.is_configured():
         return {
             "error": "Databricks not configured. Set DATABRICKS_HOST and DATABRICKS_TOKEN.",

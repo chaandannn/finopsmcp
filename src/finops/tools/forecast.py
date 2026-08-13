@@ -40,7 +40,7 @@ async def forecast_costs(
         return err
     try:
         from ..ml.forecasting import Forecaster
-        aws = _srv._CLOUD_CONNECTORS.get("aws")
+        aws = _srv.CLOUD_CONNECTORS.get("aws")
         aws_configured = aws and await aws.is_configured()
         account_id = await _srv._resolve_account_id(account_id)
         if not account_id:

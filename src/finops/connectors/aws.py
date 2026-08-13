@@ -65,12 +65,15 @@ class _DemoRefusingClient:
 class AWSConnector(BaseConnector):
     provider = "aws"
 
-    def __init__(self, session=None) -> None:
+    def __init__(self, session=None, identity: str | None = None) -> None:
         """
         session: optional boto3.Session to use for all calls.
         If not provided, falls back to environment-based role ARNs or default credentials.
         """
         self._session = session  # set when created for a specific account
+        # Which account this connector reads. Part of the cache key: a caller
+        # building one connector per account MUST pass it, or entries collide.
+        self._identity = identity
         self._role_arns: list[str] = [
             arn.strip()
             for arn in os.getenv("AWS_ROLE_ARNS", "").split(",")
@@ -84,6 +87,31 @@ class AWSConnector(BaseConnector):
                 len(self._role_arns), _MAX_ROLES,
             )
             self._role_arns = self._role_arns[:_MAX_ROLES]
+
+    def cache_identity(self) -> str:
+        """A stable token for WHOSE numbers this connector returns.
+
+        The cost cache used to key on AWS_ROLE_ARNS alone, which is one env var
+        shared by every connector in the process. get_cost_summary_all_accounts
+        builds one AWSConnector per account inside a single call, so account #1
+        populated the entry and accounts #2..N read it back: every account in the
+        org reported account #1's spend, and with a 12 hour TTL that also got
+        pickled to disk and served after a restart.
+
+        An explicit identity is the right answer. Where there is none but a
+        session was injected, this returns a token unique to this instance, so
+        the connector simply does not share cache entries with anyone. A miss
+        costs one API call; a wrong hit costs a customer the wrong bill.
+        """
+        if self._identity:
+            return f"id:{self._identity}"
+        if self._session is not None:
+            profile = getattr(self._session, "profile_name", None)
+            if profile and profile != "default":
+                return f"profile:{profile}"
+            # Unidentified injected session: opt out of sharing entirely.
+            return f"unshared:{id(self)}"
+        return "env:" + (",".join(sorted(self._role_arns)) if self._role_arns else "default")
 
     async def is_configured(self) -> bool:
         try:
@@ -254,7 +282,7 @@ class AWSConnector(BaseConnector):
         from .. import cache as _cache
         _ck = _cache.make_key(
             "aws.get_costs",
-            ",".join(sorted(self._role_arns)) if self._role_arns else "default",
+            self.cache_identity(),
             start_date.isoformat(), end_date.isoformat(),
             granularity, ",".join(group_by),
             repr(filters) if filters else "",

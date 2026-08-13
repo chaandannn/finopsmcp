@@ -241,6 +241,26 @@ def annotate(findings: list[dict]) -> list[dict]:
     """
     for f in findings:
         spec = spec_for(f.get("waste_type", ""))
+
+        # Provenance beats the table. WASTE_EVIDENCE says what a finding type is
+        # WORTH when its measurement succeeded; it cannot know whether this
+        # particular read did. A detector that could not reach CloudWatch used to
+        # come through here and get stamped MEASURED/high anyway, so the trust
+        # envelope vouched at its highest level for a number nobody measured.
+        # Confidence is derived, not asserted: if the finding says the metric was
+        # unavailable, it is an inference no matter what type it is.
+        if f.get("metrics_unavailable"):
+            spec = EvidenceSpec(
+                INFERRED, "low",
+                why_unsure=(
+                    f.get("metrics_unavailable_reason")
+                    or "The metric this finding rests on could not be read, so the "
+                       "usage figure is an assumption rather than an observation."
+                ),
+                confirm_steps=spec.confirm_steps,
+                assumptions=spec.assumptions,
+            )
+
         f["evidence"] = spec.evidence
         f["kind"] = classify(spec.evidence)
         f["confidence"] = spec.confidence

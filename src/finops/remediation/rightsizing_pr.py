@@ -44,7 +44,7 @@ log = logging.getLogger(__name__)
 
 # ── Git helper ────────────────────────────────────────────────────────────────
 
-def _git(tf_dir: str, *args: str) -> str:
+def run_git(tf_dir: str, *args: str) -> str:
     result = subprocess.run(
         ["git", *args],
         cwd=tf_dir,
@@ -63,7 +63,7 @@ _GIT_REF_ALLOWED = set(
 )
 
 
-def _validate_git_ref(name: str, kind: str) -> None:
+def validate_git_ref(name: str, kind: str) -> None:
     """Reject branch/ref names that could be parsed as git options or inject.
 
     A value beginning with '-' is read by git as a flag (e.g.
@@ -347,13 +347,13 @@ def open_rightsizing_pr(
         }
 
     # 5. Git: create branch, stage, commit, push
-    _validate_git_ref(branch, "branch")
-    _validate_git_ref(base_branch, "base_branch")
+    validate_git_ref(branch, "branch")
+    validate_git_ref(base_branch, "base_branch")
     try:
-        _git(tf_dir, "checkout", "-b", branch)
-        _git(tf_dir, "add", "--", *modified_files)
+        run_git(tf_dir, "checkout", "-b", branch)
+        run_git(tf_dir, "add", "--", *modified_files)
         n = len(recs)
-        _git(
+        run_git(
             tf_dir,
             "commit", "-m",
             f"fix(rightsizing): downsize {n} instance(s), save ~${total_saving:,.0f}/mo\n\n"
@@ -361,7 +361,7 @@ def open_rightsizing_pr(
             f"Estimated annual saving: ~${total_saving * 12:,.0f}\n\n"
             f"Co-Authored-By: nable FinOps MCP <noreply@getnable.com>",
         )
-        _git(tf_dir, "push", "-u", "origin", branch)
+        run_git(tf_dir, "push", "-u", "origin", branch)
     except RuntimeError as exc:
         return {
             "error": f"Git operation failed: {exc}",
@@ -410,3 +410,13 @@ def open_rightsizing_pr(
         "skipped": skipped,
         "patch_errors": patch_errors,
     }
+
+# ── Deprecated aliases ────────────────────────────────────────────────────────
+# These names were private (leading underscore) while the enterprise provider
+# imported them anyway, so a legitimate rename here broke a repo this CI cannot
+# see. The names above are the promoted, supported ones. These aliases exist for
+# one release so a provider pinned to an older core keeps working, and are
+# covered by tests/test_extension_surface.py::DEPRECATED_ALIASES. Delete them
+# once no released provider imports the underscore form.
+_git = run_git
+_validate_git_ref = validate_git_ref

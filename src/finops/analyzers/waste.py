@@ -320,11 +320,20 @@ def check_nat_gateways(
                 )
                 datapoints = resp.get("Datapoints", [])
             except Exception as exc:
+                # A failed read is not zero traffic. Collapsing it to 0.0 flagged
+                # every NAT gateway in the region as idle the moment CloudWatch
+                # was unreachable or the IAM permission was missing, and the
+                # trust envelope then stamped each one MEASURED/high. The sibling
+                # detectors (EBS at :673, EC2 CPU at :1018) already skip on this
+                # exact failure. BytesOutToDestination is the only evidence this
+                # detector has, so without it there is no finding to make.
                 log.debug("CW metrics failed for NAT GW %s: %s", nat_id, exc)
-                datapoints = []
+                continue
 
             if not datapoints:
-                # No metrics — NAT GW may be new or truly idle
+                # The read SUCCEEDED and returned nothing, which is different from
+                # the read failing: the gateway is new, or genuinely carrying no
+                # traffic. That is a real observation.
                 avg_bytes_per_day = 0.0
             else:
                 total_bytes = sum(dp.get("Sum", 0) for dp in datapoints)
@@ -1049,11 +1058,19 @@ def check_idle_ec2(
                         sum(dp.get("Sum", 0) for dp in net_dps) / len(net_dps)
                         if net_dps else 0.0
                     )
+                    net_unavailable = False
                 except Exception as exc:
+                    # 0.0 here does not mean "no traffic", it means "we could not
+                    # look". The very next line is the guard that protects a busy
+                    # instance from being called idle, so a failed read used to
+                    # DISABLE the check that would have saved it. Low CPU is real
+                    # evidence and was measured, so the finding survives; it just
+                    # stops claiming to be measured.
                     log.debug("CW NetworkOut failed for %s: %s", inst_id, exc)
                     avg_net_per_hr = 0.0
+                    net_unavailable = True
 
-                if avg_net_per_hr > _IDLE_NET_BYTES_PER_HR:
+                if not net_unavailable and avg_net_per_hr > _IDLE_NET_BYTES_PER_HR:
                     continue  # network-active: treat as in-use, not idle
 
                 vcpus = _vcpus_from_type(inst_type)
@@ -1081,6 +1098,14 @@ def check_idle_ec2(
                     "max_cpu_pct": round(max_cpu, 2),
                     "name": name_tag,
                     "lookback_days": lookback_days,
+                    # Carries provenance to waste_evidence.annotate, which refuses
+                    # to stamp a finding MEASURED when its metric could not be read.
+                    **({"metrics_unavailable": True,
+                        "metrics_unavailable_reason":
+                            "NetworkOut could not be read, so 'not network-active' "
+                            "is an assumption. Low CPU was measured; the traffic "
+                            "check that would confirm it was not."}
+                       if net_unavailable else {}),
                 })
 
     return findings

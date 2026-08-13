@@ -1,206 +1,207 @@
-"""Tests for the export_cost_report_csv MCP tool."""
+# SPDX-License-Identifier: Apache-2.0
+"""The CSV export, driven through the real tool.
+
+This file used to test a copy of the tool instead of the tool. Its helper said so
+in its own docstring: "Replicate the CSV-writing logic from export_cost_report_csv
+so we can test the output format without needing a live AWS connection." Every
+test called that helper, so the file asserted that a fixture it had just written
+matched what it had just written, and one test wrote a two-row CSV inline and
+asserted the file existed, which tests `open`.
+
+Meanwhile the tool itself began with an import of
+`scan_spot_adoption_opportunities`, a function that has never existed anywhere in
+the package, and raised ImportError on every call it ever received. Seven green
+tests, one dead tool, no contradiction, because the two had nothing to do with
+each other.
+
+The lesson is not "mock less". It is that a test which re-implements its subject
+cannot fail for any reason the subject can fail for. So every test here calls
+`export_cost_report_csv`. AWS is replaced at `sweep.build_specs`, the boundary
+where our code hands off to boto3, and every line above it is the real one.
+"""
 from __future__ import annotations
 
 import asyncio
 import csv
-import io
 import pathlib
 from datetime import date
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import finops.server as _srv
+from finops.recommendations import sweep as S
+from finops.tools import notifications as N
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _make_findings():
-    """Return a minimal set of normalized findings for injection."""
-    return [
-        {"title": "Migrate i-abc (m5.large -> m7g.large)", "monthly_savings": 120.0, "category": "Compute", "detail": "20% saving, us-east-1"},
-        {"title": "Release 3 unattached Elastic IP(s)", "monthly_savings": 10.8, "category": "Network", "detail": "$10.80/mo, $3.60 per IP"},
-        {"title": "Enable S3 Bucket Key on my-bucket", "monthly_savings": 5.0, "category": "Storage", "detail": "Up to 99% KMS cost reduction"},
-    ]
+EXPORT = getattr(N.export_cost_report_csv, "fn", N.export_cost_report_csv)
 
 
-def _read_csv_rows(path: pathlib.Path) -> list[list[str]]:
-    with open(path, newline="", encoding="utf-8") as fh:
+class _FakeAWS:
+    async def is_configured(self):
+        return True
+
+    def _client(self, name):
+        raise RuntimeError("no AWS in tests")
+
+
+@pytest.fixture(autouse=True)
+def aws(monkeypatch):
+    monkeypatch.setitem(_srv.CLOUD_CONNECTORS, "aws", _FakeAWS())
+
+
+def _findings(*rows):
+    """Install a scanner table that yields exactly `rows` as ipv4-style findings.
+
+    ipv4 is used as the carrier because its normaliser produces an aggregate
+    finding with no resource_id, so nothing collapses and the rows arrive in the
+    export exactly as written. Collapse has its own tests elsewhere.
+    """
+    return rows
+
+
+@pytest.fixture
+def three_findings(monkeypatch):
+    """Three findings of descending value, via three separate scanners."""
+    monkeypatch.setattr(S, "build_specs", lambda a, r: [
+        ("graviton", lambda **k: [{
+            "instance_id": "i-abc", "instance_type": "m5.large",
+            "graviton_equivalent": "m7g.large", "savings_estimate": 120.0,
+            "savings_pct": 0.2, "region": "us-east-1"}], {}),
+        ("ipv4", lambda **k: {
+            "total_monthly_waste": 10.8, "unattached_eips": [1, 2, 3]}, {}),
+        ("s3_bucket_keys", lambda **k: [{
+            "bucket_name": "my-bucket", "estimated_savings": 5.0}], {}),
+    ])
+
+
+def _rows(dest: pathlib.Path) -> list[list[str]]:
+    with open(dest, newline="", encoding="utf-8") as fh:
         return list(csv.reader(fh))
 
 
-# ---------------------------------------------------------------------------
-# Default output path format
-# ---------------------------------------------------------------------------
-
-def test_default_output_path_format():
-    """Default path should resolve to ~/Downloads/nable-report-YYYY-MM-DD.csv."""
-    today = date.today().isoformat()
-    expected = pathlib.Path.home() / "Downloads" / f"nable-report-{today}.csv"
-    # Just verify the path construction logic matches the implementation
-    assert expected.name == f"nable-report-{today}.csv"
-    assert expected.parent.name == "Downloads"
+def _data_rows(rows):
+    head = next(i for i, r in enumerate(rows) if r and r[0] == "Rank")
+    return [r for r in rows[head + 1:] if r]
 
 
-# ---------------------------------------------------------------------------
-# CSV structure tests (integration-style, writing a real temp file)
-# ---------------------------------------------------------------------------
+# ── structure ─────────────────────────────────────────────────────────────────
 
-def _write_csv(tmp_path: pathlib.Path, findings: list[dict], account_id: str = "123456789012") -> pathlib.Path:
-    """
-    Replicate the CSV-writing logic from export_cost_report_csv so we can
-    test the output format without needing a live AWS connection.
-    """
-    import csv as csv_mod
-    from datetime import datetime
-
-    top = sorted(findings, key=lambda x: x.get("monthly_savings", 0), reverse=True)
-    total_monthly = sum(f["monthly_savings"] for f in top)
-    total_annual = total_monthly * 12
-    scan_ts = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    dest = tmp_path / "nable-report-test.csv"
-    with open(dest, "w", newline="", encoding="utf-8") as fh:
-        writer = csv_mod.writer(fh)
-        writer.writerow(["nable Cost Report"])
-        writer.writerow(["Scan timestamp", scan_ts])
-        writer.writerow(["AWS account", account_id])
-        writer.writerow(["Total monthly saving", f"${total_monthly:,.2f}"])
-        writer.writerow(["Total annual saving", f"${total_annual:,.2f}"])
-        writer.writerow(["Opportunities found", len(top)])
-        writer.writerow([])
-        writer.writerow(["Rank", "Opportunity", "Category", "Monthly Saving ($)", "Annual Saving ($)", "Detail"])
-        for i, f in enumerate(top, 1):
-            mo = round(f["monthly_savings"], 2)
-            yr = round(mo * 12, 2)
-            writer.writerow([i, f["title"], f["category"], mo, yr, f.get("detail", "")])
-
-    return dest
+def test_the_tool_writes_the_column_headers(three_findings, tmp_path):
+    dest = tmp_path / "r.csv"
+    asyncio.run(EXPORT(output_path=str(dest)))
+    rows = _rows(dest)
+    header = next((r for r in rows if r and r[0] == "Rank"), None)
+    assert header == ["Rank", "Opportunity", "Category",
+                      "Monthly Saving ($)", "Annual Saving ($)", "Detail"]
 
 
-def test_csv_has_correct_headers(tmp_path):
-    findings = _make_findings()
-    dest = _write_csv(tmp_path, findings)
-    rows = _read_csv_rows(dest)
-
-    # Find the data header row
-    header_row = None
-    for row in rows:
-        if row and row[0] == "Rank":
-            header_row = row
-            break
-
-    assert header_row is not None, "Header row with 'Rank' not found in CSV"
-    assert header_row == ["Rank", "Opportunity", "Category", "Monthly Saving ($)", "Annual Saving ($)", "Detail"]
-
-
-def test_csv_summary_row_is_present(tmp_path):
-    findings = _make_findings()
-    dest = _write_csv(tmp_path, findings)
-    rows = _read_csv_rows(dest)
-
-    # First row should be the report title
+def test_the_tool_writes_the_summary_block(three_findings, tmp_path):
+    dest = tmp_path / "r.csv"
+    asyncio.run(EXPORT(output_path=str(dest)))
+    rows = _rows(dest)
     assert rows[0][0] == "nable Cost Report"
-
-    # Check that summary rows exist
-    row_labels = [r[0] for r in rows if r]
-    assert "Scan timestamp" in row_labels
-    assert "AWS account" in row_labels
-    assert "Total monthly saving" in row_labels
-    assert "Total annual saving" in row_labels
-    assert "Opportunities found" in row_labels
+    labels = [r[0] for r in rows if r]
+    for expected in ("Scan timestamp", "AWS account", "Total monthly saving",
+                     "Total annual saving", "Opportunities found"):
+        assert expected in labels
 
 
-def test_csv_data_rows_count(tmp_path):
-    findings = _make_findings()
-    dest = _write_csv(tmp_path, findings)
-    rows = _read_csv_rows(dest)
-
-    # Count data rows after the header row
-    header_idx = next(i for i, r in enumerate(rows) if r and r[0] == "Rank")
-    data_rows = [r for r in rows[header_idx + 1:] if r]
-    assert len(data_rows) == len(findings)
+def test_every_finding_reaches_the_file(three_findings, tmp_path):
+    dest = tmp_path / "r.csv"
+    asyncio.run(EXPORT(output_path=str(dest)))
+    assert len(_data_rows(_rows(dest))) == 3
 
 
-def test_csv_sorted_by_monthly_savings_descending(tmp_path):
-    findings = _make_findings()
-    dest = _write_csv(tmp_path, findings)
-    rows = _read_csv_rows(dest)
-
-    header_idx = next(i for i, r in enumerate(rows) if r and r[0] == "Rank")
-    data_rows = [r for r in rows[header_idx + 1:] if r]
-
-    monthly_values = [float(r[3]) for r in data_rows]
-    assert monthly_values == sorted(monthly_values, reverse=True)
+def test_rows_are_ordered_by_monthly_saving(three_findings, tmp_path):
+    dest = tmp_path / "r.csv"
+    asyncio.run(EXPORT(output_path=str(dest)))
+    values = [float(r[3]) for r in _data_rows(_rows(dest))]
+    assert values == sorted(values, reverse=True)
 
 
-def test_csv_annual_saving_is_twelve_times_monthly(tmp_path):
-    findings = _make_findings()
-    dest = _write_csv(tmp_path, findings)
-    rows = _read_csv_rows(dest)
-
-    header_idx = next(i for i, r in enumerate(rows) if r and r[0] == "Rank")
-    data_rows = [r for r in rows[header_idx + 1:] if r]
-
-    for row in data_rows:
-        monthly = float(row[3])
-        annual = float(row[4])
-        assert abs(annual - monthly * 12) < 0.01, f"Annual {annual} != monthly {monthly} * 12"
+def test_annual_is_twelve_times_monthly(three_findings, tmp_path):
+    dest = tmp_path / "r.csv"
+    asyncio.run(EXPORT(output_path=str(dest)))
+    for row in _data_rows(_rows(dest)):
+        assert float(row[4]) == pytest.approx(float(row[3]) * 12, abs=0.01)
 
 
-# ---------------------------------------------------------------------------
-# File creation at a specified path
-# ---------------------------------------------------------------------------
+def test_the_summary_total_matches_the_rows(three_findings, tmp_path):
+    """The headline and the table must agree, or one of them is lying."""
+    dest = tmp_path / "r.csv"
+    asyncio.run(EXPORT(output_path=str(dest)))
+    rows = _rows(dest)
+    stated = next(r for r in rows if r and r[0] == "Total monthly saving")[1]
+    summed = sum(float(r[3]) for r in _data_rows(rows))
+    assert stated == f"${summed:,.2f}"
 
-def test_file_is_created_at_specified_path(tmp_path):
-    findings = _make_findings()
-    custom_path = tmp_path / "custom" / "output.csv"
-    custom_path.parent.mkdir(parents=True, exist_ok=True)
-    dest = _write_csv(tmp_path, findings)
 
-    # Verify file exists and is non-empty
+# ── paths ─────────────────────────────────────────────────────────────────────
+
+def test_it_writes_where_it_was_told(three_findings, tmp_path):
+    dest = tmp_path / "reports" / "custom.csv"
+    dest.parent.mkdir(parents=True)
+    out = asyncio.run(EXPORT(output_path=str(dest)))
+    assert dest.exists() and dest.stat().st_size > 0
+    assert str(dest) in out
+
+
+def test_it_creates_a_missing_parent_directory(three_findings, tmp_path):
+    dest = tmp_path / "does" / "not" / "exist" / "r.csv"
+    asyncio.run(EXPORT(output_path=str(dest)))
     assert dest.exists()
-    assert dest.stat().st_size > 0
 
 
-def test_file_created_in_custom_directory(tmp_path):
-    findings = _make_findings()
-    subdir = tmp_path / "reports"
-    subdir.mkdir()
-    dest = subdir / "nable-report-custom.csv"
+def test_the_default_filename_carries_todays_date(three_findings, tmp_path, monkeypatch):
+    """Default is ~/Downloads/nable-report-YYYY-MM-DD.csv.
 
-    import csv as csv_mod
-    from datetime import datetime
+    The old test asserted this by constructing the expected path and comparing it
+    to itself, which holds for any implementation including none.
+    """
+    monkeypatch.setattr(pathlib.Path, "home", classmethod(lambda cls: tmp_path))
+    (tmp_path / "Downloads").mkdir()
+    out = asyncio.run(EXPORT())
+    expected = tmp_path / "Downloads" / f"nable-report-{date.today().isoformat()}.csv"
+    assert expected.exists(), out
 
-    with open(dest, "w", newline="", encoding="utf-8") as fh:
-        writer = csv_mod.writer(fh)
-        writer.writerow(["nable Cost Report"])
-        writer.writerow(["Rank", "Opportunity", "Category", "Monthly Saving ($)", "Annual Saving ($)", "Detail"])
-        for i, f in enumerate(findings, 1):
-            writer.writerow([i, f["title"], f["category"], f["monthly_savings"], f["monthly_savings"] * 12, f.get("detail", "")])
 
-    assert dest.exists()
-    rows = _read_csv_rows(dest)
+# ── edge cases ────────────────────────────────────────────────────────────────
+
+def test_zero_findings_still_produces_a_readable_report(monkeypatch, tmp_path):
+    monkeypatch.setattr(S, "build_specs", lambda a, r: [("ipv4", lambda **k: {}, {})])
+    dest = tmp_path / "r.csv"
+    asyncio.run(EXPORT(output_path=str(dest)))
+    rows = _rows(dest)
     assert rows[0][0] == "nable Cost Report"
+    assert next(r for r in rows if r and r[0] == "Opportunities found")[1] == "0"
 
 
-# ---------------------------------------------------------------------------
-# Edge cases
-# ---------------------------------------------------------------------------
+def test_no_aws_connected_is_a_message_not_a_crash(monkeypatch, tmp_path):
+    class _Unconfigured:
+        async def is_configured(self):
+            return False
 
-def test_csv_with_zero_findings(tmp_path):
-    dest = _write_csv(tmp_path, [])
-    rows = _read_csv_rows(dest)
+    monkeypatch.setitem(_srv.CLOUD_CONNECTORS, "aws", _Unconfigured())
+    out = asyncio.run(EXPORT(output_path=str(tmp_path / "r.csv")))
+    assert "not connected" in out.lower()
 
-    # Summary should still be present
-    assert rows[0][0] == "nable Cost Report"
 
-    # Opportunities found should be 0
-    opp_row = next((r for r in rows if r and r[0] == "Opportunities found"), None)
-    assert opp_row is not None
-    assert opp_row[1] == "0"
+def test_a_leading_formula_in_a_cell_is_neutralised(monkeypatch, tmp_path):
+    """CWE-1236: finance opens this file in Excel.
 
-    # No data rows after header
-    header_idx = next(i for i, r in enumerate(rows) if r and r[0] == "Rank")
-    data_rows = [r for r in rows[header_idx + 1:] if r]
-    assert data_rows == []
+    Injected at `normalise` rather than at a scanner, because Excel only treats a
+    cell as a formula when the trigger is the FIRST character, and today every
+    normaliser happens to prefix a verb ("Enable S3 Bucket Key on ..."), so no
+    scanner can currently produce one. That is a property of the wording, not a
+    guarantee, and it would evaporate the day someone writes a normaliser that
+    leads with the resource name. The writer's guard is what has to hold, so the
+    writer is what is tested.
+    """
+    monkeypatch.setattr(S, "build_specs", lambda a, r: [("ipv4", lambda **k: {}, {})])
+    monkeypatch.setattr(S, "normalise", lambda name, data: [{
+        "title": "=cmd|' /c calc'!A1", "monthly_savings": 5.0,
+        "category": "@SUM(1+1)", "detail": "-2+3"}])
+    dest = tmp_path / "r.csv"
+    asyncio.run(EXPORT(output_path=str(dest)))
+    row = _data_rows(_rows(dest))[0]
+    for cell in (row[1], row[2], row[5]):
+        assert cell.startswith("'"), f"formula reached the sheet unescaped: {cell!r}"

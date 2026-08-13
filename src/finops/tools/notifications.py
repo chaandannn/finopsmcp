@@ -604,7 +604,7 @@ async def export_cost_report_csv(
     if err := _srv.require_role("analyst"):
         return err
 
-    aws = _srv._CLOUD_CONNECTORS.get("aws")
+    aws = _srv.CLOUD_CONNECTORS.get("aws")
     if aws is None or not await aws.is_configured():
         return "AWS is not connected. Call connect_aws right here in the chat (it detects credentials already on this machine), or run 'uvx nable' in a terminal."
 
@@ -621,173 +621,29 @@ async def export_cost_report_csv(
     # Ensure parent directory exists
     dest.parent.mkdir(parents=True, exist_ok=True)
 
-    # Run same scanners as run_full_cost_audit
-    findings: list[dict] = []
+    # One sweep, shared with run_full_cost_audit and the other export. This used
+    # to be a fork of the audit's scanner block, and the fork had rotted: it
+    # imported `scan_spot_adoption_opportunities`, a name that has never existed
+    # in recommendations.spot_adoption, so this tool raised ImportError on every
+    # call it ever received. The fork also predated the per-resource collapse, so
+    # its total counted mutually exclusive fixes on one instance as if you could
+    # bank all of them.
+    from ..recommendations.sweep import collapse_per_resource, sweep
 
-    async def run(name: str, coro):
-        try:
-            return name, await coro
-        except Exception as exc:
-            _srv.log.warning("export_cost_report_csv scanner %s failed: %s", name, exc)
-            return name, None
+    result = await sweep(aws, regions)
+    if result.timed_out:
+        return ("The scan took unusually long (a region or API may be slow). Try again, "
+                "or pass a specific region.")
+    findings = result.findings
+    # Slice first, then collapse. Collapsing the whole list first would let one
+    # resource's folded-away alternatives push real findings off the end of the
+    # export, so the file would be short by however many duplicates existed.
+    top, collapsed = collapse_per_resource(findings[:top_n])
 
-    from ..recommendations.graviton import scan_graviton_opportunities
-    from ..recommendations.public_ipv4 import audit_public_ipv4
-    from ..recommendations.lambda_concurrency import scan_lambda_concurrency_waste as _lc
-    from ..recommendations.s3_bucket_keys import scan_s3_bucket_key_opportunities as _s3bk
-    from ..recommendations.nonprod_scheduler import identify_nonprod_resources
-    from ..recommendations.rds_snapshots import audit_rds_manual_snapshots as _rds_snap
-    from ..recommendations.spot_adoption import scan_spot_adoption_opportunities
-    from ..recommendations.cloudwatch_cardinality import audit_cloudwatch_metric_cardinality as _cw_card
-    from ..recommendations.cloudwatch_alarms import audit_cloudwatch_orphaned_alarms as _cw_alarms
-    from ..recommendations.cloudwatch_logs_ia import audit_cloudwatch_logs_ia_opportunities as _cw_logs
-    from ..recommendations.lambda_snapstart import recommend_lambda_snapstart as _snapstart
-    from ..recommendations.nlb_cross_zone import audit_nlb_cross_zone_costs as _nlb
-    from ..recommendations.s3_intelligent_tiering import audit_s3_intelligent_tiering as _s3it
-    from ..recommendations.s3_transfer_acceleration import audit_s3_transfer_acceleration as _s3ta
-    from ..recommendations.ebs_snapshot_replication import audit_ebs_snapshot_replication as _ebs_rep
-    from ..recommendations.database_savings_plans import recommend_database_savings_plans as _dbsp
-    from ..recommendations.textract_env import scan_textract_environment_waste as _textract
-    from ..recommendations.bedrock_routing import recommend_bedrock_model_routing as _bedrock
-    from ..recommendations.commitments import analyze_commitments as _commitments
-
-    tasks = [
-        run("graviton",       scan_graviton_opportunities(aws_client=aws, regions=regions)),
-        run("ipv4",           audit_public_ipv4(aws_client=aws, regions=regions)),
-        run("lambda_pc",      _lc(aws_client=aws, regions=regions)),
-        run("s3_bucket_keys", _s3bk(aws_client=aws)),
-        run("nonprod",        identify_nonprod_resources(aws_client=aws, regions=regions)),
-        run("rds_snapshots",  _rds_snap(aws_client=aws, regions=regions)),
-        run("spot",           scan_spot_adoption_opportunities(aws_client=aws, regions=regions)),
-        run("cw_cardinality", _cw_card(aws_client=aws, regions=regions)),
-        run("cw_alarms",      _cw_alarms(aws_client=aws, regions=regions)),
-        run("cw_logs_ia",     _cw_logs(aws_client=aws, regions=regions)),
-        run("snapstart",      _snapstart(aws_client=aws, regions=regions)),
-        run("nlb",            _nlb(aws_client=aws, regions=regions)),
-        run("s3_it",          _s3it(aws_client=aws)),
-        run("s3_ta",          _s3ta(aws_client=aws)),
-        run("ebs_rep",        _ebs_rep(aws_client=aws, regions=regions)),
-        run("db_sp",          _srv.asyncio.to_thread(_dbsp)),
-        run("textract",       _textract(aws_client=aws)),
-        run("bedrock",        _bedrock(aws_client=aws)),
-        run("commitments",    _srv.asyncio.to_thread(_commitments)),
-    ]
-
-    results = await _srv.asyncio.gather(*tasks)
-
-    # Reuse the same norm() logic from run_full_cost_audit inline
-    def norm(name, data) -> list[dict]:
-        if data is None:
-            return []
-        out = []
-        try:
-            if name == "graviton" and isinstance(data, list):
-                for r in data:
-                    s = r.get("savings_estimate", 0) or 0
-                    if s > 0:
-                        out.append({"title": f"Migrate {r.get('instance_id','?')} ({r.get('instance_type','?')} -> {r.get('graviton_equivalent','?')})", "monthly_savings": s, "category": "Compute", "detail": f"{r.get('savings_pct',0)*100:.0f}% saving, {r.get('region','')}"})
-            elif name == "ipv4":
-                waste = data.get("total_monthly_waste", 0) or 0
-                if waste > 0:
-                    n_unattached = len(data.get("unattached_eips", []))
-                    out.append({"title": f"Release {n_unattached} unattached Elastic IP(s)", "monthly_savings": waste, "category": "Network", "detail": f"${waste:.2f}/mo, $3.60 per IP"})
-            elif name == "lambda_pc" and isinstance(data, list):
-                for r in data:
-                    s = r.get("wasted_monthly_cost", 0) or 0
-                    if s > 0:
-                        out.append({"title": f"Reduce provisioned concurrency on {r.get('function_name','?')}", "monthly_savings": s, "category": "Compute", "detail": f"{r.get('avg_utilization_pct',0)*100:.0f}% utilization"})
-            elif name == "s3_bucket_keys" and isinstance(data, list):
-                for r in data:
-                    s = r.get("estimated_savings", 0) or 0
-                    if s > 0:
-                        out.append({"title": f"Enable S3 Bucket Key on {r.get('bucket_name','?')}", "monthly_savings": s, "category": "Storage", "detail": "Up to 99% KMS cost reduction"})
-            elif name == "nonprod":
-                items = data.get("schedulable_instances", []) if isinstance(data, dict) else []
-                for r in items:
-                    s = r.get("potential_monthly_savings", 0) or 0
-                    if s > 0:
-                        out.append({"title": f"Schedule non-prod instance {r.get('name', r.get('instance_id','?'))}", "monthly_savings": s, "category": "Compute", "detail": f"env={r.get('environment','?')}, {r.get('idle_hours_per_week',0):.0f} idle hrs/wk"})
-            elif name == "rds_snapshots":
-                items = data.get("orphaned_snapshots", []) + data.get("old_snapshots", []) if isinstance(data, dict) else []
-                total = data.get("potential_monthly_savings", 0) if isinstance(data, dict) else 0
-                if total > 0:
-                    out.append({"title": f"Delete {len(items)} old/orphaned RDS manual snapshots", "monthly_savings": total, "category": "Storage", "detail": f"${total:.2f}/mo at $0.095/GB-month"})
-            elif name == "spot" and isinstance(data, list):
-                for r in data:
-                    s = r.get("monthly_savings", 0) or 0
-                    if s > 0 and r.get("recommendation") == "RECOMMENDED":
-                        out.append({"title": f"Convert {r.get('instance_id','?')} ({r.get('instance_type','?')}) to Spot", "monthly_savings": s, "category": "Compute", "detail": f"{r.get('savings_pct',0)*100:.0f}% saving"})
-            elif name == "cw_cardinality" and isinstance(data, list):
-                for r in data:
-                    s = r.get("estimated_monthly_cost", 0) or 0
-                    if s > 0:
-                        out.append({"title": f"Reduce CloudWatch metric cardinality in {r.get('namespace','?')}", "monthly_savings": s, "category": "Observability", "detail": f"{r.get('metric_count',0)} metrics"})
-            elif name == "cw_alarms":
-                items = data.get("orphaned_alarms", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
-                total = sum(r.get("monthly_cost", 0) for r in items)
-                if total > 0:
-                    out.append({"title": f"Delete {len(items)} orphaned CloudWatch alarm(s)", "monthly_savings": total, "category": "Observability", "detail": f"${total:.2f}/mo"})
-            elif name == "cw_logs_ia" and isinstance(data, list):
-                total = sum(r.get("monthly_savings", 0) for r in data)
-                if total > 0:
-                    out.append({"title": f"Move {len(data)} log group(s) to Infrequent Access", "monthly_savings": total, "category": "Observability", "detail": "50% ingestion cost reduction"})
-            elif name == "snapstart" and isinstance(data, list):
-                total = sum(r.get("monthly_pc_cost", 0) for r in data if r.get("recommendation") == "ENABLE_SNAPSTART_REPLACE_PC")
-                if total > 0:
-                    out.append({"title": f"Enable Lambda SnapStart on {len([r for r in data if r.get('recommendation')=='ENABLE_SNAPSTART_REPLACE_PC'])} Java function(s)", "monthly_savings": total, "category": "Compute", "detail": "Replaces provisioned concurrency for free"})
-            elif name == "nlb" and isinstance(data, list):
-                for r in data:
-                    s = r.get("estimated_cross_az_cost", 0) or 0
-                    if s > 10:
-                        out.append({"title": f"Disable cross-zone on NLB {r.get('nlb_name','?')}", "monthly_savings": s, "category": "Network", "detail": f"${s:.2f}/mo cross-AZ charges"})
-            elif name == "s3_it" and isinstance(data, list):
-                waste = [r for r in data if isinstance(r.get("recommendation"), str) and r["recommendation"].startswith("LIKELY_WASTE")]
-                total = sum((r.get("net_monthly_cost") or 0) for r in waste)
-                if total > 0:
-                    out.append({"title": f"Disable S3 Intelligent-Tiering on {len(waste)} bucket(s) with small objects", "monthly_savings": total, "category": "Storage", "detail": "Monitoring fee exceeds tiering savings"})
-            elif name == "s3_ta":
-                items = data.get("findings", data) if isinstance(data, dict) else (data if isinstance(data, list) else [])
-                waste = [r for r in items if r.get("likely_waste")]
-                total = sum(r.get("monthly_ta_cost", 0) for r in waste)
-                if total > 0:
-                    out.append({"title": f"Disable S3 Transfer Acceleration on {len(waste)} bucket(s)", "monthly_savings": total, "category": "Storage", "detail": f"${total:.2f}/mo surcharge"})
-            elif name == "ebs_rep":
-                total = data.get("potential_monthly_savings", 0) if isinstance(data, dict) else 0
-                n = len(data.get("excess_copies", [])) if isinstance(data, dict) else 0
-                if total > 0:
-                    out.append({"title": f"Clean up {n} excess EBS cross-region snapshot copies", "monthly_savings": total, "category": "Storage", "detail": f"${total:.2f}/mo"})
-            elif name == "db_sp":
-                s = data.get("estimated_monthly_savings", 0) if isinstance(data, dict) else 0
-                if s > 0:
-                    out.append({"title": "Purchase Database Savings Plan for RDS/Aurora", "monthly_savings": s, "category": "Commitments", "detail": f"Up to 35% off, ${s:.2f}/mo saving"})
-            elif name == "textract":
-                waste = data.get("estimated_monthly_waste", 0) if isinstance(data, dict) else 0
-                callers = data.get("non_prod_callers", []) if isinstance(data, dict) else []
-                if waste > 0:
-                    out.append({"title": f"Disable Textract in non-prod ({len(callers)} caller(s))", "monthly_savings": waste, "category": "AI/ML", "detail": f"${waste:.2f}/mo from QA/staging environments"})
-            elif name == "bedrock":
-                opps = data.get("routing_opportunities", []) if isinstance(data, dict) else []
-                total = data.get("total_monthly_savings", 0) if isinstance(data, dict) else 0
-                if total > 0:
-                    models = [o.get("current_model", "?") for o in opps[:2]]
-                    out.append({"title": f"Route Bedrock tasks to cheaper models ({', '.join(models)})", "monthly_savings": total, "category": "AI/ML", "detail": f"Short tasks to Haiku, ${total:.2f}/mo saving"})
-            elif name == "commitments":
-                s = data.get("estimated_monthly_savings", 0) if isinstance(data, dict) else 0
-                coverage = data.get("current_coverage_pct", 0) if isinstance(data, dict) else 0
-                if s > 0 and coverage < 80:
-                    out.append({"title": f"Purchase Savings Plans / Reserved Instances ({coverage:.0f}% covered)", "monthly_savings": s, "category": "Commitments", "detail": f"${s:.2f}/mo saving at current spend"})
-        except Exception as exc:
-            _srv.log.warning("export norm failed for %s: %s", name, exc)
-        return out
-
-    for name, data in results:
-        if data is not None:
-            findings.extend(norm(name, data))
-
-    findings.sort(key=lambda x: x.get("monthly_savings", 0), reverse=True)
-    top = findings[:top_n]
-
-    total_monthly = sum(f["monthly_savings"] for f in top)
+    # `or 0` because the critique sets monthly_savings to None on a claim it
+    # retracted. Summing that raises; counting it toward a total we are asking a
+    # finance team to believe would be worse.
+    total_monthly = sum(f.get("monthly_savings") or 0 for f in top)
     total_annual = total_monthly * 12
     scan_ts = _srv.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -821,13 +677,24 @@ async def export_cost_report_csv(
             return "'" + s if s and s[0] in ("=", "+", "-", "@", "\t", "\r") else s
 
         for i, f in enumerate(top, 1):
-            mo = round(f["monthly_savings"], 2)
-            yr = round(mo * 12, 2)
-            writer.writerow([i, _csv_safe(f["title"]), _csv_safe(f["category"]), mo, yr, _csv_safe(f.get("detail", ""))])
+            # A retracted claim carries no figure. Writing 0.00 would read as
+            # "we checked and it saves nothing", which is a different and untrue
+            # statement, so the cell says what actually happened.
+            raw = f.get("monthly_savings")
+            mo = round(raw, 2) if raw is not None else ""
+            yr = round(mo * 12, 2) if raw is not None else ""
+            detail = f.get("detail", "")
+            if raw is None:
+                detail = f"needs confirming ({f.get('magnitude', 'unconfirmed')}); {detail}".strip("; ")
+            writer.writerow([i, _csv_safe(f["title"]), _csv_safe(f["category"]), mo, yr, _csv_safe(detail)])
 
+    note = ""
+    if collapsed:
+        note = (f" {collapsed} alternative fix(es) on the same resources are excluded from "
+                f"the total: you can bank one fix per resource, not all of them.")
     return (
         f"Exported {len(top)} opportunities to {dest}. "
-        f"Total estimated saving: ${total_monthly:,.2f}/mo (${total_annual:,.2f}/yr)."
+        f"Total estimated saving: ${total_monthly:,.2f}/mo (${total_annual:,.2f}/yr).{note}"
     )
 
 
@@ -898,7 +765,7 @@ async def push_to_n8n(
         findings = report.get("findings", [])
         monthly_savings = report.get("total_estimated_monthly_savings", 0.0)
 
-        aws = _srv._CLOUD_CONNECTORS.get("aws")
+        aws = _srv.CLOUD_CONNECTORS.get("aws")
         account = ""
         if aws is not None:
             try:
@@ -965,181 +832,34 @@ async def publish_cost_report_to_notion(
             "or run: finops setup notion"
         )
 
-    aws = _srv._CLOUD_CONNECTORS.get("aws")
+    aws = _srv.CLOUD_CONNECTORS.get("aws")
     if aws is None or not await aws.is_configured():
         return "AWS is not connected. Call connect_aws right here in the chat (it detects credentials already on this machine), or run 'uvx nable' in a terminal."
 
-    import asyncio
+    # One sweep, shared with run_full_cost_audit and the other export. This used
+    # to be a fork of the audit's scanner block, and the fork had rotted: it
+    # imported `scan_spot_adoption_opportunities`, a name that has never existed
+    # in recommendations.spot_adoption, so this tool raised ImportError on every
+    # call it ever received. The fork also predated the per-resource collapse, so
+    # its total counted mutually exclusive fixes on one instance as if you could
+    # bank all of them.
     from datetime import datetime as _dt
 
-    findings: list[dict] = []
+    from ..recommendations.sweep import collapse_per_resource, sweep
 
-    async def _run(name: str, coro):
-        try:
-            return name, await coro
-        except Exception as exc:
-            _srv.log.warning("notion audit scanner %s failed: %s", name, exc)
-            return name, None
-
-    from ..recommendations.graviton import scan_graviton_opportunities
-    from ..recommendations.public_ipv4 import audit_public_ipv4
-    from ..recommendations.lambda_concurrency import scan_lambda_concurrency_waste as _lc
-    from ..recommendations.s3_bucket_keys import scan_s3_bucket_key_opportunities as _s3bk
-    from ..recommendations.nonprod_scheduler import identify_nonprod_resources
-    from ..recommendations.rds_snapshots import audit_rds_manual_snapshots as _rds_snap
-    from ..recommendations.spot_adoption import scan_spot_adoption_opportunities
-    from ..recommendations.cloudwatch_cardinality import audit_cloudwatch_metric_cardinality as _cw_card
-    from ..recommendations.cloudwatch_alarms import audit_cloudwatch_orphaned_alarms as _cw_alarms
-    from ..recommendations.cloudwatch_logs_ia import audit_cloudwatch_logs_ia_opportunities as _cw_logs
-    from ..recommendations.lambda_snapstart import recommend_lambda_snapstart as _snapstart
-    from ..recommendations.nlb_cross_zone import audit_nlb_cross_zone_costs as _nlb
-    from ..recommendations.s3_intelligent_tiering import audit_s3_intelligent_tiering as _s3it
-    from ..recommendations.s3_transfer_acceleration import audit_s3_transfer_acceleration as _s3ta
-    from ..recommendations.ebs_snapshot_replication import audit_ebs_snapshot_replication as _ebs_rep
-    from ..recommendations.database_savings_plans import recommend_database_savings_plans as _dbsp
-    from ..recommendations.textract_env import scan_textract_environment_waste as _textract
-    from ..recommendations.bedrock_routing import recommend_bedrock_model_routing as _bedrock
-    from ..recommendations.commitments import analyze_commitments as _commitments
-
-    tasks = [
-        _run("graviton",       scan_graviton_opportunities(aws_client=aws, regions=regions)),
-        _run("ipv4",           audit_public_ipv4(aws_client=aws, regions=regions)),
-        _run("lambda_pc",      _lc(aws_client=aws, regions=regions)),
-        _run("s3_bucket_keys", _s3bk(aws_client=aws)),
-        _run("nonprod",        identify_nonprod_resources(aws_client=aws, regions=regions)),
-        _run("rds_snapshots",  _rds_snap(aws_client=aws, regions=regions)),
-        _run("spot",           scan_spot_adoption_opportunities(aws_client=aws, regions=regions)),
-        _run("cw_cardinality", _cw_card(aws_client=aws, regions=regions)),
-        _run("cw_alarms",      _cw_alarms(aws_client=aws, regions=regions)),
-        _run("cw_logs_ia",     _cw_logs(aws_client=aws, regions=regions)),
-        _run("snapstart",      _snapstart(aws_client=aws, regions=regions)),
-        _run("nlb",            _nlb(aws_client=aws, regions=regions)),
-        _run("s3_it",          _s3it(aws_client=aws)),
-        _run("s3_ta",          _s3ta(aws_client=aws)),
-        _run("ebs_rep",        _ebs_rep(aws_client=aws, regions=regions)),
-        _run("db_sp",          asyncio.to_thread(_dbsp)),
-        _run("textract",       _textract(aws_client=aws)),
-        _run("bedrock",        _bedrock(aws_client=aws)),
-        _run("commitments",    asyncio.to_thread(_commitments)),
-    ]
-
-    results = await asyncio.gather(*tasks)
-
-    def _norm(name, data) -> list[dict]:
-        if data is None:
-            return []
-        out: list[dict] = []
-        try:
-            if name == "graviton" and isinstance(data, list):
-                for r in data:
-                    s = r.get("savings_estimate", 0) or 0
-                    if s > 0:
-                        out.append({"title": f"Migrate {r.get('instance_id','?')} ({r.get('instance_type','?')} -> {r.get('graviton_equivalent','?')})", "monthly_savings": s, "category": "Compute"})
-            elif name == "ipv4":
-                waste = data.get("total_monthly_waste", 0) or 0
-                if waste > 0:
-                    n = len(data.get("unattached_eips", []))
-                    out.append({"title": f"Release {n} unattached Elastic IP(s)", "monthly_savings": waste, "category": "Network"})
-            elif name == "lambda_pc" and isinstance(data, list):
-                for r in data:
-                    s = r.get("wasted_monthly_cost", 0) or 0
-                    if s > 0:
-                        out.append({"title": f"Reduce provisioned concurrency on {r.get('function_name','?')}", "monthly_savings": s, "category": "Compute"})
-            elif name == "s3_bucket_keys" and isinstance(data, list):
-                for r in data:
-                    s = r.get("estimated_savings", 0) or 0
-                    if s > 0:
-                        out.append({"title": f"Enable S3 Bucket Key on {r.get('bucket_name','?')}", "monthly_savings": s, "category": "Storage"})
-            elif name == "nonprod":
-                items = data.get("schedulable_instances", []) if isinstance(data, dict) else []
-                for r in items:
-                    s = r.get("potential_monthly_savings", 0) or 0
-                    if s > 0:
-                        out.append({"title": f"Schedule non-prod instance {r.get('name', r.get('instance_id','?'))}", "monthly_savings": s, "category": "Compute"})
-            elif name == "rds_snapshots":
-                items = data.get("snapshots", data) if isinstance(data, dict) else (data if isinstance(data, list) else [])
-                total = sum(r.get("monthly_cost", 0) for r in items)
-                if total > 0:
-                    out.append({"title": f"Delete {len(items)} old/orphaned RDS manual snapshots", "monthly_savings": total, "category": "Storage"})
-            elif name == "spot" and isinstance(data, list):
-                for r in data:
-                    s = r.get("monthly_savings", 0) or 0
-                    if s > 0 and r.get("recommendation") == "RECOMMENDED":
-                        out.append({"title": f"Convert {r.get('instance_id','?')} ({r.get('instance_type','?')}) to Spot", "monthly_savings": s, "category": "Compute"})
-            elif name == "cw_cardinality" and isinstance(data, list):
-                for r in data:
-                    s = r.get("estimated_monthly_cost", 0) or 0
-                    if s > 0:
-                        out.append({"title": f"Reduce CloudWatch metric cardinality in {r.get('namespace','?')}", "monthly_savings": s, "category": "Observability"})
-            elif name == "cw_alarms":
-                items = data.get("orphaned_alarms", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
-                total = sum(r.get("monthly_cost", 0) for r in items)
-                if total > 0:
-                    out.append({"title": f"Delete {len(items)} orphaned CloudWatch alarm(s)", "monthly_savings": total, "category": "Observability"})
-            elif name == "cw_logs_ia" and isinstance(data, list):
-                total = sum(r.get("monthly_savings", 0) for r in data)
-                if total > 0:
-                    out.append({"title": f"Move {len(data)} log group(s) to Infrequent Access", "monthly_savings": total, "category": "Observability"})
-            elif name == "snapstart" and isinstance(data, list):
-                total = sum(r.get("monthly_pc_cost", 0) for r in data if r.get("recommendation") == "ENABLE_SNAPSTART_REPLACE_PC")
-                if total > 0:
-                    count = len([r for r in data if r.get("recommendation") == "ENABLE_SNAPSTART_REPLACE_PC"])
-                    out.append({"title": f"Enable Lambda SnapStart on {count} Java function(s)", "monthly_savings": total, "category": "Compute"})
-            elif name == "nlb" and isinstance(data, list):
-                for r in data:
-                    s = r.get("estimated_cross_az_cost", 0) or 0
-                    if s > 10:
-                        out.append({"title": f"Disable cross-zone on NLB {r.get('nlb_name','?')}", "monthly_savings": s, "category": "Network"})
-            elif name == "s3_it" and isinstance(data, list):
-                waste = [r for r in data if isinstance(r.get("recommendation"), str) and r["recommendation"].startswith("LIKELY_WASTE")]
-                total = sum((r.get("net_monthly_cost") or 0) for r in waste)
-                if total > 0:
-                    out.append({"title": f"Disable S3 Intelligent-Tiering on {len(waste)} bucket(s)", "monthly_savings": total, "category": "Storage"})
-            elif name == "s3_ta":
-                items = data.get("findings", data) if isinstance(data, dict) else (data if isinstance(data, list) else [])
-                waste = [r for r in items if r.get("likely_waste")]
-                total = sum(r.get("monthly_ta_cost", 0) for r in waste)
-                if total > 0:
-                    out.append({"title": f"Disable S3 Transfer Acceleration on {len(waste)} bucket(s)", "monthly_savings": total, "category": "Storage"})
-            elif name == "ebs_rep":
-                total = data.get("potential_monthly_savings", 0) if isinstance(data, dict) else 0
-                n = len(data.get("excess_copies", [])) if isinstance(data, dict) else 0
-                if total > 0:
-                    out.append({"title": f"Clean up {n} excess EBS cross-region snapshot copies", "monthly_savings": total, "category": "Storage"})
-            elif name == "db_sp":
-                s = data.get("estimated_monthly_savings", 0) if isinstance(data, dict) else 0
-                if s > 0:
-                    out.append({"title": "Purchase Database Savings Plan for RDS/Aurora", "monthly_savings": s, "category": "Commitments"})
-            elif name == "textract":
-                waste = data.get("estimated_monthly_waste", 0) if isinstance(data, dict) else 0
-                callers = data.get("non_prod_callers", []) if isinstance(data, dict) else []
-                if waste > 0:
-                    out.append({"title": f"Disable Textract in non-prod ({len(callers)} caller(s))", "monthly_savings": waste, "category": "AI/ML"})
-            elif name == "bedrock":
-                opps = data.get("routing_opportunities", []) if isinstance(data, dict) else []
-                total = data.get("total_monthly_savings", 0) if isinstance(data, dict) else 0
-                if total > 0:
-                    models = [o.get("current_model", "?") for o in opps[:2]]
-                    out.append({"title": f"Route Bedrock tasks to cheaper models ({', '.join(models)})", "monthly_savings": total, "category": "AI/ML"})
-            elif name == "commitments":
-                s = data.get("estimated_monthly_savings", 0) if isinstance(data, dict) else 0
-                coverage = data.get("current_coverage_pct", 0) if isinstance(data, dict) else 0
-                if s > 0 and coverage < 80:
-                    out.append({"title": f"Purchase Savings Plans / Reserved Instances ({coverage:.0f}% covered)", "monthly_savings": s, "category": "Commitments"})
-        except Exception as exc:
-            _srv.log.warning("notion audit norm failed for %s: %s", name, exc)
-        return out
-
-    for name, data in results:
-        findings.extend(_norm(name, data))
-
-    findings.sort(key=lambda x: x.get("monthly_savings", 0), reverse=True)
-    top_findings = findings[:20]
+    result = await sweep(aws, regions)
+    if result.timed_out:
+        return ("The scan took unusually long (a region or API may be slow). Try again, "
+                "or pass a specific region.")
+    findings = result.findings
+    # Slice first, then collapse: see the CSV export for why the order matters.
+    top_findings, collapsed = collapse_per_resource(findings[:20])
 
     if not top_findings:
         return "No savings opportunities found, nothing to publish."
 
-    total_monthly = sum(f["monthly_savings"] for f in top_findings)
+    # `or 0`: the critique sets monthly_savings to None on a retracted claim.
+    total_monthly = sum(f.get("monthly_savings") or 0 for f in top_findings)
     total_annual = total_monthly * 12
 
     account_name = ""
@@ -1164,12 +884,17 @@ async def publish_cost_report_to_notion(
         _srv.log.error("publish_cost_report_to_notion failed: %s", e, exc_info=True)
         return f"Failed to publish to Notion: {e}"
 
+    collapsed_note = ""
+    if collapsed:
+        collapsed_note = (
+            f"\n\n{collapsed} alternative fix(es) on the same resources are excluded "
+            f"from the total: you can bank one fix per resource, not all of them.")
     return (
         f"Cost report published to Notion.\n\n"
         f"URL: {page_url}\n\n"
         f"Findings: {len(top_findings)} opportunities, "
         f"${total_monthly:,.2f}/mo estimated saving "
-        f"(${total_annual:,.2f}/yr).\n\n"
+        f"(${total_annual:,.2f}/yr).{collapsed_note}\n\n"
         f"Share the page with your team from Notion. "
         f"They don't need nable installed to view it."
     )

@@ -26,7 +26,8 @@ services:
       # volume next to the encrypted vault.db. A leaked or snapshotted data volume
       # is then useless on its own. Blank = the app self-manages a key file inside
       # /data (fine for a laptop, weak for a hosted box). Keep it constant: changing
-      # it orphans every stored credential. deploy/provision-tenant.sh generates one.
+      # it orphans every stored credential. Generate one with
+      # python3 -c "import secrets; print(secrets.token_urlsafe(32))".
       FINOPS_VAULT_KEY: "${FINOPS_VAULT_KEY:-}"
       # Dashboard auth
       FINOPS_DASHBOARD_PASSWORD: "${FINOPS_DASHBOARD_PASSWORD:-}"
@@ -52,7 +53,8 @@ services:
       # getnable.com account can mint a one-click login into this instance. Leave
       # both blank for a self-hosted box (password/SSO login only). The secret is
       # derived per instance: hmac_sha256_hex(CP_MASTER_SECRET, "nable-instance:"+id).
-      # See docs/PROVISIONING.md and deploy/provision-tenant.sh.
+      # Managed instances are provisioned by getnable and that runbook is not part
+      # of this package. Self-hosters leave both blank.
       FINOPS_INSTANCE_ID: "${FINOPS_INSTANCE_ID:-}"
       FINOPS_CONTROL_PLANE_SECRET: "${FINOPS_CONTROL_PLANE_SECRET:-}"
       # --- Finance interfaces (so non-engineers consume nable without installing) ---

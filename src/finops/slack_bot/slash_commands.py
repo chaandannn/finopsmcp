@@ -258,8 +258,27 @@ def cmd_forecast(account_id: str, service: str | None = None, horizon: int = 30)
 def cmd_rightsizing(account_id: str) -> list[dict]:
     """Handle /rightsizing — top opportunities."""
     try:
-        from ..recommendations.rightsizing import get_rightsizing_recommendations
-        recs = get_rightsizing_recommendations(account_id=account_id, limit=5)
+        # `get_rightsizing_recommendations` is the name of the MCP TOOL, not of
+        # anything in the analyzer, and importing it from here raised ImportError
+        # on every /rightsizing the bot has ever received. The analyzer returns
+        # dataclasses; the blocks below want dicts, so map once, here.
+        from ..recommendations.rightsizing import analyze_rightsizing
+
+        recs = [
+            {
+                "instance_id": r.instance_id,
+                "current_type": r.instance_type,
+                "recommended_type": r.recommended_type,
+                "estimated_monthly_savings": r.monthly_savings,
+                "region": r.region,
+                "confidence": r.confidence,
+            }
+            # analyze_rightsizing sweeps regions, not accounts, so the account
+            # filter is applied here rather than dropped. Dropping it would show
+            # a caller who asked about one account the whole org's instances.
+            for r in analyze_rightsizing()
+            if not account_id or r.account_id == account_id
+        ][:5]
 
         if not recs:
             return [_section("✅ No rightsizing opportunities found.")]

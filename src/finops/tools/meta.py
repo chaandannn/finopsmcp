@@ -67,7 +67,7 @@ async def list_connected_providers() -> dict:
             result["_plan"] = {"plan": status.mode}
         return result
 
-    for category, pool in [("cloud", _srv._CLOUD_CONNECTORS), ("saas", _srv._SAAS_CONNECTORS)]:
+    for category, pool in [("cloud", _srv.CLOUD_CONNECTORS), ("saas", _srv.SAAS_CONNECTORS)]:
         for name, connector in pool.items():
             configured = await connector.is_configured()
             result[name] = {
@@ -336,7 +336,7 @@ async def compare_providers(
     if end_date:
         ed = _srv.date.fromisoformat(end_date)
 
-    pool = _srv._CLOUD_CONNECTORS if category == "cloud" else _srv._SAAS_CONNECTORS if category == "saas" else _srv._ALL_CONNECTORS
+    pool = _srv.CLOUD_CONNECTORS if category == "cloud" else _srv.SAAS_CONNECTORS if category == "saas" else _srv._ALL_CONNECTORS
     targets = await _srv._active(pool)
     if not targets:
         return {"error": "No cloud accounts connected yet. Connect one right here in the chat: call connect_aws or connect_gcp (they detect credentials already on this machine) or connect_azure. No terminal, no restart. Prefer a guided terminal setup? Run 'uvx nable' instead."}
@@ -356,7 +356,7 @@ async def compare_providers(
             continue
         provider_totals.append({
             "provider": name,
-            "category": "cloud" if name in _srv._CLOUD_CONNECTORS else "saas",
+            "category": "cloud" if name in _srv.CLOUD_CONNECTORS else "saas",
             "total_usd": round(summary.total_usd, 4),
             "total_formatted": _srv._fmt_usd(summary.total_usd),
             "top_services": [
@@ -1304,17 +1304,18 @@ async def get_view(
 
     # ── waste ────────────────────────────────────────────────────────────────
     if view == "waste":
-        try:
-            from ..analyzers.waste import scan_waste
-            result = scan_waste()
-            return {"view": meta["name"], **result}
-        except Exception as e:
-            return {"view": meta["name"], "error": str(e)}
+        # Routed through the registered tool, the same way the rightsizing view
+        # above is. This used to call `analyzers.waste.scan_waste`, which does
+        # not exist: that module exposes per-detector check_* functions and no
+        # aggregate. The except swallowed the ImportError into an error string,
+        # so this view has answered `{"error": "cannot import name 'scan_waste'"}`
+        # to every user who asked for it, and looked like a runtime hiccup.
+        return await _srv.scan_waste_patterns()
 
     # ── saas ─────────────────────────────────────────────────────────────────
     if view == "saas":
         start, end = _srv._default_dates()
-        active = await _srv._active(subset=_srv._SAAS_CONNECTORS)
+        active = await _srv._active(subset=_srv.SAAS_CONNECTORS)
         if provider:
             active = {k: v for k, v in active.items() if k == provider}
 
@@ -1477,7 +1478,7 @@ async def what_can_nable_do(detailed: bool = False) -> str:
     connected: set[str] = set()
 
     # Cloud + SaaS connectors live in the class registries.
-    for pool in (_srv._CLOUD_CONNECTORS, _srv._SAAS_CONNECTORS):
+    for pool in (_srv.CLOUD_CONNECTORS, _srv.SAAS_CONNECTORS):
         for name, connector in pool.items():
             try:
                 if await connector.is_configured():

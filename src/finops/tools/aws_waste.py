@@ -203,7 +203,7 @@ async def audit_public_ipv4_addresses(
     """
     try:
         from ..recommendations.public_ipv4 import audit_public_ipv4
-        aws = _srv._CLOUD_CONNECTORS.get("aws")
+        aws = _srv.CLOUD_CONNECTORS.get("aws")
         if aws is None:
             return "AWS is not connected. Call connect_aws right here in the chat (it detects credentials already on this machine), or run 'uvx nable' in a terminal."
 
@@ -1230,7 +1230,7 @@ async def audit_duplicate_spend(days: int = 30) -> dict:
         llm_by_provider = llm_data.get("by_provider") or {}
 
         aws_by_service: dict = {}
-        aws = _srv._CLOUD_CONNECTORS.get("aws")
+        aws = _srv.CLOUD_CONNECTORS.get("aws")
         if aws is not None and await aws.is_configured():
             ed = _srv.date.today()
             sd = ed - _srv.timedelta(days=days)
@@ -1281,7 +1281,7 @@ async def identify_nonprod_scheduling_opportunities(
     """
     try:
         from ..recommendations.nonprod_scheduler import identify_nonprod_resources
-        aws = _srv._CLOUD_CONNECTORS.get("aws")
+        aws = _srv.CLOUD_CONNECTORS.get("aws")
         if aws is None or not await aws.is_configured():
             return "AWS is not connected. Call connect_aws right here in the chat (it detects credentials already on this machine), or run 'uvx nable' in a terminal."
 
@@ -1377,7 +1377,7 @@ async def audit_rds_manual_snapshots(
     try:
         from ..recommendations.rds_snapshots import audit_rds_manual_snapshots as _audit
 
-        aws = _srv._CLOUD_CONNECTORS.get("aws")
+        aws = _srv.CLOUD_CONNECTORS.get("aws")
         if aws is None or not await aws.is_configured():
             return "AWS is not connected. Call connect_aws right here in the chat (it detects credentials already on this machine), or run 'uvx nable' in a terminal."
 
@@ -1505,7 +1505,7 @@ async def scan_lambda_concurrency_waste(
     try:
         from ..recommendations.lambda_concurrency import scan_lambda_concurrency_waste as _scan
 
-        aws = _srv._CLOUD_CONNECTORS.get("aws")
+        aws = _srv.CLOUD_CONNECTORS.get("aws")
         if aws is None or not await aws.is_configured():
             return {"error": "AWS connector is not configured."}
 
@@ -1544,7 +1544,7 @@ async def scan_s3_bucket_key_opportunities() -> dict:
     try:
         from ..recommendations.s3_bucket_keys import scan_s3_bucket_key_opportunities as _scan
 
-        aws = _srv._CLOUD_CONNECTORS.get("aws")
+        aws = _srv.CLOUD_CONNECTORS.get("aws")
         if aws is None or not await aws.is_configured():
             return {"error": "AWS connector is not configured."}
 
@@ -1589,7 +1589,7 @@ async def audit_efs_cross_az_mounts(
     try:
         from ..recommendations.efs_cross_az import audit_efs_cross_az_mounts as _scan
 
-        aws = _srv._CLOUD_CONNECTORS.get("aws")
+        aws = _srv.CLOUD_CONNECTORS.get("aws")
         if aws is None or not await aws.is_configured():
             return {"error": "AWS connector is not configured."}
 
@@ -1632,7 +1632,7 @@ async def audit_nlb_cross_zone_costs(
     try:
         from ..recommendations.nlb_cross_zone import audit_nlb_cross_zone_costs as _scan
 
-        aws = _srv._CLOUD_CONNECTORS.get("aws")
+        aws = _srv.CLOUD_CONNECTORS.get("aws")
         if aws is None or not await aws.is_configured():
             return {"error": "AWS connector is not configured."}
 
@@ -1684,7 +1684,7 @@ async def audit_s3_intelligent_tiering(
     try:
         from ..recommendations.s3_intelligent_tiering import audit_s3_intelligent_tiering as _scan
 
-        aws = _srv._CLOUD_CONNECTORS.get("aws")
+        aws = _srv.CLOUD_CONNECTORS.get("aws")
         if aws is None or not await aws.is_configured():
             return {"error": "AWS connector is not configured."}
 
@@ -1823,7 +1823,7 @@ async def audit_cloudwatch_metric_cardinality(
         return err
     try:
         from ..recommendations.cloudwatch_cardinality import audit_cloudwatch_metric_cardinality as _audit
-        aws = _srv._CLOUD_CONNECTORS.get("aws")
+        aws = _srv.CLOUD_CONNECTORS.get("aws")
         if aws is None:
             return "AWS is not connected. Call connect_aws right here in the chat (it detects credentials already on this machine), or run 'uvx nable' in a terminal."
 
@@ -1900,7 +1900,7 @@ async def audit_cloudwatch_orphaned_alarms(
         return err
     try:
         from ..recommendations.cloudwatch_alarms import audit_cloudwatch_orphaned_alarms as _audit
-        aws = _srv._CLOUD_CONNECTORS.get("aws")
+        aws = _srv.CLOUD_CONNECTORS.get("aws")
         if aws is None:
             return "AWS is not connected. Call connect_aws right here in the chat (it detects credentials already on this machine), or run 'uvx nable' in a terminal."
 
@@ -1980,7 +1980,7 @@ async def audit_cloudwatch_logs_ia_opportunities(
         return err
     try:
         from ..recommendations.cloudwatch_logs_ia import audit_cloudwatch_logs_ia_opportunities as _audit
-        aws = _srv._CLOUD_CONNECTORS.get("aws")
+        aws = _srv.CLOUD_CONNECTORS.get("aws")
         if aws is None:
             return "AWS is not connected. Call connect_aws right here in the chat (it detects credentials already on this machine), or run 'uvx nable' in a terminal."
 
@@ -2057,7 +2057,7 @@ async def audit_ebs_snapshot_replication(
             audit_ebs_snapshot_replication as _audit,
         )
 
-        aws = _srv._CLOUD_CONNECTORS.get("aws")
+        aws = _srv.CLOUD_CONNECTORS.get("aws")
         if aws is None or not await aws.is_configured():
             return {"error": "AWS is not connected. Call connect_aws right here in the chat (it detects credentials already on this machine), or run 'uvx nable' in a terminal."}
 
@@ -2095,7 +2095,7 @@ async def audit_s3_transfer_acceleration() -> dict:
             audit_s3_transfer_acceleration as _audit,
         )
 
-        aws = _srv._CLOUD_CONNECTORS.get("aws")
+        aws = _srv.CLOUD_CONNECTORS.get("aws")
         if aws is None or not await aws.is_configured():
             return {"error": "AWS is not connected. Call connect_aws right here in the chat (it detects credentials already on this machine), or run 'uvx nable' in a terminal."}
 
