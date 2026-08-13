@@ -33,7 +33,7 @@ _CSS = """
   --fg:#f0f2f3;--fg-2:#94a3ab;--fg-3:#56656d;
   --accent:#4db8d4;--accent-dim:#2c7d91;
   --success:#3cba7a;--warn:#e6a840;--alert:#e05c4b;
-  --font-display:'Newsreader',Georgia,serif;
+  --font-display:'Geist',system-ui,sans-serif;
   --font-ui:'Geist',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
   --font-mono:'Geist Mono','JetBrains Mono',ui-monospace,SFMono-Regular,monospace;
 }
@@ -176,6 +176,23 @@ def _item_html(item: BriefItem, rank: int) -> str:
 
 
 def to_html(brief: Brief, *, title: str = "This morning") -> str:
+    """Render the brief as a self-contained page.
+
+    No webfont link, and the reason is not cosmetic. This file is written to
+    disk and the caller opens it, so a stylesheet link would make the browser
+    call Google's font CDN the moment the artifact is created. That host is not
+    in docs/network-manifest.json, whose first line promises it lists every
+    external endpoint nable may connect to, and the enterprise audit we publish
+    is an air-gapped run plus a packet capture showing provider APIs only.
+    telemetry, benchmarks and update_check all honour FINOPS_AIRGAP; this sat
+    outside that switch entirely, so nothing could turn it off.
+
+    DESIGN.md's one-font-URL rule governs the pages of getnable.com, which are
+    served over the network anyway. A generated local report is a different
+    surface. There is no bundled woff2 to inline, so it falls back to whatever
+    the reader already has, Geist first. Newsreader went with the link: it was
+    retired in DESIGN.md and could not have loaded here regardless.
+    """
     items = "".join(_item_html(i, n) for n, i in enumerate(brief.actionable, 1))
     invs = "".join(_item_html(i, n) for n, i in
                    enumerate(brief.investigations, len(brief.actionable) + 1))
@@ -189,8 +206,7 @@ def to_html(brief: Brief, *, title: str = "This morning") -> str:
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{escape(title)} &middot; nable</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,200..400&family=Geist:wght@100..900&family=Geist+Mono:wght@300..600&display=swap" rel="stylesheet">
+<!-- No webfont link: this page must render with zero network calls. -->
 <style>{_CSS}</style></head>
 <body><div class="wrap">
   <div class="eyebrow">Overnight run &middot; {escape(brief.generated_at[:16].replace("T", " "))} UTC</div>

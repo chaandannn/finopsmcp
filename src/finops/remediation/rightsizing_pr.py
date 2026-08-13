@@ -45,11 +45,19 @@ log = logging.getLogger(__name__)
 # ── Git helper ────────────────────────────────────────────────────────────────
 
 def run_git(tf_dir: str, *args: str) -> str:
+    # env=: git runs hooks and core.fsmonitor from the target repo's own
+    # .git/config, so a repository nable was pointed at can execute a program of
+    # its choosing. With no env= that program inherited every credential the
+    # vault decrypted into os.environ at startup. The user's own exported
+    # variables still pass through; only nable's decrypted copies are removed.
+    from ..security.vault import child_env
+
     result = subprocess.run(
         ["git", *args],
         cwd=tf_dir,
         capture_output=True,
         text=True,
+        env=child_env(),
     )
     if result.returncode != 0:
         raise RuntimeError(

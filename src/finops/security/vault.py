@@ -15,11 +15,49 @@ import os
 import stat
 import sys
 import time
+from collections.abc import Iterable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 log = logging.getLogger("finops.vault")
+
+# Key names load_to_env() has decrypted into os.environ this process. Module
+# level rather than per-instance because the flatten is process-wide and so is
+# the blast radius: every subprocess spawned afterwards inherits all of it.
+_INJECTED_KEYS: set[str] = set()
+
+
+def child_env(allow: Iterable[str] = (), base: Mapping[str, str] | None = None) -> dict[str, str]:
+    """The environment to hand a subprocess: os.environ without the vault.
+
+    Why this exists: load_to_env() decrypts every stored credential into
+    os.environ at startup, and `subprocess.run` with no env= passes the lot to
+    the child. Two call sites did exactly that, and both spawn a program the
+    customer controls:
+
+      - `terraform plan` runs in a directory the caller names, loads the provider
+        plugins that directory declares and executes its `data "external"`
+        programs, every one of them holding the user's AWS keys, GitHub token,
+        Datadog key and Snowflake password.
+      - `git` executes hooks and core.fsmonitor from the repo's own .git/config,
+        so pointing nable at a repository was enough to run a program with the
+        whole vault in its environment.
+
+    The user's OWN exported credentials are left alone. Stripping those would
+    break `terraform plan` for anyone whose AWS profile lives in their shell,
+    which is the normal case, and they were never nable's secret to leak. Only
+    what this process decrypted is removed, which is why load_to_env records it.
+
+    `allow` is for a call site that genuinely needs one back. It takes names, and
+    naming a secret to re-admit it should feel like the deliberate act it is.
+    """
+    env = dict(os.environ if base is None else base)
+    keep = set(allow)
+    for key in _INJECTED_KEYS:
+        if key not in keep:
+            env.pop(key, None)
+    return env
 
 _KEYRING_SERVICE_DEFAULT = "finops-mcp"
 _KEYRING_USER = "master-key"
@@ -250,6 +288,11 @@ class Vault:
             try:
                 value = self._fernet.decrypt(encrypted_value).decode()
                 os.environ[key_name] = value
+                # Remember what we put there. Once decrypted into os.environ a
+                # vault secret is indistinguishable from one the user exported
+                # in their own shell, and every subprocess inherits both. This
+                # is what lets child_env() below strip ours and keep theirs.
+                _INJECTED_KEYS.add(key_name)
                 count += 1
             except Exception:
                 log.warning("Vault: could not decrypt %s, skipping", key_name)

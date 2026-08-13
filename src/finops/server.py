@@ -106,6 +106,39 @@ class _SurfacedFastMCP(FastMCP):
             # Filtering must never break tool listing.
             return tools
 
+    async def call_tool(self, name, arguments, **kwargs):  # type: ignore[override]
+        """Apply the API key's scope to the arguments before the tool sees them.
+
+        create_api_key advertises scope_team and scope_provider, and rbac.py
+        implements enforce_team_scope and enforce_provider_scope to honour them.
+        Both helpers were imported into this module and then called by nothing:
+        22 tools accept a `team` or `provider` filter and every one of them used
+        whatever the caller asked for. A key issued as "analytics team only"
+        read every team's spend by passing a different name.
+
+        Enforced here rather than in each tool on purpose. Twenty-two edits is
+        twenty-two chances to forget, and the twenty-third tool would ship
+        unscoped without anything going red. A choke point cannot be forgotten
+        by code that has not been written yet.
+
+        A no-op when nothing is scoped: enforce_* returns the requested value
+        unless the caller's identity actually carries a restriction, and on a
+        single-tenant box no identity is attached at all.
+        """
+        try:
+            if isinstance(arguments, dict) and arguments:
+                scoped = dict(arguments)
+                if "team" in scoped:
+                    scoped["team"] = enforce_team_scope(scoped.get("team"))
+                if "provider" in scoped:
+                    scoped["provider"] = enforce_provider_scope(scoped.get("provider"))
+                arguments = scoped
+        except Exception:
+            # A scoping failure must not silently WIDEN access, so this re-raises
+            # rather than falling through to the unscoped arguments.
+            raise
+        return await super().call_tool(name, arguments, **kwargs)
+
 
 def _tool_surface_changed() -> None:
     """After a successful in-chat connect: re-detect families and nudge the client
