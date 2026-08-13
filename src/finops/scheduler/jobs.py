@@ -842,8 +842,14 @@ async def run_weekly_insight_now() -> bool:
     try:
         grand_total, this_week = _week(this_start, today)
         prev_total, last_week = _week(last_start, last_end)
-    except Exception:
-        grand_total, prev_total, this_week, last_week = 0.0, 0.0, {}, {}
+    except Exception as exc:
+        # Do NOT fall through with zeros. This used to swallow the failure and
+        # carry on, so a snapshot query that never ran was posted to the team's
+        # Slack as "Weekly cost: $0 (+0.0% vs last week)" and the tool reported
+        # sent: True. Everyone reading that channel now believes the bill went to
+        # nothing. A number nable never read must not be published as one it did.
+        log.error("weekly insight: snapshot query failed, refusing to post: %s", exc)
+        return False
 
     movers = []
     for key in set(this_week) | set(last_week):

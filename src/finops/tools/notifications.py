@@ -303,9 +303,23 @@ async def push_weekly_insight() -> dict:
                            "this_week": tw, "last_week": lw, "pct_change": pct})
         movers.sort(key=lambda m: -abs(m["pct_change"]))
     except Exception as e:
-        grand_total = 0.0
-        prev_total = 0.0
-        movers = []
+        # Refuse rather than substitute zeros. This block used to set
+        # grand_total = prev_total = 0.0 and carry on, so a snapshot query that
+        # never ran was posted to the team's Slack as "Weekly cost: $0 (+0.0% vs
+        # last week)" and the tool returned sent: True. Everyone in that channel
+        # then believes the bill went to nothing, which is the single most
+        # alarming thing a cost tool can say and it was not read from anywhere.
+        _srv.log.error("push_weekly_insight: snapshot query failed: %s", e)
+        return {
+            "sent": False,
+            "error": "Could not read the cost snapshots for this week.",
+            "detail": str(e)[:300],
+            "why_nothing_was_posted": (
+                "nable does not publish a figure it did not read. Posting $0 here "
+                "would have told the channel your spend collapsed."
+            ),
+            "fix": "Check the snapshot store, then run take_snapshot_now() and retry.",
+        }
 
     # Savings pipeline
     try:

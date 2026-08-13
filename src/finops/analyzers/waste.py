@@ -1061,16 +1061,26 @@ def check_idle_ec2(
                     net_unavailable = False
                 except Exception as exc:
                     # 0.0 here does not mean "no traffic", it means "we could not
-                    # look". The very next line is the guard that protects a busy
-                    # instance from being called idle, so a failed read used to
-                    # DISABLE the check that would have saved it. Low CPU is real
-                    # evidence and was measured, so the finding survives; it just
-                    # stops claiming to be measured.
+                    # look", and the very next line is the guard that protects a
+                    # busy instance from being called idle. A failed read used to
+                    # DISABLE the check that would have saved it.
+                    #
+                    # An earlier pass kept the finding and merely downgraded its
+                    # provenance, reasoning that low CPU was measured and real.
+                    # That is true and it is not enough: this guard exists for
+                    # one specific false positive, the network-bound host that
+                    # sits at 2% CPU, and a Kafka broker is the textbook case.
+                    # Attaching a caveat still puts "stop, downsize, or
+                    # terminate" in front of someone for a machine that is
+                    # serving traffic. Unknown has to fail towards in-use.
+                    #
+                    # So: skip, the same way check_nat_gateways does on the same
+                    # failure. The cost is missing a genuinely idle instance
+                    # while CloudWatch is unreachable, which the next run catches.
                     log.debug("CW NetworkOut failed for %s: %s", inst_id, exc)
-                    avg_net_per_hr = 0.0
-                    net_unavailable = True
+                    continue
 
-                if not net_unavailable and avg_net_per_hr > _IDLE_NET_BYTES_PER_HR:
+                if avg_net_per_hr > _IDLE_NET_BYTES_PER_HR:
                     continue  # network-active: treat as in-use, not idle
 
                 vcpus = _vcpus_from_type(inst_type)
@@ -1098,14 +1108,6 @@ def check_idle_ec2(
                     "max_cpu_pct": round(max_cpu, 2),
                     "name": name_tag,
                     "lookback_days": lookback_days,
-                    # Carries provenance to waste_evidence.annotate, which refuses
-                    # to stamp a finding MEASURED when its metric could not be read.
-                    **({"metrics_unavailable": True,
-                        "metrics_unavailable_reason":
-                            "NetworkOut could not be read, so 'not network-active' "
-                            "is an assumption. Low CPU was measured; the traffic "
-                            "check that would confirm it was not."}
-                       if net_unavailable else {}),
                 })
 
     return findings
