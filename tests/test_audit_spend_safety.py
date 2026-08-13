@@ -155,7 +155,6 @@ def _armed_jobs() -> dict:
     return {j.id: j for j in sched.get_jobs()}
 
 
-@pytest.mark.xfail(strict=True, reason="audit finding, not yet fixed. strict=True so that fixing it FAILS here until this marker is removed: the marker count is the work list.")
 def test_scheduler_off_must_be_honoured_by_the_mcp_entry_point(monkeypatch):
     """FAILS TODAY. The bug is real.
 
@@ -174,7 +173,6 @@ def test_scheduler_off_must_be_honoured_by_the_mcp_entry_point(monkeypatch):
     )
 
 
-@pytest.mark.xfail(strict=True, reason="audit finding, not yet fixed. strict=True so that fixing it FAILS here until this marker is removed: the marker count is the work list.")
 def test_an_editor_install_with_no_opt_in_does_not_arm_the_cron(monkeypatch):
     """FAILS TODAY. The bug is real.
 
@@ -211,15 +209,21 @@ def test_an_explicit_opt_in_still_arms_the_scheduler(monkeypatch):
     )
 
 
-def test_the_cron_it_arms_is_the_billed_and_ticket_filing_pair():
-    """PASSES TODAY. Pins what is actually at stake above.
+def test_the_cron_it_arms_is_the_billed_and_ticket_filing_pair(monkeypatch):
+    """Pins what is actually at stake above.
 
     Records which jobs the scheduler arms, so nobody can argue the tests above
     are about a harmless background timer. `snapshot` is the Cost Explorer path
     and `anomaly` is the one that calls create_ticket. If a rename ever
     detaches these ids from these functions, the tests above are guarding
     something other than what their docstrings claim.
+
+    Opts in explicitly now that unattended jobs are opt-in. That is the whole
+    point of the two tests above: without this line, nothing arms. Setting it
+    here keeps this a statement about WHAT gets armed, and leaves WHETHER it
+    arms to them.
     """
+    monkeypatch.setenv("FINOPS_ENABLE_SCHEDULER", "1")
     sched = jobs.start_scheduler()
     assert sched is not None, (
         "could not acquire the scheduler lock even with an isolated "
@@ -513,7 +517,6 @@ def _approve_from_slack(repo) -> dict:
     )
 
 
-@pytest.mark.xfail(strict=True, reason="audit finding, not yet fixed. strict=True so that fixing it FAILS here until this marker is removed: the marker count is the work list.")
 def test_slack_approval_does_not_write_to_the_repo_while_prs_are_disabled(
     iac_repo, open_rightsizing_recommendation
 ):
@@ -574,7 +577,6 @@ def test_enabling_the_gate_still_lets_an_approved_pr_proceed(
     )
 
 
-@pytest.mark.xfail(strict=True, reason="audit finding, not yet fixed. strict=True so that fixing it FAILS here until this marker is removed: the marker count is the work list.")
 def test_every_ungated_pr_call_site_is_covered_by_the_kill_switch():
     """FAILS TODAY. The bug is real, and this is the test that keeps it fixed.
 
@@ -643,7 +645,6 @@ def test_every_ungated_pr_call_site_is_covered_by_the_kill_switch():
     )
 
 
-@pytest.mark.xfail(strict=True, reason="audit finding, not yet fixed. strict=True so that fixing it FAILS here until this marker is removed: the marker count is the work list.")
 def test_a_failed_git_step_leaves_no_edit_in_the_customers_working_tree(
     iac_repo, open_rightsizing_recommendation, monkeypatch
 ):

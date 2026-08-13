@@ -693,10 +693,43 @@ def job_auto_verify() -> None:
 
 # ── Scheduler lifecycle ───────────────────────────────────────────────────────
 
+def scheduler_enabled() -> bool:
+    """Unattended jobs are opt-in, and this is the only place that decides.
+
+    FINOPS_ENABLE_SCHEDULER was documented in `finops --help` and read by
+    nothing. server.py called start_scheduler() unconditionally, so installing
+    nable in an editor armed nine cron jobs nobody asked for, and setting the
+    variable to 0 changed nothing at all.
+
+    That is not a tidiness problem. job_snapshot makes a billed
+    ce:GetCostAndUsage call every night against the user's real account, and the
+    ticket jobs file issues into their tracker at 02:00 with nobody watching.
+    An editor install is someone trying the product, not consenting to nightly
+    unattended spend on their behalf.
+
+    Off unless explicitly on, because the failure directions are not
+    symmetrical: a user who wanted the cron and did not get it notices and turns
+    it on, while a user who did not want it finds out from a bill.
+    """
+    return os.environ.get("FINOPS_ENABLE_SCHEDULER", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
 def start_scheduler() -> BackgroundScheduler | None:
     global _scheduler
     if _scheduler and _scheduler.running:
         return _scheduler
+
+    # Gated here rather than at the call site, so a second entry point cannot
+    # arm the cron by forgetting to ask.
+    if not scheduler_enabled():
+        log.info(
+            "Scheduler not started: unattended jobs are opt-in. Set "
+            "FINOPS_ENABLE_SCHEDULER=1 to run snapshots, digests and anomaly "
+            "checks on a timer."
+        )
+        return None
 
     if not _acquire_scheduler_lock():
         log.info(
