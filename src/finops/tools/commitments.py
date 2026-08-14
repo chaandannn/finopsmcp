@@ -32,7 +32,9 @@ async def get_commitment_analysis() -> dict:
         # Add actionable coverage gap analysis
         sp_cov = analysis.savings_plan_coverage_pct
         ri_cov = analysis.ri_coverage_pct
-        combined_coverage = (sp_cov + ri_cov) / 2 if (sp_cov + ri_cov) > 0 else max(sp_cov, ri_cov)
+        # combined_coverage_pct, not (sp + ri) / 2: either half is None when Cost
+        # Explorer denied that coverage call, and the arithmetic raised.
+        combined_coverage = analysis.combined_coverage_pct or 0.0
         coverage_target = 80.0
         coverage_gap_pct = max(0.0, coverage_target - combined_coverage)
 

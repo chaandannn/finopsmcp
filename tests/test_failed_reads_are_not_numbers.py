@@ -69,7 +69,6 @@ KNOWN: set[tuple[str, str]] = {
     ("focus/translators/llm.py", "amount"),
     ("recommendations/commitments.py", "_ec2_spend_for_tag"),
     ("recommendations/commitments.py", "_total_ec2_spend"),
-    ("recommendations/commitments.py", "_ri_coverage"),
     ("recommendations/database_savings_plans.py", "_get_database_sp_coverage"),
     ("recommendations/lambda_snapstart.py", "_get_pc_monthly_cost"),
     ("recommendations/learning/rescorer.py", "savings"),

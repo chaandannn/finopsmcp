@@ -754,7 +754,6 @@ def test_scorecard_recoverable_total_includes_the_commitment_opportunity():
 
 # ── 8. One savings basis across the rightsizing family ───────────────────────
 
-@pytest.mark.xfail(strict=True, reason="audit finding, not yet fixed. strict=True so that fixing it FAILS here until this marker is removed: the marker count is the work list.")
 def test_rds_rightsizing_prices_on_the_same_basis_as_its_ec2_sibling(monkeypatch):
     """Fails today. get_rightsizing_recommendations routes savings through
     detect_savings_context + adjust_savings and returns genuine_monthly_savings
