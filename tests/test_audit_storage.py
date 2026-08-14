@@ -580,7 +580,6 @@ def test_the_anomaly_dedup_tuple_is_enforced_by_the_database(fresh_db):
 # ── scorecard_history is hand-written SQLite DDL, outside the metadata ───────
 
 
-@pytest.mark.xfail(strict=True, reason="audit finding, not yet fixed. strict=True so that fixing it FAILS here until this marker is removed: the marker count is the work list.")
 def test_scorecard_history_ddl_is_not_sqlite_only(fresh_db):
     """FAILS NOW, the bug is real.
 
@@ -613,7 +612,6 @@ def test_scorecard_history_ddl_is_not_sqlite_only(fresh_db):
     )
 
 
-@pytest.mark.xfail(strict=True, reason="audit finding, not yet fixed. strict=True so that fixing it FAILS here until this marker is removed: the marker count is the work list.")
 def test_scorecard_history_is_a_managed_table(fresh_db):
     """INVARIANT TEST, and it FAILS NOW because the invariant does not exist.
 
@@ -732,3 +730,101 @@ def test_a_fresh_database_gets_the_dedup_index_from_the_model(tmp_path):
         f"the index covers {indexes['ux_anom_dedup']['column_names']}, which is "
         f"not the tuple persist_anomaly dedups on"
     )
+
+
+def test_scorecard_history_still_works_on_a_legacy_hand_written_table(tmp_path, monkeypatch):
+    """Existing installs must survive the table moving onto the metadata.
+
+    Every database created before this change already holds a scorecard_history
+    built by the hand-written CREATE TABLE that used to live in scorecard.py.
+    create_all does not touch a table that exists, so those installs keep the old
+    shape: same columns, no unique index. The Core statements have to work
+    against it unchanged, or upgrading silently loses a customer's score history
+    and the trend arrow they have been watching.
+
+    Not a hypothetical. The bare `except Exception: log.debug(...)` around both
+    call sites means a broken read or write here produces no error, no log the
+    user sees, and a scorecard that quietly reports "no_history" forever.
+    """
+    import sqlite3
+
+    db_path = tmp_path / "legacy.db"
+    con = sqlite3.connect(db_path)
+    con.execute("""CREATE TABLE scorecard_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, scope TEXT NOT NULL,
+        score_date TEXT NOT NULL, total_score REAL NOT NULL, grade TEXT NOT NULL,
+        details TEXT, captured_at TEXT NOT NULL)""")
+    con.execute(
+        "INSERT INTO scorecard_history "
+        "(scope, score_date, total_score, grade, details, captured_at) "
+        "VALUES ('overall', '2026-08-01', 72.0, 'C', '{}', '2026-08-01T00:00:00Z')")
+    con.commit()
+    con.close()
+
+    monkeypatch.setenv("FINOPS_DB_PATH", str(db_path))
+    monkeypatch.setenv("FINOPS_DATA_DIR", str(tmp_path / "data"))
+    from finops.storage import db as _db
+
+    _db._ENGINE, _db._DATA_DIR = None, None
+    try:
+        _db.get_engine()          # create_all + migrations over the legacy table
+
+        scorecard._persist_score("overall", 81.0, "B", {"x": 1})
+        trend, delta = scorecard._get_score_trend("overall", 81.0)
+        assert trend == "improving" and delta == pytest.approx(9.0), (
+            f"the pre-existing row was not read back: got {trend} {delta}"
+        )
+
+        # Writing twice in one day replaces rather than appends, which is what
+        # the delete-then-insert is for on a table with no unique index.
+        scorecard._persist_score("overall", 83.0, "B", {"x": 2})
+        engine = _db.get_engine()
+        with engine.connect() as conn:
+            today_rows = conn.execute(sa.select(sa.func.count()).select_from(
+                _db.scorecard_history).where(
+                _db.scorecard_history.c.score_date == date.today().isoformat())
+            ).scalar()
+        assert today_rows == 1, f"{today_rows} rows for one scope on one day"
+    finally:
+        _db._ENGINE, _db._DATA_DIR = None, None
+
+
+def test_one_scorecard_row_per_scope_per_day_is_a_constraint(tmp_path):
+    """The uniqueness the delete-then-insert only emulates.
+
+    Two scorecard builds for the same scope racing on the same day would both
+    DELETE (finding nothing), then both INSERT, and the customer's trend arrow
+    would be computed from whichever row a LIMIT 1 happened to return. The
+    delete-then-insert cannot prevent that on its own; a unique index can.
+
+    Added because mutation testing found nothing pinned it: deleting the index
+    from the model left every other test in this file green, since the
+    delete-then-insert covers the single-writer case that the rest of them
+    exercise.
+
+    Fresh databases only. An install created before this change keeps the
+    hand-written table without the index, which is why the delete-then-insert
+    stays: it is the fallback that keeps those correct for one writer, and
+    test_scorecard_history_still_works_on_a_legacy_hand_written_table covers it.
+    """
+    import sqlalchemy as _sa
+    from finops.storage import db as _db
+
+    engine = _sa.create_engine(f"sqlite:///{tmp_path / 'fresh.db'}")
+    _db.metadata.create_all(engine)
+
+    row = dict(scope="overall", score_date="2026-08-14", total_score=81.0,
+               grade="B", details="{}", captured_at="2026-08-14T00:00:00Z")
+    with engine.begin() as conn:
+        conn.execute(_db.scorecard_history.insert().values(**row))
+
+    with pytest.raises(_sa.exc.IntegrityError):
+        with engine.begin() as conn:
+            conn.execute(_db.scorecard_history.insert().values(
+                **{**row, "total_score": 40.0, "grade": "F"}))
+
+    # A different scope on the same day, and the same scope on another day, are
+    # both legitimate and must still be accepted.
+    with engine.begin() as conn:
+        conn.execute(_db.scorecard_history.insert().values(**{**row, "scope": "team:platform"}))
+        conn.execute(_db.scorecard_history.insert().values(**{**row, "score_date": "2026-08-15"}))

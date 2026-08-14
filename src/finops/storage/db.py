@@ -546,6 +546,21 @@ Index("ix_ac_date_team",      attributed_costs.c.snapshot_date, attributed_costs
 Index("ix_ac_team",           attributed_costs.c.team)
 
 # anomalies: report sections filter by date and ack status
+scorecard_history = Table(
+    "scorecard_history", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("scope", String(128), nullable=False),
+    Column("score_date", String(10), nullable=False),      # YYYY-MM-DD
+    Column("total_score", Float, nullable=False),
+    Column("grade", String(4), nullable=False),
+    Column("details", Text, nullable=True),                # JSON
+    Column("captured_at", String(32), nullable=False),     # ISO timestamp
+    # One score per scope per day. The old code emulated this with a DELETE
+    # followed by an INSERT, which is a lost update waiting to happen and needed
+    # two statements to say what a constraint says once.
+    Index("ux_scorecard_scope_date", "scope", "score_date", unique=True),
+)
+
 Index("ix_anom_date",         anomalies.c.snapshot_date)
 Index("ix_anom_ack",          anomalies.c.acknowledged)
 # The tuple persist_anomaly dedups on, enforced by the database rather than by

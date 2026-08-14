@@ -639,32 +639,30 @@ def _get_score_trend(scope: str, current_score: float) -> tuple[str, float]:
     Returns (trend_label, delta_pts).
     """
     try:
-        from ..storage.db import get_engine
-        from sqlalchemy import text
+        from ..storage.db import get_engine, scorecard_history
+        from sqlalchemy import select
 
         engine = get_engine()
         week_ago = (date.today() - timedelta(days=7)).isoformat()
 
+        # No CREATE TABLE here. scorecard_history is declared on
+        # storage.db.metadata now, so create_all renders it for whichever dialect
+        # is connected and _run_sqlite_migrations can evolve it like every other
+        # table. It used to be a hand-written CREATE TABLE string in this file,
+        # duplicated between here and _persist_score, carrying AUTOINCREMENT,
+        # which PostgreSQL rejects as a syntax error. Both sites wrapped
+        # everything in a bare except that only log.debug'd, so on a shared-team
+        # Postgres deployment the table was never created, every read and write
+        # failed silently, and the scorecard reported "no_history" forever while
+        # looking perfectly healthy.
         with engine.connect() as conn:
-            # Create table if it doesn't exist
-            conn.execute(text("""
-                CREATE TABLE IF NOT EXISTS scorecard_history (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    scope TEXT NOT NULL,
-                    score_date TEXT NOT NULL,
-                    total_score REAL NOT NULL,
-                    grade TEXT NOT NULL,
-                    details TEXT,
-                    captured_at TEXT NOT NULL
-                )
-            """))
-            conn.commit()
-
-            row = conn.execute(text("""
-                SELECT total_score FROM scorecard_history
-                WHERE scope = :scope AND score_date <= :cutoff
-                ORDER BY score_date DESC LIMIT 1
-            """), {"scope": scope, "cutoff": week_ago}).fetchone()
+            row = conn.execute(
+                select(scorecard_history.c.total_score)
+                .where(scorecard_history.c.scope == scope)
+                .where(scorecard_history.c.score_date <= week_ago)
+                .order_by(scorecard_history.c.score_date.desc())
+                .limit(1)
+            ).fetchone()
 
         if not row:
             return "no_history", 0.0
@@ -683,39 +681,38 @@ def _get_score_trend(scope: str, current_score: float) -> tuple[str, float]:
 def _persist_score(scope: str, score: float, grade: str, details: dict) -> None:
     """Save today's score for trend tracking."""
     try:
-        from ..storage.db import get_engine
-        from sqlalchemy import text
+        from ..storage.db import get_engine, scorecard_history
 
         engine = get_engine()
         today = date.today().isoformat()
         now   = datetime.now(timezone.utc).isoformat()
 
-        with engine.connect() as conn:
-            conn.execute(text("""
-                CREATE TABLE IF NOT EXISTS scorecard_history (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    scope TEXT NOT NULL,
-                    score_date TEXT NOT NULL,
-                    total_score REAL NOT NULL,
-                    grade TEXT NOT NULL,
-                    details TEXT,
-                    captured_at TEXT NOT NULL
+        # Core statements against the declared table, so the dialect connected
+        # decides the SQL. The hand-written CREATE TABLE that used to live here
+        # (a second copy of the one in _get_score_trend) carried AUTOINCREMENT,
+        # which PostgreSQL rejects outright, and the bare except below meant a
+        # shared-team deployment simply never persisted a score and never said so.
+        #
+        # Delete-then-insert in ONE transaction, not two autocommits. The old
+        # version ran both on a plain connect() and committed at the end, so a
+        # concurrent writer could land between them; today the unique index on
+        # (scope, score_date) would reject that second write anyway, which is the
+        # point of having the constraint rather than emulating it.
+        with engine.begin() as conn:
+            conn.execute(
+                scorecard_history.delete().where(
+                    (scorecard_history.c.scope == scope)
+                    & (scorecard_history.c.score_date == today)
                 )
-            """))
-            # Upsert today's score
-            conn.execute(text("""
-                DELETE FROM scorecard_history
-                WHERE scope = :scope AND score_date = :today
-            """), {"scope": scope, "today": today})
-            conn.execute(text("""
-                INSERT INTO scorecard_history (scope, score_date, total_score, grade, details, captured_at)
-                VALUES (:scope, :today, :score, :grade, :details, :now)
-            """), {
-                "scope": scope, "today": today,
-                "score": round(score, 1), "grade": grade,
-                "details": json.dumps(details), "now": now,
-            })
-            conn.commit()
+            )
+            conn.execute(scorecard_history.insert().values(
+                scope=scope,
+                score_date=today,
+                total_score=round(score, 1),
+                grade=grade,
+                details=json.dumps(details),
+                captured_at=now,
+            ))
     except Exception as e:
         log.debug("Could not persist scorecard: %s", e)
 
