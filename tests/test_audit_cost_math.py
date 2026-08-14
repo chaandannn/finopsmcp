@@ -182,7 +182,6 @@ _PRICED_IDLE = {
     ([_AURORA_SERVERLESS_V2], 0.0),                    # the sum raises first
     ([_PRICED_IDLE, _AURORA_SERVERLESS_V2], 249.66),   # the sort raises first
 ])
-@pytest.mark.xfail(strict=True, reason="audit finding, not yet fixed. strict=True so that fixing it FAILS here until this marker is removed: the marker count is the work list.")
 def test_one_unpriced_finding_does_not_kill_the_deep_audit(monkeypatch, instances, priced_total):
     """Fails today. One Aurora Serverless v2 database with no connections makes
     run_deep_audit raise instead of return, and cli_scan calls it with no
@@ -216,6 +215,22 @@ def test_one_unpriced_finding_does_not_kill_the_deep_audit(monkeypatch, instance
         "unpriced findings must stay out of the money total, neither crashing it "
         "nor being silently counted as $0")
     assert report["total_estimated_annual_savings"] == pytest.approx(priced_total * 12)
+
+    # The count, not just the total, and this assertion is load-bearing.
+    #
+    # Mutation testing on 2026-08-14 found the assertions above cannot tell
+    # "excluded from the total" from "counted as $0": adding 0.0 to a sum changes
+    # nothing, so a fix that collapsed None into 0.0 passed every check here
+    # while quietly asserting that an un-pricable database is free. That is the
+    # softer version of the same defect, and the docstring above claims to
+    # forbid it, so something has to be able to see it.
+    #
+    # unpriced_findings is the only observable that separates the two. With it,
+    # both mutations fail.
+    assert report["unpriced_findings"] == len(instances) - (1 if priced_total else 0), (
+        f"the report says {report['unpriced_findings']} unpriced findings; "
+        f"an un-pricable finding must be counted as unpriced, not folded into "
+        f"the money total at $0")
 
     by_cat = report["by_category"]["rds_idle_no_connections"]
     assert by_cat["count"] == len(instances)
