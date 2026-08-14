@@ -179,15 +179,25 @@ def open_rightsizing_pr(
     # one caller will forget, and the one that forgot was the interactive path
     # where a human thought they were just clicking approve.
     #
-    # dry_run is exempt because it writes nothing, and because the disabled
-    # message itself tells the user to reach for it ("You can still preview
-    # changes without this: pass dry_run=True"). Gating the escape hatch the
-    # refusal recommends would be its own bug. patch_only IS gated: it skips
-    # git and GitHub but still edits files in the customer's working tree,
-    # which is the part that matters.
+    # dry_run and patch_only are BOTH exempt, and getting that wrong is how this
+    # comment earned its length. The gate's scope, stated in gate.py, is "may
+    # nable push a branch and open a pull request in our repositories at all" —
+    # an outward question about a remote. patch_only answers it by never asking:
+    # it returns before any git, subprocess or HTTP call in this function, into a
+    # directory the caller named explicitly with tf_dir.
+    #
+    # I first gated patch_only anyway, reasoning that it still edits the working
+    # tree. That made disabled_response() a liar: its own message offers
+    # patch_only as the way to proceed, so a user following the refusal verbatim
+    # hit the same refusal. Three pre-existing tests caught it. Gating the escape
+    # hatch the refusal recommends is exactly the bug the paragraph above warns
+    # about, committed one paragraph later.
+    #
+    # If patch_only should be gated too, that widens the switch past what gate.py
+    # documents and needs to be decided there, in one place, not inferred here.
     from .gate import disabled_response, remediation_pr_enabled
 
-    if not dry_run and not remediation_pr_enabled():
+    if not (dry_run or patch_only) and not remediation_pr_enabled():
         return disabled_response()
 
     engine = get_engine()
