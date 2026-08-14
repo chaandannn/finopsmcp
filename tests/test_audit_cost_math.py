@@ -443,7 +443,6 @@ def test_the_two_slice_engines_agree_on_what_total_means(monkeypatch):
 
 # ── 4. Realized savings must reach the effective-rate tier ────────────────────
 
-@pytest.mark.xfail(strict=True, reason="audit finding, not yet fixed. strict=True so that fixing it FAILS here until this marker is removed: the marker count is the work list.")
 def test_realized_savings_uses_the_customers_effective_rate(monkeypatch):
     """Fails today. measure._effective_rate returns `adjusted.effective`, and
     AdjustedSavings has no such field; it is `effective_savings`. The
@@ -670,7 +669,6 @@ _COMMITMENT_DATA = {
 }
 
 
-@pytest.mark.xfail(strict=True, reason="audit finding, not yet fixed. strict=True so that fixing it FAILS here until this marker is removed: the marker count is the work list.")
 def test_commitment_dimension_publishes_the_savings_build_scorecard_reads():
     """Fails today. _score_commitment_coverage reads potential_savings_usd into a
     local and writes only coverage_pct and on_demand_spend_usd into its metadata,
@@ -687,7 +685,6 @@ def test_commitment_dimension_publishes_the_savings_build_scorecard_reads():
         f"potential_savings_usd from here and gets 0")
 
 
-@pytest.mark.xfail(strict=True, reason="audit finding, not yet fixed. strict=True so that fixing it FAILS here until this marker is removed: the marker count is the work list.")
 def test_scorecard_recoverable_total_includes_the_commitment_opportunity():
     """Fails today, one level up, and this is the sentence the customer reads. An
     account at 10% coverage with a $16,000/mo Savings Plan opportunity should be
@@ -766,7 +763,6 @@ def test_rds_rightsizing_prices_on_the_same_basis_as_its_ec2_sibling(monkeypatch
 
 # ── 9. One price for one load balancer ───────────────────────────────────────
 
-@pytest.mark.xfail(strict=True, reason="audit finding, not yet fixed. strict=True so that fixing it FAILS here until this marker is removed: the marker count is the work list.")
 def test_idle_load_balancer_has_a_single_price(monkeypatch):
     """Fails today. analyzers/waste.py prices an idle ALB at _ALB_HOURLY (0.008)
     * 730 = $5.84/mo; cleanup/idle.py prices the same resource at $16.20/mo and

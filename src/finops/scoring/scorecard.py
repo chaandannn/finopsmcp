@@ -70,6 +70,43 @@ def _clamp(v: float, lo: float = 0.0, hi: float = 100.0) -> float:
     return max(lo, min(hi, v))
 
 
+# Metadata keys one dimension publishes and build_scorecard reads back out. A
+# dimension's metadata is otherwise free-form and local to that dimension; these
+# five are the only cross-boundary contract, and they are the only ones where a
+# producer that forgets to publish costs the customer a number.
+#
+# The cost of not naming them: _score_commitment_coverage computed
+# potential_savings_usd into a local, never wrote it to meta, and build_scorecard
+# read it back with .get(key, 0). A dict default cannot tell "never published"
+# from "genuinely zero", so an account at 10% coverage with a $16,000/mo Savings
+# Plan opportunity was graded worst on commitments and told it could recover $0,
+# for as long as that code has existed, with nothing red anywhere.
+_CROSS_DIMENSION_KEYS: dict[str, str] = {
+    "total_waste_usd": "waste_reduction",
+    "potential_savings_usd": "commitment_coverage",
+}
+
+
+def _require_published(dim: "DimensionScore", key: str) -> float:
+    """Read a cross-dimension metadata key, refusing to invent a zero for it.
+
+    A dimension that could not be computed says so with data_available=False and
+    contributes nothing, which is a real answer. A dimension that ran and then
+    failed to publish its key is a wiring bug, and silently scoring it as $0 is
+    how this one survived. Absent-but-available is loud; everything else keeps
+    the scorecard building, because a partial score beats no score.
+    """
+    if key in dim.metadata:
+        return float(dim.metadata[key] or 0)
+    if not dim.data_available:
+        return 0.0
+    raise KeyError(
+        f"dimension {dim.name!r} ran with data available but never published "
+        f"{key!r}, which build_scorecard needs for the recoverable total. "
+        f"It published: {sorted(dim.metadata)}"
+    )
+
+
 # ── Score result dataclasses ──────────────────────────────────────────────────
 
 @dataclass
@@ -360,6 +397,19 @@ def _score_commitment_coverage(
     potential_savings = commitment_data.get("potential_savings_usd", 0)
     meta["coverage_pct"] = coverage_pct
     meta["on_demand_spend_usd"] = on_demand_spend
+    # build_scorecard reads this key back out to compute the headline
+    # "Estimated $X/month recoverable". It was computed into the local above and
+    # never published, so the read always found the .get() default and the
+    # commitment component of the recoverable total was silently zero: an account
+    # at 10% coverage with a $16,000/mo Savings Plan opportunity was graded worst
+    # on commitments and then told it could recover $0. The dollar figure did
+    # survive verbatim in the actions text below, which is why the report named
+    # the problem, priced it, and still totalled it at nothing.
+    #
+    # This is why _CROSS_DIMENSION_KEYS exists below: .get(key, 0) cannot tell
+    # "the producer never wrote it" from "the producer wrote zero", so nothing
+    # about this failure was observable from either side.
+    meta["potential_savings_usd"] = potential_savings
 
     # 70% coverage = 100 score; 0% = 0; penalise for high on-demand waste
     raw = _clamp(coverage_pct / 70 * 100)
@@ -695,10 +745,14 @@ def build_scorecard(
     # Trend
     trend, delta = _get_score_trend(scope, total)
 
-    # Potential savings
+    # Potential savings. Both keys are read across a dimension boundary, so both
+    # go through _require_published: a .get() default here quietly turns a
+    # producer that forgot to publish into a $0 component, which is exactly how
+    # the commitment opportunity vanished from this total. A missing key now says
+    # so instead of costing the customer the sentence.
     potential = (
-        waste.metadata.get("total_waste_usd", 0)
-        + commits.metadata.get("potential_savings_usd", 0) * 0.7
+        _require_published(waste, "total_waste_usd")
+        + _require_published(commits, "potential_savings_usd") * 0.7
     )
 
     # Top wins — pick the 3 lowest-scoring dimensions' top action

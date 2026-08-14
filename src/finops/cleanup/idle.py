@@ -26,7 +26,9 @@ _EBS_GP2_PER_GB_MONTH = 0.10
 _EBS_IO1_PER_GB_MONTH = 0.125
 _EIP_PER_MONTH = 3.60
 _SNAPSHOT_PER_GB_MONTH = 0.05
-_ALB_PER_MONTH = 16.20  # ~$0.0225/hr LCU aside
+# Re-exported from aws_prices so analyzers/waste.py and this module cannot
+# hold two different prices for one load balancer, which they did.
+from ..aws_prices import ALB_PER_MONTH as _ALB_PER_MONTH
 
 _EBS_PRICE = {
     "gp3": _EBS_GP3_PER_GB_MONTH,

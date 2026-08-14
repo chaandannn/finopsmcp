@@ -1366,9 +1366,12 @@ def scan_all_regions_rds_idle(regions: list[str] | None = None) -> list[dict]:
 
 # ── Load balancer waste ───────────────────────────────────────────────────────
 
-_ALB_HOURLY = 0.008
-_NLB_HOURLY = 0.008
-_CLB_HOURLY = 0.025
+# Single-sourced in aws_prices. These used to be local literals reading 0.008,
+# the LCU-hour rate rather than the hourly base charge, which priced every idle
+# ALB at $5.84/mo against cleanup/idle.py's $16.20 for the same resource. The
+# names are gone rather than corrected, because a corrected copy is still a copy
+# and the next drift would be just as silent as the last one.
+from ..aws_prices import ALB_PER_MONTH, CLB_PER_MONTH, NLB_PER_MONTH
 
 
 def check_idle_load_balancers(
@@ -1430,8 +1433,7 @@ def check_idle_load_balancers(
                 if total_requests >= request_threshold:
                     continue
 
-                hourly = _ALB_HOURLY if lb_type == "application" else _NLB_HOURLY
-                monthly_cost = hourly * 730
+                monthly_cost = ALB_PER_MONTH if lb_type == "application" else NLB_PER_MONTH
 
                 findings.append({
                     "resource_id": lb_arn,
@@ -1480,7 +1482,7 @@ def check_idle_load_balancers(
                 if total_requests >= request_threshold:
                     continue
 
-                monthly_cost = _CLB_HOURLY * 730
+                monthly_cost = CLB_PER_MONTH
 
                 findings.append({
                     "resource_id": lb_name,
