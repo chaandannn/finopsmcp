@@ -379,17 +379,52 @@ _ACCOUNT = _TOP + _TAIL
 _GRAND_TOTAL = 400000.0
 
 
-@pytest.mark.xfail(strict=True, reason="audit finding, not yet fixed. strict=True so that fixing it FAILS here until this marker is removed: the marker count is the work list.")
+def _fake_athena_factory():
+    """An Athena that answers the SQL it is GIVEN, not a solution we assumed.
+
+    The first version of this fake returned the page and, separately, a total for
+    any ungrouped query, on the assumption that a correct implementation would
+    issue a second ungrouped SUM. The fix that actually shipped does it in one
+    query with `SUM(SUM(cost)) OVER ()`, which Athena computes over every group
+    BEFORE the LIMIT applies, so the total rides along on a scan already being
+    paid for. Verified against SQLite, which shares Presto's window-vs-LIMIT
+    ordering: 3 rows back, visible sum $30,000, grand_total $400,000 on each row.
+
+    Against the old fake, correct code failed: the fake dropped the grand_total
+    column the SQL explicitly selects, so run_slice_cur found nothing to read and
+    fell back to the page sum. The fake was wrong, not the code.
+
+    This version parses the request. Grouped-with-window gets the window column;
+    grouped-without gets none, which is exactly what makes deleting the window
+    function fail this test instead of quietly passing.
+    """
+    def _fake_athena(sql, timeout_secs=30):
+        if "GROUP BY" not in sql:
+            return [{"metric": str(_GRAND_TOTAL)}]
+        rows = [{"d_resource_id": rid, "metric": str(cost)} for rid, cost in _TOP]
+        if "OVER ()" in sql and "grand_total" in sql:
+            for r in rows:
+                r["grand_total"] = str(_GRAND_TOTAL)
+        return rows
+    return _fake_athena
+
+
 def test_cur_slice_total_is_the_grand_total_not_the_visible_page(monkeypatch):
-    """Fails today. build_cur_sql appends LIMIT n (default 50) and run_slice_cur
-    then accumulates `total` over only the rows that came back, so slicing a
-    $400,000/mo account by resource_id reports the visible page's $30,000 as the
-    account total. The in-memory FOCUS path does the opposite and says so in a
+    """The account total, never the page total.
+
+    The original defect: build_cur_sql appended LIMIT n (default 50) and
+    run_slice_cur accumulated `total` over only the returned rows, so slicing a
+    $400,000/mo account by resource_id reported the visible page's $30,000 as the
+    account total. The in-memory FOCUS path did the opposite and said so in a
     comment: "Grand total over the kept set (independent of grouping/limit)".
     Same field, same tool, two meanings, and swapping the group-by from
-    resource_id to ResourceId routes the identical question to the other engine.
-    The server instructions mandate leading with "the headline number first ($X
-    total)", so the model states $30,000 as what the account spent."""
+    resource_id to ResourceId routed the identical question to the other engine.
+
+    That matters because the server instructions mandate leading with "the
+    headline number first ($X total)", so the model stated $30,000 as what the
+    account spent: not a rounding error, an answer off by 13x on the one number
+    the customer reads first.
+    """
     from finops.slice import cur_engine, parse_spec
 
     for var, val in (("CUR_S3_BUCKET", "cur-bucket"),
@@ -398,17 +433,7 @@ def test_cur_slice_total_is_the_grand_total_not_the_visible_page(monkeypatch):
                      ("CUR_ATHENA_RESULTS_BUCKET", "res-bucket")):
         monkeypatch.setenv(var, val)
 
-    top_three = [{"d_resource_id": rid, "metric": str(cost)} for rid, cost in _TOP]
-
-    def _fake_athena(sql, timeout_secs=30):
-        """The Athena boundary. A grouped, limited query returns the page exactly
-        as Athena would. An ungrouped SUM, which a correct implementation has to
-        issue to know the account total, returns the real total."""
-        if "GROUP BY" in sql:
-            return list(top_three)
-        return [{"metric": str(_GRAND_TOTAL)}]
-
-    monkeypatch.setattr(cur_engine, "_athena_query", _fake_athena)
+    monkeypatch.setattr(cur_engine, "_athena_query", _fake_athena_factory())
 
     spec = parse_spec({"dimensions": ["resource_id"], "metric": "BilledCost", "limit": 3})
     result = cur_engine.run_slice_cur(spec, date(2026, 5, 1), date(2026, 5, 31))
@@ -420,7 +445,6 @@ def test_cur_slice_total_is_the_grand_total_not_the_visible_page(monkeypatch):
         f"shown, not the ${_GRAND_TOTAL:,.2f} the account actually spent")
 
 
-@pytest.mark.xfail(strict=True, reason="audit finding, not yet fixed. strict=True so that fixing it FAILS here until this marker is removed: the marker count is the work list.")
 def test_the_two_slice_engines_agree_on_what_total_means(monkeypatch):
     """Fails today, and is the same defect stated as the contract it breaks: one
     question, one answer. `slice_costs` picks the CUR engine or the in-memory
@@ -436,12 +460,7 @@ def test_the_two_slice_engines_agree_on_what_total_means(monkeypatch):
                      ("CUR_ATHENA_RESULTS_BUCKET", "res-bucket")):
         monkeypatch.setenv(var, val)
 
-    monkeypatch.setattr(
-        cur_engine, "_athena_query",
-        lambda sql, timeout_secs=30: (
-            [{"d_resource_id": rid, "metric": str(c)} for rid, c in _TOP]
-            if "GROUP BY" in sql else [{"metric": str(_GRAND_TOTAL)}]),
-    )
+    monkeypatch.setattr(cur_engine, "_athena_query", _fake_athena_factory())
 
     cur_result = cur_engine.run_slice_cur(
         parse_spec({"dimensions": ["resource_id"], "metric": "BilledCost", "limit": 3}),
