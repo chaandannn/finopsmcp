@@ -254,7 +254,6 @@ class _FakeSession:
 
 # ── 1. provider probing ──────────────────────────────────────────────────────
 
-@pytest.mark.xfail(strict=True, reason="audit finding, not yet fixed. strict=True so that fixing it FAILS here until this marker is removed: the marker count is the work list.")
 async def test_active_probes_providers_concurrently(monkeypatch):
     """RED against today's code.
 
@@ -285,7 +284,6 @@ async def test_active_probes_providers_concurrently(monkeypatch):
     )
 
 
-@pytest.mark.xfail(strict=True, reason="audit finding, not yet fixed. strict=True so that fixing it FAILS here until this marker is removed: the marker count is the work list.")
 @pytest.mark.parametrize("provider", ["azure", "gcp"])
 async def test_is_configured_leaves_the_event_loop_free(monkeypatch, provider):
     """RED against today's code.
@@ -316,7 +314,6 @@ async def test_is_configured_leaves_the_event_loop_free(monkeypatch, provider):
 
 # ── 2. AWS: blocking STS defeats the deadlines built around it ───────────────
 
-@pytest.mark.xfail(strict=True, reason="audit finding, not yet fixed. strict=True so that fixing it FAILS here until this marker is removed: the marker count is the work list.")
 async def test_provider_deadline_fires_while_assume_role_blocks(monkeypatch, isolated_cache):
     """RED against today's code.
 
@@ -356,7 +353,6 @@ async def test_provider_deadline_fires_while_assume_role_blocks(monkeypatch, iso
     )
 
 
-@pytest.mark.xfail(strict=True, reason="audit finding, not yet fixed. strict=True so that fixing it FAILS here until this marker is removed: the marker count is the work list.")
 async def test_check_connector_health_deadline_can_actually_fire(monkeypatch, isolated_db):
     """RED against today's code.
 
@@ -394,7 +390,6 @@ async def test_check_connector_health_deadline_can_actually_fire(monkeypatch, is
 
 # ── 3. the engine singleton is published before it is usable ─────────────────
 
-@pytest.mark.xfail(strict=True, reason="audit finding, not yet fixed. strict=True so that fixing it FAILS here until this marker is removed: the marker count is the work list.")
 def test_get_engine_never_publishes_a_half_built_engine(isolated_db):
     """RED against today's code.
 

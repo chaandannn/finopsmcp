@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import os
 import stat
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -26,6 +27,11 @@ log = logging.getLogger(__name__)
 
 _DATA_DIR: Path | None = None
 _ENGINE: Engine | None = None
+# Held only while an engine is being built. get_engine used to assign _ENGINE and
+# THEN run create_all and the migrations, so a concurrent caller took the
+# `if _ENGINE is not None` fast path and got an engine whose tables did not exist
+# yet. See get_engine for what that cost.
+_ENGINE_LOCK = threading.Lock()
 
 metadata = MetaData()
 
@@ -670,23 +676,53 @@ def get_engine() -> Engine:
       Credentials never leave the machine; only the DB connection is shared.
     """
     global _ENGINE
-    if _ENGINE is not None:
-        return _ENGINE
+    engine = _ENGINE
+    if engine is not None:
+        return engine
 
+    # Build into a LOCAL and publish only at the end.
+    #
+    # This used to assign _ENGINE first and run metadata.create_all and the
+    # migrations after, with no lock and no second publish. A concurrent caller
+    # took the fast path above, got an engine whose schema did not exist yet, and
+    # died on "no such table: cost_snapshots".
+    #
+    # Every threaded host reaches this on first run: the ThreadingHTTPServer
+    # behind `finops serve`, the Slack Bolt listener pool, the enterprise box's
+    # prewarm thread next to its uvicorn thread, and any asyncio.to_thread
+    # fan-out. It is a first-run crash at exactly the moment the activation data
+    # says people give up, and it is invisible on a second run because the file
+    # already has its schema.
+    #
+    # The lock also stops two threads building two engines over one SQLite file,
+    # which is not merely wasteful: both would run create_all and the migrations
+    # concurrently against the same database.
+    with _ENGINE_LOCK:
+        # Re-check inside the lock: another thread may have finished while this
+        # one waited, and it published a fully built engine.
+        if _ENGINE is not None:
+            return _ENGINE
+        engine = _build_engine()
+        _ENGINE = engine          # the ONLY publish, and it is last
+        return engine
+
+
+def _build_engine() -> Engine:
+    """Create the engine and bring its schema up to date. Never publishes."""
     database_url = os.environ.get("DATABASE_URL", "")
 
     if database_url and _is_postgres(database_url):
         # Shared Postgres mode
         # psycopg2 or asyncpg must be installed: pip install finops-mcp[postgres]
-        _ENGINE = create_engine(
+        engine = create_engine(
             database_url,
             pool_pre_ping=True,          # detect stale connections
             pool_size=5,
             max_overflow=10,
             connect_args={"connect_timeout": 10},
         )
-        metadata.create_all(_ENGINE)
-        _run_sqlite_migrations(_ENGINE)
+        metadata.create_all(engine)
+        _run_sqlite_migrations(engine)
     else:
         # Local SQLite mode (default)
         # Priority: FINOPS_DB_PATH > FINOPS_PROFILE > default ~/.finops/finops.db
@@ -695,7 +731,7 @@ def get_engine() -> Engine:
             db_path = Path(db_path_env).expanduser()
         else:
             db_path = data_dir() / "finops.db"
-        _ENGINE = create_engine(
+        engine = create_engine(
             f"sqlite:///{db_path}",
             connect_args={
                 "check_same_thread": False,
@@ -705,7 +741,7 @@ def get_engine() -> Engine:
             },
         )
 
-        @event.listens_for(_ENGINE, "connect")
+        @event.listens_for(engine, "connect")
         def _set_sqlite_pragmas(dbapi_conn, _connection_record):
             """Apply WAL mode and busy_timeout on every new connection."""
             cursor = dbapi_conn.cursor()
@@ -714,8 +750,8 @@ def get_engine() -> Engine:
             cursor.execute("PRAGMA foreign_keys=ON")
             cursor.close()
 
-        metadata.create_all(_ENGINE)
-        _run_sqlite_migrations(_ENGINE)
+        metadata.create_all(engine)
+        _run_sqlite_migrations(engine)
         db_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
         # WAL mode creates -wal/-shm sidecars under the process umask; they
         # briefly hold recently written rows, so clamp them too when present.
@@ -724,7 +760,7 @@ def get_engine() -> Engine:
             if _side.exists():
                 _side.chmod(stat.S_IRUSR | stat.S_IWUSR)
 
-    return _ENGINE
+    return engine
 
 
 def _add_column_ddl(engine: Engine, table: str, column: str) -> str:

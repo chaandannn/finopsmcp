@@ -205,6 +205,10 @@ class AWSConnector(BaseConnector):
             sts = boto3.client("sts")
         return sts.get_caller_identity()["Account"]
 
+    def _client_and_account(self, role_arn: str | None) -> tuple[Any, str]:
+        """Both blocking STS round-trips in one call, so one thread hop covers them."""
+        return self._make_client(role_arn), self._account_id(role_arn)
+
     def _build_summary(
         self,
         account_id: str,
@@ -307,8 +311,22 @@ class AWSConnector(BaseConnector):
 
         _had_results = False
         for role_arn in targets:
-            ce = self._make_client(role_arn)
-            account_id = self._account_id(role_arn)
+            # to_thread. Both of these are synchronous botocore calls and both
+            # reach the network: _make_client does sts:AssumeRole when a role ARN
+            # is configured, _account_id does sts:GetCallerIdentity. The CE
+            # pagination below was already threaded; these two were not, so they
+            # ran on the event loop before it.
+            #
+            # That made _fetch_costs_cached's per-provider deadline decorative.
+            # asyncio cannot cancel a thread it is running on, so the timeout
+            # callback only fires once the blocking call has returned by itself,
+            # and these run on plain botocore defaults (60s connect, 60s read,
+            # plus retries) rather than the 5s/15s config the Cost Explorer
+            # client gets. A user with three role ARNs and an STS that is not
+            # answering waits minutes on a deadline advertised in seconds, with
+            # every other provider in the same gather frozen behind them.
+            ce, account_id = await asyncio.to_thread(
+                self._client_and_account, role_arn)
 
             kwargs: dict[str, Any] = dict(
                 TimePeriod={
@@ -509,5 +527,14 @@ class AWSConnector(BaseConnector):
                 {"id": arn.split(":")[4], "name": arn.split(":")[4]}
                 for arn in self._role_arns
             ]
-        account_id = self._account_id()
+        # to_thread: _account_id calls sts:GetCallerIdentity synchronously, and
+        # check_connector_health wraps THIS coroutine in
+        # asyncio.wait_for(..., timeout=10.0) and reports "Timeout (>10s),
+        # credentials may be valid but API is slow" when it trips. It could not
+        # trip: with no await in the body the coroutine never suspends, so the
+        # 10s callback never got the loop. Against an STS that is not answering,
+        # the diagnostic tool a stuck user is told to run hung for minutes and
+        # then reported healthy: True with a response time in the hundreds of
+        # thousands of milliseconds.
+        account_id = await asyncio.to_thread(self._account_id)
         return [{"id": account_id, "name": account_id}]
