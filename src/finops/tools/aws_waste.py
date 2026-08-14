@@ -1906,7 +1906,7 @@ async def audit_cloudwatch_metric_cardinality(
         - "Find CloudWatch metrics costing us money"
     """
     if err := _srv.require_role("analyst"):
-        return err
+        return _srv.deny_text(err)
     try:
         from ..recommendations.cloudwatch_cardinality import audit_cloudwatch_metric_cardinality as _audit
         aws = _srv.CLOUD_CONNECTORS.get("aws")
@@ -1983,7 +1983,7 @@ async def audit_cloudwatch_orphaned_alarms(
         - "How much are we wasting on CloudWatch alarms?"
     """
     if err := _srv.require_role("analyst"):
-        return err
+        return _srv.deny_text(err)
     try:
         from ..recommendations.cloudwatch_alarms import audit_cloudwatch_orphaned_alarms as _audit
         aws = _srv.CLOUD_CONNECTORS.get("aws")
@@ -2063,7 +2063,7 @@ async def audit_cloudwatch_logs_ia_opportunities(
         - "How much can we save on CloudWatch log ingestion?"
     """
     if err := _srv.require_role("analyst"):
-        return err
+        return _srv.deny_text(err)
     try:
         from ..recommendations.cloudwatch_logs_ia import audit_cloudwatch_logs_ia_opportunities as _audit
         aws = _srv.CLOUD_CONNECTORS.get("aws")

@@ -31,6 +31,7 @@ load_vault_to_env()
 
 from .license import _UPGRADE_URL, get_status, require_pro
 from .auth.rbac import (
+    deny_text,
     resolve_identity_from_env, set_current_identity,
     require_role, current_identity, enforce_team_scope, enforce_provider_scope,
     create_key, list_keys, revoke_key, audit,
@@ -316,11 +317,33 @@ def _instrumented_tool(*dargs, **dkwargs):
 
     def _wrap(fn):
         import functools
-        if fn.__name__ in _EXTRA_TOOLS and not _REGISTER_EXTRAS:
-            # Not registered with the MCP client (zero context cost), but the
-            # function stays importable and callable for internal callers/tests.
-            return fn
-
+        # There used to be an early `return fn` here for _EXTRA_TOOLS, which
+        # skipped mcp.tool() entirely so those 26 were never registered at all.
+        #
+        # Two hiding mechanisms existed for one goal, and only one of them kept
+        # the promise both are described by. _SurfacedFastMCP.list_tools filters
+        # through tool_surface.advertise and its docstring says "the call path
+        # resolves against the full registry, so a hidden tool called by name
+        # still runs". True for tools advertise() hides. False for these,
+        # because an unregistered tool is not in the registry to resolve
+        # against, so calling one by name returned:
+        #
+        #     ToolError: Unknown tool: audit_public_ipv4_addresses
+        #
+        # And the model was actively steered into that. capabilities.CATALOG
+        # names 11 of them, and the server instructions tell the model the map
+        # is authoritative: "Never tell a user a capability is missing because
+        # its tool is not in this list."
+        #
+        # Registering them costs nothing that the gate was protecting. Measured
+        # with FINOPS_ALL_TOOLS unset: advertise() already returns False for all
+        # 26 on the tier gate, so the advertised list stays at 17 either way.
+        # The gate was buying zero tokens and paying for it with a dead
+        # capability map.
+        #
+        # _EXTRA_TOOLS itself stays: it is still the tier-driven list of what to
+        # keep out of tools/list, now enforced in the ONE place that decides
+        # what is advertised rather than in two places that disagree.
         @functools.wraps(fn)
         async def _inner(*args, **kwargs):
             import time as _time
@@ -329,6 +352,36 @@ def _instrumented_tool(*dargs, **dkwargs):
             _telemetry.record_tool_call(fn.__name__)
             _t0 = _time.monotonic()
             _audit = _get_audit_logger()
+
+            # Demo chokepoint. In demo mode no MCP tool call may reach real
+            # credentials, and this is the one place every registered tool
+            # passes through.
+            #
+            # FINOPS_DEMO_FORCE exists precisely so a demo runs on a machine
+            # that already has real credentials, which is every sales laptop.
+            # Four TIER1 cost tools had no is_demo() branch, so on a customer
+            # screen-share the operator's own spend was fetched and rendered
+            # next to StreamCo's fabricated numbers, and each real query billed
+            # the operator per Cost Explorer request.
+            #
+            # The Slack agent solved this at slack_bot.bridge.execute_bridge_tool
+            # and the MCP dispatch path never got the equivalent. Same helper,
+            # same contract: demo_bridge_result returns None for tools that are
+            # already demo-safe (they serve the fixture themselves), demo data
+            # for the ones it knows, and a placeholder that names the sample and
+            # leaks nothing for anything else.
+            #
+            # Per-tool is_demo() branches were the alternative and are how this
+            # happened: 60-odd tools, each needing to remember, and four did not.
+            try:
+                from .demo_data import demo_bridge_result, is_demo
+                if is_demo():
+                    _demo = demo_bridge_result(fn.__name__, kwargs or {})
+                    if _demo is not None:
+                        return _demo
+            except Exception as _exc:   # never let the guard break a real call
+                log.debug("demo guard skipped for %s: %s", fn.__name__, _exc)
+
             try:
                 # Tools may be sync or async. Only await coroutines/awaitables,
                 # otherwise sync tools (whoami, *_api_key) raise

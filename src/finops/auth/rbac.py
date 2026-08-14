@@ -133,6 +133,31 @@ def _auth_required() -> bool:
     return shared and want_auth
 
 
+def deny_text(err: dict) -> str:
+    """Render a guard dict as the sentence a `-> str` tool should return.
+
+    Guards return dicts, and a tool annotated `-> str` cannot emit one: FastMCP
+    validates the return against the tool's own output schema and raises
+    ToolError. So on seven tools the denial path was DEAD. A viewer in
+    shared-Postgres mode who asked for a cost audit got a pydantic traceback
+    instead of "this needs the analyst role, ask an admin", and a free user who
+    tripped require_pro got a crash where the upgrade nudge belonged.
+
+    Nothing caught it because the guard is only reachable with an identity
+    attached, which single-user mode never does, and because the failure is a
+    raised exception in a path no test drove.
+
+    The `message` key is already written for a human, so the sentence is the
+    dict's own message. The error code follows it because
+    tests and log greps key on it and a caller cannot see it otherwise.
+    """
+    msg = str(err.get("message") or "").strip()
+    code = str(err.get("error") or "").strip()
+    if msg and code:
+        return f"{msg} [{code}]"
+    return msg or code or str(err)
+
+
 def require_role(min_role: str, ident: Identity | None = None) -> dict | None:
     """
     Gate a tool call by minimum role. Returns an error dict if denied, None if allowed.
@@ -140,9 +165,17 @@ def require_role(min_role: str, ident: Identity | None = None) -> dict | None:
     In permissive (single-user) mode this always returns None.
     Pass `ident` explicitly or let it fall back to current_identity().
 
-    Usage:
-        if err := require_role("analyst"):
-            return err
+    Usage, and the annotation decides which form:
+        async def t(...) -> dict:
+            if err := require_role("analyst"):
+                return err
+        async def t(...) -> str:
+            if err := require_role("analyst"):
+                return deny_text(err)
+
+    `return err` from a `-> str` tool raises ToolError at dispatch instead of
+    answering the user. This docstring used to show only the dict form, which is
+    how seven `-> str` tools came to have a dead denial path.
     """
     ident = ident or current_identity()
 

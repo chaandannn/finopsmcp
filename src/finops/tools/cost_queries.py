@@ -1752,7 +1752,7 @@ async def run_full_cost_audit(
 
     """
     if err := _srv.require_role("analyst"):
-        return err
+        return _srv.deny_text(err)
 
     aws = _srv.CLOUD_CONNECTORS.get("aws")
     if aws is None or not await aws.is_configured():

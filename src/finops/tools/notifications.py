@@ -616,7 +616,7 @@ async def export_cost_report_csv(
     import pathlib
 
     if err := _srv.require_role("analyst"):
-        return err
+        return _srv.deny_text(err)
 
     aws = _srv.CLOUD_CONNECTORS.get("aws")
     if aws is None or not await aws.is_configured():
@@ -743,7 +743,7 @@ async def push_to_n8n(
 
     """
     if (err := _srv.require_pro("alerts")):
-        return err
+        return _srv.deny_text(err)
     import time
     from ..connectors.saas.n8n import N8nConnector
 
@@ -835,7 +835,7 @@ async def publish_cost_report_to_notion(
 
     """
     if err := _srv.require_role("analyst"):
-        return err
+        return _srv.deny_text(err)
 
     from ..connectors.saas.notion import NotionConnector
     notion = NotionConnector()

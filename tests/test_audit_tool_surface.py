@@ -128,7 +128,6 @@ def _viewer():
 # reaches the user: FastMCP raises ToolError on the way out.
 
 @pytest.mark.parametrize("tool", ["run_full_cost_audit", "export_cost_report_csv"])
-@pytest.mark.xfail(strict=True, reason="audit finding, not yet fixed. strict=True so that fixing it FAILS here until this marker is removed: the marker count is the work list.")
 def test_a_denied_tool_answers_the_user_instead_of_crashing_dispatch(isolated_db, tool):
     """FAILS NOW, the bug is real.
 
@@ -195,7 +194,6 @@ def _gated_extras():
     return found
 
 
-@pytest.mark.xfail(strict=True, reason="audit finding, not yet fixed. strict=True so that fixing it FAILS here until this marker is removed: the marker count is the work list.")
 def test_no_tool_returns_a_guard_shape_its_own_output_schema_rejects():
     """FAILS NOW, the bug is real.
 
@@ -241,7 +239,6 @@ def test_no_tool_returns_a_guard_shape_its_own_output_schema_rejects():
 # 2. The capability map names tools the registry does not hold
 # ══════════════════════════════════════════════════════════════════════════════
 
-@pytest.mark.xfail(strict=True, reason="audit finding, not yet fixed. strict=True so that fixing it FAILS here until this marker is removed: the marker count is the work list.")
 def test_the_capability_map_only_names_tools_the_registry_holds():
     """FAILS NOW, the bug is real.
 
@@ -457,7 +454,6 @@ def demo_with_tripwire_connectors(monkeypatch):
     "get_top_cost_drivers",
     "get_cost_trends",
 ])
-@pytest.mark.xfail(strict=True, reason="audit finding, not yet fixed. strict=True so that fixing it FAILS here until this marker is removed: the marker count is the work list.")
 def test_demo_mode_never_reaches_a_live_connector(
     isolated_db, demo_with_tripwire_connectors, tool
 ):
@@ -608,22 +604,46 @@ def test_the_host_argument_cannot_bypass_the_expose_optin(
     )
 
 
-@pytest.mark.xfail(strict=True, reason="audit finding, not yet fixed. strict=True so that fixing it FAILS here until this marker is removed: the marker count is the work list.")
 def test_a_bind_beyond_loopback_always_carries_the_exposure_warning(
     isolated_db, fake_server_web
 ):
-    """FAILS NOW, the bug is real.
+    """Whenever the listener is not on loopback, the response has to say so.
 
-    The warning is gated on `bind_host == "0.0.0.0"`, a string compare rather
-    than a question about the address. "::" is the IPv6 all-interfaces address
-    and binds just as wide, so the response carries no exposure_warning and no
-    share_url: the user is told the dashboard is running and never told it is
-    reachable from the network in cleartext.
+    The original defect: the warning was gated on `bind_host == "0.0.0.0"`, a
+    string compare rather than a question about the address. "::" is the IPv6
+    all-interfaces address and binds just as wide, so a "::" bind carried no
+    exposure_warning and no share_url. The user was told the dashboard was
+    running and never told it was reachable from the network in cleartext.
+
+    This test was written to drive that through host="::", and it now SKIPS
+    instead, because the sibling fix closed the door earlier in the flow: expose
+    became the only gate, so "::" without expose binds 127.0.0.1 and there is
+    correctly nothing to warn about. A permanent skip is a bad outcome for a
+    work-list entry. It is not a pass and not a failure, so the marker would have
+    sat there forever announcing unfinished work that was finished.
+
+    Rewritten to assert the invariant its name claims rather than one route to
+    it. expose=True is now the only way past loopback, so that is where the
+    warning has to appear, and the check is on the BOUND ADDRESS rather than on
+    any particular literal.
     """
-    result = _call("start_dashboard_server", {"port": 8099, "host": "::"})
+    result = _call("start_dashboard_server", {"port": 8099, "expose": True})
     bound = fake_server_web.bound.get("host")
-    if bound in ("127.0.0.1", "::1", "localhost"):
-        pytest.skip("host no longer reaches the bind; covered by the test above")
-    assert "exposure_warning" in _text(result), (
-        f"bound to {bound!r}, which is every interface, with no exposure warning"
+    body = _text(result)
+
+    assert bound not in ("127.0.0.1", "::1", "localhost", ""), (
+        f"expose=True still bound {bound!r}; this test can no longer reach a "
+        f"non-loopback bind and proves nothing"
+    )
+    assert "exposure_warning" in body, (
+        f"bound to {bound!r}, which is not loopback, with no exposure warning"
+    )
+    assert "cleartext" in body, (
+        "the warning does not mention that the password and session cookie "
+        "travel in plain HTTP, which is the part that decides whether a user "
+        "should do this on their network"
+    )
+    assert "share_url" in body, (
+        "no share_url, so a user who deliberately exposed the dashboard is not "
+        "told the address other machines actually reach it on"
     )
