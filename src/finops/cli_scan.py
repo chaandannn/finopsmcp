@@ -752,8 +752,13 @@ def run(args) -> int:
             # "absent" means this environment installed the package without its
             # dependencies. Name that, because "reinstall" alone sends people to
             # repeat the command that already skipped them.
-            from .install_health import missing_core_dependencies
+            from .install_health import install_shape, missing_core_dependencies
             others = [d for d in missing_core_dependencies() if d not in ("boto3", "botocore")]
+            # WHICH kind of install skipped the dependencies. Without this the
+            # event says "boto3 absent" and stops, which is where 13 of these
+            # left me on 2026-08-14: the cause was un-nameable from the data, so
+            # nothing could be fixed. Categories only, never paths.
+            deps.update({k: str(v) for k, v in install_shape().items()})
             lines = ["nable is installed but its dependencies are not."]
             if others:
                 lines.append(f"  also missing: {', '.join(others)}")
