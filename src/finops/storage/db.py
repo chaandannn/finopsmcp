@@ -548,6 +548,24 @@ Index("ix_ac_team",           attributed_costs.c.team)
 # anomalies: report sections filter by date and ack status
 Index("ix_anom_date",         anomalies.c.snapshot_date)
 Index("ix_anom_ack",          anomalies.c.acknowledged)
+# The tuple persist_anomaly dedups on, enforced by the database rather than by
+# every caller hoping to win a race.
+#
+# persist_anomaly's docstring has always promised that a cron retry, the
+# run_anomaly_check_now tool, or a fail-open second scheduler process "cannot
+# re-insert the same spend event or re-fire its alerts and tickets". It was a
+# plain SELECT-then-INSERT with nothing making the pair atomic, and only these
+# two NON-unique indexes behind it. _acquire_scheduler_lock fails open on any
+# error, which is exactly how two schedulers come to exist at once, and
+# scheduler/jobs.py keys every downstream action on the is_new flag: both runs
+# post to Slack and Teams, push to n8n, and open a ticket for one spend event.
+#
+# A unique index, not a UniqueConstraint, so it can also be created on an
+# existing database by the migration below. Named so the migration can look for
+# it by name on either backend.
+Index("ux_anom_dedup", anomalies.c.provider, anomalies.c.service,
+      anomalies.c.account_id, anomalies.c.snapshot_date, anomalies.c.direction,
+      unique=True)
 
 # org_accounts: sync looks up by (account_id, provider) — must be unique
 Index("ix_org_acct_provider", org_accounts.c.account_id, org_accounts.c.cloud_provider,
@@ -781,6 +799,35 @@ def _run_sqlite_migrations(engine: Engine) -> None:
         # >= 3.35 (bundled with Python >= 3.11, which is nable's floor) supports
         # DROP COLUMN; on anything older this warns and the onboarding budget step
         # degrades to a clean one-line message instead of a traceback.
+        # The anomaly dedup index, for databases created before it existed.
+        # create_all builds indexes only for tables it CREATES, so an existing
+        # anomalies table never gets it and the duplicate-alert race stays open
+        # on precisely the installs that have been running longest.
+        #
+        # Deduplicate first or the CREATE fails: any database that has already
+        # lost this race holds rows the constraint forbids, and a failed index
+        # creation would leave those installs unprotected forever with only a
+        # warning in a log. Keeping MIN(id) keeps the row whose alerts already
+        # fired, so nothing that has been acknowledged or ticketed is discarded.
+        try:
+            if "ux_anom_dedup" not in {
+                ix["name"] for ix in inspect(engine).get_indexes("anomalies")
+            }:
+                dupes = conn.execute(text(
+                    "DELETE FROM anomalies WHERE id NOT IN ("
+                    "  SELECT MIN(id) FROM anomalies"
+                    "  GROUP BY provider, service, account_id, snapshot_date, direction)"
+                )).rowcount
+                conn.execute(text(
+                    "CREATE UNIQUE INDEX ux_anom_dedup ON anomalies "
+                    "(provider, service, account_id, snapshot_date, direction)"
+                ))
+                conn.commit()
+                log.info("Migration: anomaly dedup index created (%s duplicate "
+                         "row(s) removed)", dupes if dupes and dupes > 0 else 0)
+        except Exception as exc:
+            log.warning("anomaly dedup index migration skipped: %s", exc)
+
         for _tbl, _col in (("budgets", "block_at_pct"),):
             try:
                 # Inspector, not PRAGMA: same reason as above. This orphan-column

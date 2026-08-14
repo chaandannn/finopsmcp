@@ -479,7 +479,6 @@ def _anomaly_result() -> AnomalyResult:
     )
 
 
-@pytest.mark.xfail(strict=True, reason="audit finding, not yet fixed. strict=True so that fixing it FAILS here until this marker is removed: the marker count is the work list.")
 def test_persist_anomaly_does_not_duplicate_when_another_writer_wins_the_race(fresh_db):
     """FAILS NOW, the bug is real.
 
@@ -537,7 +536,6 @@ def test_persist_anomaly_does_not_duplicate_when_another_writer_wins_the_race(fr
     )
 
 
-@pytest.mark.xfail(strict=True, reason="audit finding, not yet fixed. strict=True so that fixing it FAILS here until this marker is removed: the marker count is the work list.")
 def test_the_anomaly_dedup_tuple_is_enforced_by_the_database(fresh_db):
     """INVARIANT TEST, and it FAILS NOW because the invariant does not exist.
 
@@ -630,4 +628,107 @@ def test_scorecard_history_is_a_managed_table(fresh_db):
     assert "scorecard_history" in fresh_db.metadata.tables, (
         "scorecard_history is not declared on storage.db.metadata, so its DDL is "
         "hand-written per backend instead of compiled for the connected dialect"
+    )
+
+
+# ── the dedup index has to reach databases that already exist ────────────────
+
+def test_dedup_index_migration_repairs_an_already_duplicated_database(tmp_path, monkeypatch):
+    """The upgrade path, which is the one that actually matters here.
+
+    metadata.create_all builds indexes only for tables it CREATES, so an
+    existing anomalies table never gets ux_anom_dedup from it. The installs that
+    need this most are the oldest ones, which are exactly the ones create_all
+    will not touch.
+
+    And those installs are the likeliest to hold rows the new constraint
+    forbids, because they are the ones that have been losing the race. A CREATE
+    UNIQUE INDEX against dirty data fails, and since the migration swallows and
+    warns, it would leave the longest-running installs permanently unprotected
+    with nothing but a log line. So the migration deduplicates first, and this
+    test drives that on a database built to be dirty.
+
+    Keeping MIN(id) is deliberate: that is the row whose Slack alert already
+    fired and whose ticket already exists. Deleting it and keeping a later
+    duplicate would orphan a real ticket.
+    """
+    import sqlalchemy as _sa
+    from finops.storage import db as _db
+
+    monkeypatch.setenv("FINOPS_DB_PATH", str(tmp_path / "old.db"))
+    monkeypatch.setenv("FINOPS_DATA_DIR", str(tmp_path / "data"))
+    _db._ENGINE, _db._DATA_DIR = None, None
+    try:
+        engine = _db.get_engine()
+        # Roll back to the pre-fix schema: same tables, no unique index.
+        with engine.begin() as conn:
+            conn.execute(_sa.text("DROP INDEX IF EXISTS ux_anom_dedup"))
+        assert "ux_anom_dedup" not in {
+            ix["name"] for ix in _sa.inspect(engine).get_indexes("anomalies")}
+
+        base = dict(
+            provider="aws", service="Amazon Elastic Compute Cloud - Compute",
+            account_id="111111111111", snapshot_date="2026-08-07", severity="high",
+            direction="spike", pct_change=180.0, z_score=4.1, baseline_mean=900.0,
+            current_amount=2520.0, acknowledged=False, notified=False,
+        )
+        with engine.begin() as conn:
+            for _ in range(3):        # three copies of one spend event
+                conn.execute(anomalies.insert().values(
+                    detected_at=datetime.now(timezone.utc), **base))
+            conn.execute(anomalies.insert().values(   # a genuinely different row
+                detected_at=datetime.now(timezone.utc), **{**base, "direction": "drop"}))
+
+        _db._run_sqlite_migrations(engine)
+
+        with engine.connect() as conn:
+            surviving = [r[0] for r in conn.execute(
+                _sa.select(anomalies.c.id).order_by(anomalies.c.id)).fetchall()]
+        assert surviving == [1, 4], (
+            f"expected the earliest spike (id 1) and the drop (id 4) to survive, "
+            f"got {surviving}. Keeping MIN(id) matters: that row's alert already "
+            f"fired and its ticket already exists"
+        )
+        assert "ux_anom_dedup" in {
+            ix["name"] for ix in _sa.inspect(engine).get_indexes("anomalies")}, (
+            "the index was not created, so this install stays unprotected and the "
+            "only trace is a log warning"
+        )
+        with pytest.raises(_sa.exc.IntegrityError):
+            with engine.begin() as conn:
+                conn.execute(anomalies.insert().values(
+                    detected_at=datetime.now(timezone.utc), **base))
+    finally:
+        _db._ENGINE, _db._DATA_DIR = None, None
+
+
+def test_a_fresh_database_gets_the_dedup_index_from_the_model(tmp_path):
+    """create_all alone must produce it, with no migration involved.
+
+    Two independent mechanisms install ux_anom_dedup: metadata.create_all for a
+    fresh database, and the migration above for one that already exists. Either
+    alone is enough, which means a test that just runs get_engine() cannot tell
+    whether the model declaration is doing anything. Mutation testing showed
+    exactly that: deleting the Index(...) declaration left every other test in
+    this file green, because the migration quietly covered for it.
+
+    Redundancy is fine here and both paths are wanted. What is not fine is not
+    knowing which one is load-bearing, so this pins the model half on its own.
+    """
+    import sqlalchemy as _sa
+    from finops.storage import db as _db
+
+    engine = _sa.create_engine(f"sqlite:///{tmp_path / 'fresh.db'}")
+    _db.metadata.create_all(engine)      # no migrations, no get_engine
+
+    indexes = {ix["name"]: ix for ix in _sa.inspect(engine).get_indexes("anomalies")}
+    assert "ux_anom_dedup" in indexes, (
+        "the anomalies table was created straight from the model and has no "
+        f"dedup index; it declares only {sorted(indexes)}"
+    )
+    assert indexes["ux_anom_dedup"]["unique"], "the index exists but is not unique"
+    assert indexes["ux_anom_dedup"]["column_names"] == [
+        "provider", "service", "account_id", "snapshot_date", "direction"], (
+        f"the index covers {indexes['ux_anom_dedup']['column_names']}, which is "
+        f"not the tuple persist_anomaly dedups on"
     )
