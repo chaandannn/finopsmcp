@@ -329,7 +329,6 @@ def test_disk_cost_cache_is_not_shared_between_two_profiles(tmp_path, monkeypatc
         db_mod._DATA_DIR = saved[6]
 
 
-@pytest.mark.xfail(strict=True, reason="audit finding, not yet fixed. strict=True so that fixing it FAILS here until this marker is removed: the marker count is the work list.")
 def test_persisted_cost_cache_is_not_world_readable(cache_isolated):
     """FAILS NOW, the bug is real.
 
@@ -409,7 +408,6 @@ def _insert_anomaly(engine, detected_at: datetime, *, acknowledged: bool = False
         )
 
 
-@pytest.mark.xfail(strict=True, reason="audit finding, not yet fixed. strict=True so that fixing it FAILS here until this marker is removed: the marker count is the work list.")
 def test_anomaly_inside_the_response_window_is_not_counted_overdue(fresh_db, monkeypatch):
     """FAILS NOW, the bug is real.
 
@@ -442,7 +440,6 @@ def test_anomaly_inside_the_response_window_is_not_counted_overdue(fresh_db, mon
     )
 
 
-@pytest.mark.xfail(strict=True, reason="audit finding, not yet fixed. strict=True so that fixing it FAILS here until this marker is removed: the marker count is the work list.")
 def test_anomaly_on_the_lookback_boundary_day_stays_inside_the_window(fresh_db, monkeypatch):
     """FAILS NOW, the bug is real.
 

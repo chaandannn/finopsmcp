@@ -187,6 +187,46 @@ def _cache_hmac_key() -> bytes | None:
     return _hmac_key
 
 
+def _restrict_permissions(data_dir: str, db_file: str) -> None:
+    """Owner-only on the cache dir and the cache database.
+
+    cache.db holds pickled CostSummary objects for every connected provider for
+    twelve hours: totals, by_service, by_account, by_region, and account ids. It
+    was created under whatever umask the process happened to have, which on a
+    normal 0022 box is 0644. Every other local account could read the org's
+    entire cloud spend, and on a container image with a non-root app user so
+    could anything else in the image.
+
+    The intent was established everywhere else and this one file missed it.
+    storage/db.py chmods its data dir to 0700 and finops.db to 0600, and
+    _cache_hmac_key above opens cache.key with an explicit 0600 because it is a
+    secret. The HMAC key was protected; the data it authenticates was not.
+
+    Sidecars are included because they are the same data. sqlite3.connect does
+    not use WAL by default, so they usually do not exist, but a -wal file holds
+    recently written rows verbatim and clamping it costs one stat.
+
+    Never raises. A cache that cannot tighten its own permissions is still a
+    working cache, and failing the process over it would be a worse outcome than
+    the thing it is guarding against.
+    """
+    import stat as _stat
+
+    for path, mode in ((data_dir, _stat.S_IRWXU),
+                       (db_file, _stat.S_IRUSR | _stat.S_IWUSR)):
+        try:
+            os.chmod(path, mode)
+        except OSError:
+            pass
+    for suffix in ("-wal", "-shm"):
+        side = db_file + suffix
+        try:
+            if os.path.exists(side):
+                os.chmod(side, _stat.S_IRUSR | _stat.S_IWUSR)
+        except OSError:
+            pass
+
+
 def _disk_conn() -> "sqlite3.Connection | None":
     """Open the on-disk cache DB, or None if persistence is off or unavailable."""
     global _disk_ready
@@ -201,13 +241,15 @@ def _disk_conn() -> "sqlite3.Connection | None":
         # filename for the same reason it belongs in the DB name.
         _profile = (os.getenv("FINOPS_PROFILE") or "").strip()
         _cache_name = f"cache-{_profile}.db" if _profile else "cache.db"
-        conn = sqlite3.connect(os.path.join(data_dir, _cache_name), timeout=2.0)
+        db_file = os.path.join(data_dir, _cache_name)
+        conn = sqlite3.connect(db_file, timeout=2.0)
         if not _disk_ready:
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS kv "
                 "(key TEXT PRIMARY KEY, expires_at REAL, value BLOB)"
             )
             conn.commit()
+            _restrict_permissions(data_dir, db_file)
             _disk_ready = True
         return conn
     except Exception:

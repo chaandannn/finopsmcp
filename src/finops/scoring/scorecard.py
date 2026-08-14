@@ -529,8 +529,30 @@ def _score_anomaly_response(
         from sqlalchemy import select, and_, func
 
         engine = get_engine()
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).isoformat()
-        ack_cutoff = (datetime.now(timezone.utc) - timedelta(hours=response_window_hours))
+        # datetime objects, NOT .isoformat(). anomalies.detected_at is a DateTime
+        # column; binding a string makes SQLAlchemy type the parameter as String
+        # and skip the DateTime bind processor, so SQLite compares two strings
+        # that are not in the same format:
+        #
+        #   stored by the DateTime processor : '2026-08-06 14:30:00.000000'
+        #   bound from .isoformat()          : '2026-08-06T12:00:00+00:00'
+        #
+        # A space sorts before a T, so every anomaly on the same UTC date as the
+        # cutoff compares as OLDER than it, whatever the clock says. Measured: an
+        # anomaly 45.5 hours old, comfortably inside the 48 hour response window,
+        # counted as overdue; binding the datetime returns 0.
+        #
+        # The same defect on `cutoff` runs the other way: an anomaly 29d18h old
+        # sorted below a 30 day cutoff and vanished from total_anomalies_30d, so
+        # the dimension reported "No anomalies detected in the last 30 days" and
+        # handed out a flat 80 to an account that had them.
+        #
+        # Both feed the customer-facing scorecard and the tickets
+        # create_scorecard_tickets opens from it. PostgreSQL casts the literal
+        # and gets this right, so the default local install was the wrong one and
+        # the shared-Postgres deployment hid it.
+        cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+        ack_cutoff = datetime.now(timezone.utc) - timedelta(hours=response_window_hours)
 
         with engine.connect() as conn:
             total_q = conn.execute(
@@ -541,7 +563,7 @@ def _score_anomaly_response(
                 select(func.count()).where(
                     and_(
                         anomalies.c.detected_at >= cutoff,
-                        anomalies.c.detected_at <= ack_cutoff.isoformat(),
+                        anomalies.c.detected_at <= ack_cutoff,
                         anomalies.c.acknowledged == False,  # noqa: E712
                     )
                 )
