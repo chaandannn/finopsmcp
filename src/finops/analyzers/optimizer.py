@@ -354,13 +354,44 @@ def _severity_from_savings_co(monthly_savings: float) -> str:
 # CPU check and Compute Optimizer can both flag the same instance with different
 # waste_type strings; collapsing them to one resource-level key stops the same
 # instance's savings being counted twice in the audit total.
+# Waste types that describe the SAME action on the same resource, grouped by the
+# family they collapse into. This map is the only thing standing between the
+# audit total and double-counting one instance, and for most of its life half of
+# it addressed nobody.
+#
+# Measured 2026-08-14 by walking every `"waste_type": "..."` literal in the tree
+# and diffing it against these keys:
+#
+#   lambda_over_provisioned_memory   no detector has ever emitted this. The one
+#                                    in waste.py emits lambda_memory_over-
+#                                    provisioned. The words are transposed.
+#   idle_rds                         emitted only by cli_scan._demo_payload, the
+#                                    StreamCo sample data, which returns before
+#                                    the audit runs and never reaches dedup. A
+#                                    demo string was load-bearing in production
+#                                    dedup, or would have been if it had matched
+#                                    anything real.
+#
+# Meanwhile the two waste types the deep audit's own RDS detectors actually emit
+# were both absent, so a quiet oversized database collected "stop it" AND
+# "downsize it", each priced in full, and the audit claimed about 1.5x the
+# instance's entire cost as recoverable from it.
+#
+# A key here that matches nothing is invisible: the map is consulted with .get()
+# and a miss just means "not a rightsizing finding", which is the normal case for
+# most findings. Nothing can go red. tests/test_audit_cost_math.py now walks the
+# same literals and fails on any key no detector emits, which is the only way
+# this stays true.
 _RIGHTSIZING_FAMILY: dict[str, str] = {
     "idle_ec2_low_cpu": "ec2-rightsize",
     "compute_optimizer_overprovisioned_ec2": "ec2-rightsize",
-    "idle_rds": "rds-rightsize",
+    # Both RDS detectors describe one action on one instance: this database is
+    # too big for its load. Stop-it and shrink-it are alternatives, never a sum.
+    "rds_idle_no_connections": "rds-rightsize",
+    "rds_overprovisioned": "rds-rightsize",
     "compute_optimizer_overprovisioned_rds": "rds-rightsize",
     "compute_optimizer_overprovisioned_lambda": "lambda-rightsize",
-    "lambda_over_provisioned_memory": "lambda-rightsize",
+    "lambda_memory_overprovisioned": "lambda-rightsize",
 }
 
 

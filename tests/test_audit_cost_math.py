@@ -511,7 +511,6 @@ def _seed_ce_shaped_snapshots():
         conn.execute(cost_snapshots.insert(), rows)
 
 
-@pytest.mark.xfail(strict=True, reason="audit finding, not yet fixed. strict=True so that fixing it FAILS here until this marker is removed: the marker count is the work list.")
 def test_waste_patterns_fire_on_real_cost_explorer_service_names():
     """Fails today. scan_waste_patterns builds PatternContext.daily_costs straight
     from cost_snapshots.service, which holds the raw CE SERVICE value, but
@@ -536,18 +535,18 @@ def test_waste_patterns_fire_on_real_cost_explorer_service_names():
 
 
 def _service_literals_in_patterns() -> set[str]:
-    """Every string literal patterns.py passes to ctx.service_monthly() or reads
-    out of ctx.daily_costs, collected by AST so a rename cannot hide from it."""
+    """Every string literal patterns.py passes to a service lookup, by AST so a
+    rename cannot hide from it."""
     tree = ast.parse((SRC / "ml" / "patterns.py").read_text())
     found: set[str] = set()
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
             continue
         target = node.func.value
-        is_service_monthly = node.func.attr == "service_monthly"
+        is_lookup = node.func.attr in ("service_monthly", "service_series")
         is_daily_get = (node.func.attr == "get" and isinstance(target, ast.Attribute)
                         and target.attr == "daily_costs")
-        if not (is_service_monthly or is_daily_get):
+        if not (is_lookup or is_daily_get):
             continue
         if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
             found.add(node.args[0].value)
@@ -559,32 +558,65 @@ def _service_literals_in_patterns() -> set[str]:
 _NON_AWS_SERVICES = {"OpenAI", "Anthropic"}
 
 
-@pytest.mark.xfail(strict=True, reason="audit finding, not yet fixed. strict=True so that fixing it FAILS here until this marker is removed: the marker count is the work list.")
 def test_patterns_never_look_up_a_service_name_cost_explorer_cannot_emit():
-    """Fails today, and is the invariant half of the test above: even once the
-    savings-plans pattern is fixed, the next pattern that asks for a short name
-    silently reads $0 forever with no error anywhere. The repo already records
-    the names Cost Explorer returns, in connectors/universal.py's alias map, so
-    that is the vocabulary an AWS lookup has to come from. Five literals are
-    outside it today, and "AWSDataTransfer" is wrong under every naming
-    convention this codebase produces."""
+    """The invariant half: no pattern may look up a name that silently reads $0.
+
+    This test's MECHANISM changed when the finding was fixed, and the reason is
+    worth recording, because "the test told me to do X" is a bad reason to do X
+    when X provably does not work.
+
+    As written, it required each literal to BE a Cost Explorer name. Measured
+    against the CE shapes this file already seeds, that prescription fails twice:
+
+        daily_costs keys, as CE returns them:
+          "Amazon Elastic Compute Cloud - Compute"        $27,000/mo
+          "Amazon Elastic Compute Cloud - Data Transfer"   $1,200/mo
+
+        literal "Amazon Elastic Compute Cloud"          -> [] , a total miss
+        literal "Amazon Elastic Compute Cloud - Compute" -> $27,000 of $28,200
+
+    CE splits a service across usage-type suffixes, so an exact-match literal is
+    either wrong or incomplete, and a pattern asking what EC2 costs means all of
+    it. Writing the long name into six call sites would also have restored the
+    duplication that let these drift out of date unnoticed in the first place.
+
+    So the lookup resolves instead: patterns keep asking for a short readable
+    name and PatternContext.service_series maps it through the repo's existing
+    alias map and sums every matching CE bucket. The invariant is unchanged and
+    slightly stronger: every literal must RESOLVE, and a name that cannot be
+    resolved is a bug rather than a silent $0.
+
+    The vacuity guard below is the load-bearing part. An invariant expressed as
+    "the resolver accepts it" is worthless if the resolver accepts anything.
+    """
     from finops.connectors.universal import _AWS_ALIASES
+    from finops.ml.patterns import _ce_service_name
 
     ce_names = set(_AWS_ALIASES.values())
 
-    def _is_a_ce_name(literal: str) -> bool:
-        # CE returns either the mapped name or that name plus a usage suffix,
-        # e.g. "Amazon Elastic Compute Cloud - Compute".
-        return any(literal == n or literal.startswith(n + " ") for n in ce_names)
-
-    offenders = sorted(
+    unresolvable = sorted(
         lit for lit in _service_literals_in_patterns()
-        if lit not in _NON_AWS_SERVICES and not _is_a_ce_name(lit)
+        if lit not in _NON_AWS_SERVICES and _ce_service_name(lit) is None
     )
-    assert not offenders, (
-        f"patterns.py looks up {offenders}, which Cost Explorer never returns, so "
-        f"every one of those reads $0; route service lookups through the CE name "
-        f"map in connectors/universal.py")
+    assert not unresolvable, (
+        f"patterns.py looks up {unresolvable}, which does not resolve to any Cost "
+        f"Explorer service name, so every one of those reads $0 with no error; "
+        f"add the spelling to _SERVICE_SPELLINGS or the service to the alias map")
+
+    # Whatever it resolves to must be a name CE can actually emit, not just any
+    # string. Without this, a resolver returning its input unchanged would pass.
+    for lit in _service_literals_in_patterns() - _NON_AWS_SERVICES:
+        assert _ce_service_name(lit) in ce_names, (
+            f"{lit!r} resolves to {_ce_service_name(lit)!r}, which is not in the "
+            f"CE name map; the resolver is inventing names")
+
+    # Anti-vacuity: the resolver must still REFUSE a name Cost Explorer cannot
+    # emit. If it says yes to everything, both assertions above are theatre and
+    # the original defect walks straight back in under a new spelling.
+    for invented in ("AmazonNotAService", "AWSTotallyMadeUp", "Amazon EC3", ""):
+        assert _ce_service_name(invented) is None, (
+            f"the resolver accepted {invented!r}, so it cannot distinguish a real "
+            f"service from a typo and this test proves nothing")
 
 
 # ── 6. The rightsizing dedup family must cover what the detectors emit ────────
@@ -607,7 +639,6 @@ def _emitted_waste_types() -> set[str]:
     return emitted
 
 
-@pytest.mark.xfail(strict=True, reason="audit finding, not yet fixed. strict=True so that fixing it FAILS here until this marker is removed: the marker count is the work list.")
 def test_rightsizing_dedup_map_keys_types_the_detectors_actually_emit():
     """Fails today. _RIGHTSIZING_FAMILY exists solely so the audit total is not
     "inflated by double-counting the same instance", and half its keys are
@@ -636,7 +667,6 @@ def test_rightsizing_dedup_map_keys_types_the_detectors_actually_emit():
         "they have to share a family key to be collapsed")
 
 
-@pytest.mark.xfail(strict=True, reason="audit finding, not yet fixed. strict=True so that fixing it FAILS here until this marker is removed: the marker count is the work list.")
 def test_one_rds_instance_flagged_twice_is_counted_once():
     """Fails today, and needs no credentials. check_rds_rightsizing (low CPU) and
     check_rds_idle (no connections) have no mutual exclusion, so a quiet,
