@@ -531,7 +531,9 @@ def test_create_api_key_does_not_hand_the_raw_key_to_the_model(isolated_db):
 # from this repo, so the stand-in below IS the provider boundary. Every name it
 # defines is one the open core reaches for by hand today.
 
-_OPERATOR_PASSWORD = "correct-horse-battery-staple"
+# The xkcd example passphrase, and it is the fixture for the test asserting
+# start_dashboard_server does NOT return an operator-chosen password.
+_OPERATOR_PASSWORD = "correct-horse-battery-staple"  # pragma: allowlist secret
 
 
 @pytest.fixture

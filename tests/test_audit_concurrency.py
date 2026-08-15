@@ -227,7 +227,7 @@ class _FakeSTS:
     def assume_role(self, **kw) -> dict:
         time.sleep(self._block)
         return {"Credentials": {"AccessKeyId": "AKIAFAKE",
-                                "SecretAccessKey": "secret",
+                                "SecretAccessKey": "secret",  # pragma: allowlist secret
                                 "SessionToken": "token"}}
 
 
