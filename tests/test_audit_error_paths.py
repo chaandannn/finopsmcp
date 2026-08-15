@@ -520,7 +520,6 @@ def _two_providers_one_expired(monkeypatch):
             live.update(original)
 
 
-@pytest.mark.xfail(strict=True, reason="audit finding, not yet fixed. strict=True so that fixing it FAILS here until this marker is removed: the marker count is the work list.")
 def test_explain_recent_cost_drivers_refuses_to_call_a_failed_provider_a_saving(
         _two_providers_one_expired):
     """FAILS TODAY: the bug is real.
@@ -744,7 +743,6 @@ def _vs_yesterday_pct(posted: list[dict]) -> float | None:
     return None
 
 
-@pytest.mark.xfail(strict=True, reason="audit finding, not yet fixed. strict=True so that fixing it FAILS here until this marker is removed: the marker count is the work list.")
 def test_the_daily_digest_does_not_report_a_drop_a_missing_provider_caused(
         tmp_path, _sqlite_at, _slack_wire):
     """FAILS TODAY: the bug is real.
@@ -818,3 +816,138 @@ def test_the_daily_digest_still_reports_a_real_drop(
     pct = _vs_yesterday_pct(_slack_wire)
     assert pct is not None and pct < -80.0, (
         f"a real 88% drop was not reported: vs-yesterday read {pct}")
+
+
+# ── both halves of the digest fix, pinned separately ─────────────────────────
+
+def test_the_digest_delta_is_computed_like_for_like(
+        tmp_path, _sqlite_at, _slack_wire):
+    """The NUMBER, not just the caveat.
+
+    The audit test above accepts "either refuse the delta or annotate it", which
+    is the right contract to hold a fix to but leaves neither half pinned once a
+    fix does both. Mutation testing showed exactly that: reverting the
+    like-for-like basis still passed, because the caveat alone satisfied the OR.
+
+    A caveat is not a substitute for a correct number. A reader who skims sees
+    "-94.1%" and stops; the sentence explaining it is the thing they skip.
+    Datadog is flat across both days, so the change must be 0%.
+    """
+    from finops.scheduler import jobs
+    from finops.storage.db import get_engine
+
+    _sqlite_at(tmp_path / "finops.db")
+    today = date.today()
+    d1 = (today - timedelta(days=1)).isoformat()
+    d2 = (today - timedelta(days=2)).isoformat()
+    _seed(get_engine(), [
+        ("aws", "Amazon EC2", d2, 90_000.0),
+        ("datadog", "APM", d2, 5_600.0),
+        ("datadog", "APM", d1, 5_600.0),      # AWS snapshot failed; Datadog flat
+    ])
+
+    asyncio.run(jobs._send_daily_digest())
+    pct = _vs_yesterday_pct(_slack_wire)
+
+    assert pct is not None and abs(pct) < 0.5, (
+        f"the digest reported {pct}%. The only provider present in BOTH days "
+        f"was flat, so the like-for-like change is 0%. Anything else is the "
+        f"missing AWS snapshot wearing a spend label"
+    )
+
+
+def test_the_digest_names_the_provider_that_went_missing(
+        tmp_path, _sqlite_at, _slack_wire):
+    """The CAVEAT, not just the number.
+
+    The other half of the same OR, and the half that tells the reader why
+    yesterday's headline total is smaller than usual. Correcting the percentage
+    without saying anything would leave a total that silently excludes AWS and
+    a reader with no way to know.
+    """
+    from finops.scheduler import jobs
+    from finops.storage.db import get_engine
+
+    _sqlite_at(tmp_path / "finops.db")
+    today = date.today()
+    d1 = (today - timedelta(days=1)).isoformat()
+    d2 = (today - timedelta(days=2)).isoformat()
+    _seed(get_engine(), [
+        ("aws", "Amazon EC2", d2, 90_000.0),
+        ("datadog", "APM", d2, 5_600.0),
+        ("datadog", "APM", d1, 5_600.0),
+    ])
+
+    asyncio.run(jobs._send_daily_digest())
+    blob = json.dumps(_slack_wire[0]["json"])
+
+    assert "AWS" in blob, "the digest never names the provider that is missing"
+    assert any(w in blob.lower() for w in ("incomplete", "no snapshot")), (
+        f"nothing in the payload says the comparison is incomplete: {blob[:400]}"
+    )
+
+
+def test_explain_recent_cost_drivers_marks_the_result_partial(
+        _two_providers_one_expired):
+    """`partial` specifically, not any-of-four.
+
+    The audit test accepts partial OR failed_providers OR error OR a note
+    mentioning a provider. Reverting `partial` alone still passed it. That key
+    is the one get_cost_summary sets and the one a caller checks, so the two
+    tools have to agree on it rather than each satisfying the OR differently.
+    """
+    from finops.tools import cost_queries
+
+    out = asyncio.run(cost_queries.explain_recent_cost_drivers(days=30))
+
+    assert out.get("partial") is True, out
+    assert "aws" in (out.get("failed_providers") or {}), out
+    assert out["summary"].startswith("PARTIAL:"), (
+        f"the caveat is not in the summary, which is the sentence a model "
+        f"quotes on its own: {out['summary']!r}"
+    )
+
+
+def test_a_newly_connected_provider_is_not_a_spend_spike(
+        tmp_path, _sqlite_at, _slack_wire):
+    """The mirror case, and the one delta_basis actually exists for.
+
+    Mutation testing found the gap: reverting slack's like-for-like basis left
+    every other test green, because in the vanishing-provider direction the
+    caller has already narrowed prev_total and yesterday's total is naturally
+    the common-provider total, so the two agree by accident.
+
+    The other direction does not agree by accident. Connect GCP today and
+    yesterday holds AWS+GCP while the day before holds AWS alone. Without the
+    narrowed basis the digest reads GCP's entire first-day spend as a spend
+    increase and posts a spike nobody caused, which is the same defect as the
+    -94% drop with the sign flipped, and the one more likely to page someone.
+
+    AWS is flat at $90,000 across both days. GCP appears yesterday at $40,000.
+    The like-for-like change is 0%.
+    """
+    from finops.scheduler import jobs
+    from finops.storage.db import get_engine
+
+    _sqlite_at(tmp_path / "finops.db")
+    today = date.today()
+    d1 = (today - timedelta(days=1)).isoformat()
+    d2 = (today - timedelta(days=2)).isoformat()
+    _seed(get_engine(), [
+        ("aws", "Amazon EC2", d2, 90_000.0),
+        ("aws", "Amazon EC2", d1, 90_000.0),   # flat
+        ("gcp", "Compute Engine", d1, 40_000.0),  # connected today
+    ])
+
+    asyncio.run(jobs._send_daily_digest())
+    pct = _vs_yesterday_pct(_slack_wire)
+    blob = json.dumps(_slack_wire[0]["json"])
+
+    assert pct is not None and abs(pct) < 0.5, (
+        f"the digest reported {pct}%. AWS was flat across both days and GCP is "
+        f"new, so nothing rose. Its first day of spend is not an increase"
+    )
+    assert "GCP" in blob and "new since" in blob, (
+        f"the digest does not say GCP is newly connected, so a reader cannot "
+        f"tell why the total jumped: {blob[:400]}"
+    )

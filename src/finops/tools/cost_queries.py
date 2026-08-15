@@ -1904,8 +1904,44 @@ async def explain_recent_cost_drivers(
         # _gather_costs returns (grand_total, by_provider, grand_by_service).
         # We diff the per-service breakdown, so take the third element, not the
         # float total (taking [0] caused "'float' object has no attribute 'keys'").
-        _, _, cost_now = await _srv._gather_costs(active, period_start, period_end)
-        _, _, cost_prev = await _srv._gather_costs(active, prev_start, prev_end)
+        #
+        # by_provider is NOT discarded any more, and that is the whole fix. It
+        # carries by_provider[name]["error"] for a provider whose read failed,
+        # and this tool used to unpack `_, _, cost_now` and throw exactly that
+        # away. A provider missing from the current window while present in the
+        # prior one then read as its entire spend disappearing:
+        #
+        #   "Costs decreased by $451,000 (-92.0%) vs the prior 30-day period"
+        #
+        # with every AWS service listed under top_decreases, on the day the
+        # customer's credentials expired. The most reassuring possible sentence,
+        # produced by a failure, which is worse than an alarming one: nobody
+        # investigates good news.
+        #
+        # get_cost_summary refuses on this same data and has since it was
+        # written. One tool over, same _gather_costs call, opposite behaviour.
+        _, prov_now, cost_now = await _srv._gather_costs(active, period_start, period_end)
+        _, prov_prev, cost_prev = await _srv._gather_costs(active, prev_start, prev_end)
+
+        def _failures(by_provider: dict) -> dict:
+            return {name: p.get("error") for name, p in (by_provider or {}).items()
+                    if isinstance(p, dict) and p.get("error")}
+
+        failed_now, failed_prev = _failures(prov_now), _failures(prov_prev)
+        # A provider that failed in EITHER window makes the comparison invalid
+        # for that provider, in both directions: absent-now reads as a drop,
+        # absent-before reads as a spike.
+        failed = {**failed_prev, **failed_now}
+
+        if failed and len(failed) >= len(active):
+            return {
+                "error": "no_cost_data",
+                "message": str(next(iter(failed.values()))),
+                "failed_providers": failed,
+                "note": ("No provider returned cost data for both windows, so "
+                         "there is nothing to compare. This is not a finding of "
+                         "zero spend or of a cost decrease."),
+            }
 
         # Build per-provider + per-service breakdown
         drivers: list[dict] = []
@@ -1939,7 +1975,7 @@ async def explain_recent_cost_drivers(
         total_prev = sum(cost_prev.values())
         net_pct = ((total_now - total_prev) / total_prev * 100) if total_prev > 0 else None
 
-        return {
+        result = {
             "period": f"{period_start} to {period_end}",
             "comparison_period": f"{prev_start} to {prev_end}",
             "total_current_usd": round(total_now, 2),
@@ -1957,6 +1993,27 @@ async def explain_recent_cost_drivers(
                 f"{len(increases)} services had cost increases, {len(decreases)} had decreases."
             ),
         }
+        if failed:
+            # Same contract get_cost_summary uses, so a reader who has seen one
+            # of these knows what the other means.
+            _read = sorted(n for n in active if n not in failed)
+            result["partial"] = True
+            result["failed_providers"] = failed
+            result["partial_warning"] = (
+                f"{', '.join(sorted(failed))} could not be read in one or both "
+                f"windows, so this comparison covers {', '.join(_read) or 'no provider'} "
+                f"only. A provider missing from one window shows up here as a "
+                f"change of its entire spend, which is a failed read and not a "
+                f"real cost movement."
+            )
+            # The headline is the sentence a model repeats verbatim, so the
+            # caveat has to be IN it. A flag on a sibling key gets dropped the
+            # moment the summary is quoted on its own.
+            result["summary"] = (
+                f"PARTIAL: {', '.join(sorted(failed))} could not be read. "
+                + result["summary"]
+            )
+        return result
     except Exception as exc:
         _srv.log.error("explain_recent_cost_drivers failed: %s", exc)
         return {"error": str(exc)}

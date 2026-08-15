@@ -104,8 +104,14 @@ def daily_digest_blocks(
     by_provider: dict[str, float],
     top_services: list[dict],
     active_anomaly_count: int,
+    delta_basis: float | None = None,
+    coverage_note: str = "",
 ) -> list[dict]:
-    delta = grand_total - prev_total
+    # delta_basis, not grand_total. When yesterday and the day before do not
+    # cover the same providers, the caller passes the like-for-like pair so the
+    # percentage is about spend and not about which snapshots landed.
+    _basis = grand_total if delta_basis is None else delta_basis
+    delta = _basis - prev_total
     delta_pct = (delta / prev_total * 100) if prev_total else 0
     trend_emoji = "📈" if delta > 0 else "📉" if delta < 0 else "➡️"
     sign = "+" if delta >= 0 else ""
@@ -124,6 +130,8 @@ def daily_digest_blocks(
             {"type": "mrkdwn", "text": f"*Total spend*\n${grand_total:,.2f}"},
             {"type": "mrkdwn", "text": f"*vs yesterday*\n{trend_emoji} {sign}{delta_pct:.1f}% ({sign}${abs(delta):,.2f})"},
         ]},
+        *([{"type": "section", "text": {"type": "mrkdwn", "text": coverage_note}}]
+          if coverage_note else []),
         {"type": "section", "text": {"type": "mrkdwn", "text": f"*By provider*\n{provider_text}"}},
         {"type": "section", "text": {"type": "mrkdwn", "text": f"*Top services*\n{service_text}"}},
     ]
@@ -267,6 +275,20 @@ async def send_daily_digest(
     by_provider: dict[str, float],
     top_services: list[dict],
     active_anomaly_count: int,
+    delta_basis: float | None = None,
+    coverage_note: str = "",
 ) -> bool:
-    blocks = daily_digest_blocks(report_date, grand_total, prev_total, by_provider, top_services, active_anomaly_count)
+    """`delta_basis` is the yesterday figure the change is computed FROM, which
+    is not always `grand_total`. When the two days do not cover the same
+    providers, the caller narrows both sides to the providers present in both,
+    so the percentage describes spend instead of coverage. `grand_total` stays
+    the real, complete yesterday number for the headline.
+
+    `coverage_note`, when set, names what is missing and must be rendered. A
+    percentage a reader cannot see the caveat for is the defect this fixes: a
+    failed AWS snapshot produced "vs yesterday: -94.1% (-$90,000.00)" when
+    nothing had dropped."""
+    blocks = daily_digest_blocks(
+        report_date, grand_total, prev_total, by_provider, top_services,
+        active_anomaly_count, delta_basis=delta_basis, coverage_note=coverage_note)
     return await send(blocks, f"FinOps daily digest — ${grand_total:,.2f} total spend")
