@@ -450,3 +450,37 @@ def test_a_genuine_zero_is_still_reported_as_zero(monkeypatch):
     out = _summary(monkeypatch, {"aws": {"total_usd": 0.0, "services": {}}})
     assert out.get("error") != "no_cost_data"
     assert out["grand_total_usd"] == 0.0
+
+
+# ── the price the product quotes, in one place ───────────────────────────────
+
+def test_every_quoted_cost_explorer_price_matches_the_constant():
+    """Five files tell the user Cost Explorer costs $0.01 a request.
+
+    That number is now also a constant in aws_prices.py, which the CUR reader
+    compares itself against to justify existing. Six copies of a price is the
+    exact shape aws_prices.py was created to stop: an idle load balancer was
+    quoted at $5.84 in one module and $16.20 in another for months, and which
+    one a customer saw depended only on which tool they called.
+
+    Nothing in a test suite notices two literals drifting apart, so this notices
+    it. If AWS changes the price, this fails and names every place to update.
+    """
+    import re
+
+    from finops.aws_prices import COST_EXPLORER_PER_REQUEST
+
+    quoted = f"${COST_EXPLORER_PER_REQUEST:.2f}"
+    # Any dollar figure attached to a per-request Cost Explorer charge.
+    pattern = re.compile(r"\$(\d+\.\d+)\s*(?:per request|/request|a request)", re.I)
+
+    wrong: list[str] = []
+    for path in sorted(PKG.rglob("*.py")):
+        for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            for m in pattern.finditer(line):
+                if f"${m.group(1)}" != quoted:
+                    wrong.append(f"{path.relative_to(PKG)}:{i} says ${m.group(1)}")
+
+    assert not wrong, (
+        f"aws_prices.COST_EXPLORER_PER_REQUEST is {quoted}, but these disagree:\n  "
+        + "\n  ".join(wrong))
