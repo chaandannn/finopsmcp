@@ -51,8 +51,151 @@ from typing import Optional
 _POSTHOG_KEY  = os.environ.get("NABLE_POSTHOG_KEY", "phc_zcaQqoAXrSghjtbE6VB83p4RjfmcpqezKWV9GdZy4dPv")
 _POSTHOG_HOST = "https://us.i.posthog.com"
 _ID_FILE      = Path.home() / ".config" / "finops" / ".install_id"
+_CONSENT_FILE = Path.home() / ".config" / "finops" / ".telemetry"
 _OPT_OUT_ENV  = "NABLE_NO_TELEMETRY"   # hard override, always wins
 _OPT_IN_ENV   = "NABLE_TELEMETRY"      # opt-in: nothing is sent without it
+
+
+# ─── Consent, asked once, out loud ───────────────────────────────────────────
+#
+# Telemetry became opt-in on 2026-08-08 (0.8.210) and the trade was deliberate:
+# "is telemetry off by default" is a question this product has to be able to
+# answer yes to. The cost was not deliberate, because nobody measured it.
+# Measured 2026-08-15: ZERO events have ever arrived from 0.8.210 or later,
+# while PyPI served 86-630 downloads a day straight through the change. The
+# switch did not reduce the signal, it ended it. Every number we have describes
+# builds <= 0.8.209, and "no scan has completed since 08-07" turned out to be
+# the measurement going dark on 08-08 rather than anything about the product.
+#
+# Setting an environment variable is not a realistic ask. Asking once, in
+# words, is. The promise survives intact: nothing is sent unless the user says
+# yes, NABLE_NO_TELEMETRY still hard-overrides, and the honest answer to "is it
+# off by default" is still yes.
+#
+# The prompt also does a second job for free. Only an interactive human can
+# answer it. A package-analysis sandbox or a container has no TTY, never sees
+# it, and stays silent, which is most of the robot-versus-customer problem
+# solved without a classifier: 19 "machines" in 36 hours on 2026-08-14 were one
+# per released version, three runs each, seconds apart, never returning.
+
+
+def _stored_consent() -> bool | None:
+    """The answer the user gave once, or None if they have never been asked."""
+    try:
+        if not _CONSENT_FILE.exists():
+            return None
+        return _CONSENT_FILE.read_text().strip().lower().startswith("y")
+    except Exception:
+        return None
+
+
+def _store_consent(agreed: bool) -> None:
+    """Record the answer so the question is asked exactly once, ever."""
+    try:
+        _CONSENT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _CONSENT_FILE.write_text("yes" if agreed else "no")
+        try:
+            _CONSENT_FILE.chmod(0o600)
+        except OSError:
+            pass
+    except Exception:
+        pass  # a read-only FS just means we ask again next time; never fatal
+
+_PROMPT_ARMED = False
+
+
+def _can_ask() -> bool:
+    """Is there a human at a terminal who could answer, and should we ask?
+
+    Every one of these is a reason NOT to ask, and the TTY pair is the one doing
+    the heavy lifting. stdin must be a terminal so a read cannot hang, and stdout
+    must be one so the question cannot be swallowed by a pipe or land in the
+    middle of `nable scan --json` output someone is parsing.
+
+    The MCP server is the case that matters most: it speaks JSON-RPC over stdio,
+    so stdin is a pipe and it can never be prompted. A prompt written into that
+    stream would corrupt the protocol.
+    """
+    import sys
+
+    if _stored_consent() is not None:
+        return False                       # asked once already. Once means once.
+    if os.environ.get(_OPT_OUT_ENV, "").strip() not in ("", "0", "false", "no"):
+        return False                       # they already said no, louder
+    if os.environ.get(_OPT_IN_ENV, "").strip() not in ("", "0", "false", "no"):
+        return False                       # they already said yes
+    if os.environ.get("FINOPS_AIRGAP", "").strip() not in ("", "0", "false", "no"):
+        return False
+    if is_ci():
+        return False
+    try:
+        return bool(sys.stdin.isatty() and sys.stdout.isatty())
+    except Exception:
+        return False
+
+
+def prompt_for_consent() -> bool | None:
+    """Ask once. Returns the answer, or None if we did not ask.
+
+    Default is NO: a bare Enter, an EOF, a Ctrl-C or anything unparseable all
+    mean no and are recorded as no, so the question is never asked twice. That
+    matters more than capturing an ambiguous yes.
+    """
+    if not _can_ask():
+        return None
+    try:
+        print()
+        print("  Share anonymous usage data? It is off unless you say yes.")
+        print("  Sent:     which commands ran, how many providers are connected,")
+        print("            nable + Python version, OS family.")
+        print("  Never:    cost figures, account IDs, resource names, file paths,")
+        print("            credentials, or your IP.")
+        try:
+            answer = input("  Share? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            answer = ""
+        agreed = answer.startswith("y")
+        _store_consent(agreed)
+        print("  Thanks, that genuinely helps." if agreed
+              else "  Not sending anything. Change your mind: export NABLE_TELEMETRY=1")
+        print()
+        return agreed
+    except Exception:
+        return None      # a prompt is never worth failing a command over
+
+
+def arm_consent_prompt() -> None:
+    """Ask AFTER the command finishes, via atexit, on the interactive CLI only.
+
+    Placement is the whole design here, and it was chosen against two worse
+    options.
+
+    Before the command: adds friction to the first run, which the funnel says is
+    exactly where people leave. 545 ran, 74 used a tool. Nothing goes in front of
+    that.
+
+    After a SUCCESSFUL command only: biases the sample towards people for whom
+    nable already worked, which is precisely backwards. The failures are what we
+    most need to see, and 162 of 174 scans on record failed.
+
+    atexit fires after the command's output is printed and on every exit path,
+    including the SystemExit that `nable scan` raises and an unhandled traceback.
+    So it costs the first run nothing, gates nothing, and asks the people who had
+    a bad time as readily as the people who did not.
+
+    Armed only from the CLI entry point. The MCP server never calls this, and
+    _can_ask would refuse anyway because its stdin is a pipe.
+    """
+    global _PROMPT_ARMED
+    if _PROMPT_ARMED or not _can_ask():
+        return
+    _PROMPT_ARMED = True
+    try:
+        import atexit
+        atexit.register(prompt_for_consent)
+    except Exception:
+        pass
+
 
 # ─── Install ID ──────────────────────────────────────────────────────────────
 
@@ -111,7 +254,15 @@ def _is_opted_out() -> bool:
     if _out not in ("", "0", "false", "no"):
         return True
     _in = os.environ.get(_OPT_IN_ENV, "").strip()
-    return _in in ("", "0", "false", "no")
+    if _in not in ("", "0", "false", "no"):
+        return False        # explicit env opt-in still works, unchanged
+    # Otherwise: the answer the user gave when asked, once, in words. None means
+    # never asked, which stays OFF. The env var is no longer the only way in,
+    # because requiring one is what took the signal to zero.
+    stored = _stored_consent()
+    if stored is not None:
+        return not stored
+    return True
 
 
 # Build and CI runners fire the CLI on every cold job, which used to look like
@@ -242,8 +393,66 @@ def _runtime_props() -> dict:
             "python_version": f"{sys.version_info.major}.{sys.version_info.minor}",
             "install_method": _install_method(),
             "platform": sys.platform,
+            **_environment_props(),
         }
     return dict(_RUNTIME_CACHE)
+
+
+def _environment_props() -> dict:
+    """What KIND of thing is running nable. Categories only, never identifiers.
+
+    This exists because the numbers could not tell a customer from a robot. On
+    2026-08-14, 19 "machines" appeared in 36 hours: one per released version,
+    0.8.201 through 0.8.209 in order, three scans each seconds apart, five of
+    them running a complete wizard -> scan -> tool -> heartbeat sequence in under
+    a minute, none ever seen again. That is a harness walking the release
+    history, and it is indistinguishable in the data from 19 people having a
+    terrible first day. Every funnel number is worthless until the two can be
+    told apart.
+
+    The consent prompt does most of this work by construction, because only an
+    interactive human can answer it. These fields cover what is left, and let the
+    classifier be checked rather than believed:
+
+      tty             a human at a terminal, or a pipe
+      container       /.dockerenv or /run/.containerenv
+      env_kind        uv | venv | pipx | conda | system
+      layout          site-packages | source | other
+      install_age_s   how old this install ID was when the process started
+
+    install_age_s is the sharpest of them. A returning user's ID is days or
+    months old. An ID created four seconds ago that is already emitting a scan
+    belongs to an environment that will not exist in a minute. It is a stat() on
+    a file we already read.
+
+    None of these identify a person or a machine: no paths, no hostname, no
+    username, no IP. Same bar as install_health.install_shape, which this reuses
+    rather than restating, because two copies of a rule are only equal on the day
+    they are written.
+    """
+    import sys
+    import time
+
+    props: dict = {}
+    try:
+        from .install_health import install_shape
+        shape = install_shape()
+        for k in ("env_kind", "layout", "container"):
+            if k in shape:
+                props[k] = shape[k]
+    except Exception:
+        pass
+    try:
+        props["tty"] = bool(sys.stdin.isatty() and sys.stdout.isatty())
+    except Exception:
+        props["tty"] = False
+    try:
+        # Age at process start, which is the question that matters: how
+        # established was this install when it did the thing we are looking at.
+        props["install_age_s"] = max(0, int(time.time() - _ID_FILE.stat().st_mtime))
+    except Exception:
+        props["install_age_s"] = 0
+    return props
 
 
 def _send_event(install_id: str, event: str, properties: dict) -> None:
