@@ -2571,6 +2571,22 @@ def main(args: list[str] | None = None) -> None:
     # the one-time welcome event) when they are present.
     _help_or_version = any(a in ("-h", "--help", "--version") for a in args)
 
+    # Arm the one-time telemetry consent question. It fires from atexit AFTER
+    # this command has finished and printed, so it costs the first run nothing
+    # and gates nothing, and it asks whether or not the command worked. Armed
+    # here rather than in entry.py because this is the interactive CLI path: the
+    # MCP server never reaches main(), and could not be prompted anyway with
+    # JSON-RPC on its stdin.
+    #
+    # --help and --version stay side-effect-free for the same reason the welcome
+    # banner does. Someone checking a version string is not starting a session.
+    if not _help_or_version:
+        try:
+            from .telemetry import arm_consent_prompt
+            arm_consent_prompt()
+        except Exception:
+            pass
+
     # `guard` output belongs to the guard: no first-run welcome, no PATH
     # warning. The hook variant is parsed as JSON by the agent harness, and
     # `guard check` is what people put in recordings and scripts. Neither
