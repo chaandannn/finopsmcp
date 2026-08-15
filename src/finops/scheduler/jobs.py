@@ -7,6 +7,7 @@ APScheduler jobs that run on a schedule to:
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import os
 from datetime import date, timedelta
@@ -149,9 +150,9 @@ async def _snapshot_all() -> dict:
             cur_ok = out["rows_written"] > 0 or out["files_read"] > 0
             if cur_ok:
                 results["aws"] = (
-                    f"ok — {out['rows_written']} rows from the billing export, "
+                    f"ok: {out['rows_written']} rows from the billing export, "
                     f"${out['cost']['usd']:.6f}")
-                log.info("Snapshot: aws via CUR — %d rows over %d day(s), $%.6f",
+                log.info("Snapshot: aws via CUR, %d rows over %d day(s), $%.6f",
                          out["rows_written"], out["days_written"], out["cost"]["usd"])
     except Exception as exc:
         # Never fatal. A CUR that cannot be read should fall through to the path
@@ -416,6 +417,36 @@ async def _send_daily_digest() -> bool:
 
 
 # ── Sync wrappers for APScheduler ─────────────────────────────────────────────
+
+def _as_unattended(fn):
+    """Mark a scheduled job as work nobody is watching.
+
+    Everything the job calls inherits the mark, which is what stops a
+    per-request Cost Explorer charge accruing on a timer. It is applied at
+    REGISTRATION rather than inside each job so a new job added later is covered
+    by default: the failure this guards against is the call site somebody forgot,
+    and a rule you have to remember is not a rule.
+
+    Set inside the wrapper, not around it: APScheduler runs jobs in a thread
+    pool, and a contextvar set on the registering thread would not be visible on
+    the worker that actually runs the job.
+    """
+    @functools.wraps(fn)
+    def runner(*a, **kw):
+        from ..billing_access import unattended_context
+        with unattended_context():
+            return fn(*a, **kw)
+    return runner
+
+
+def _add_job(fn, trigger, *, id: str, **kw):
+    """The only place a job is registered, so the mark cannot be skipped.
+
+    tests/test_unattended_never_bills.py asserts nothing calls
+    _scheduler.add_job directly.
+    """
+    return _scheduler.add_job(_as_unattended(fn), trigger, id=id, **kw)
+
 
 def _run(coro):
     """Run a coroutine to completion and return its result (or None on error).
@@ -841,43 +872,43 @@ def start_scheduler() -> BackgroundScheduler | None:
 
     # Daily snapshot at 01:00 UTC
     snapshot_cron = os.environ.get("FINOPS_SNAPSHOT_CRON", "0 1 * * *")
-    _scheduler.add_job(job_snapshot, CronTrigger.from_crontab(snapshot_cron), id="snapshot", replace_existing=True)
+    _add_job(job_snapshot, CronTrigger.from_crontab(snapshot_cron), id="snapshot", replace_existing=True)
 
     # Anomaly check at 02:00 UTC (after snapshot)
     anomaly_cron = os.environ.get("FINOPS_ANOMALY_CRON", "0 2 * * *")
-    _scheduler.add_job(job_detect_and_alert, CronTrigger.from_crontab(anomaly_cron), id="anomaly", replace_existing=True)
+    _add_job(job_detect_and_alert, CronTrigger.from_crontab(anomaly_cron), id="anomaly", replace_existing=True)
 
     # Daily digest at 09:00 UTC
     digest_cron = os.environ.get("FINOPS_DIGEST_CRON", "0 9 * * *")
-    _scheduler.add_job(job_daily_digest, CronTrigger.from_crontab(digest_cron), id="digest", replace_existing=True)
+    _add_job(job_daily_digest, CronTrigger.from_crontab(digest_cron), id="digest", replace_existing=True)
 
     # Invoice email fetch every 6 hours
     invoice_cron = os.environ.get("FINOPS_INVOICE_CRON", "0 */6 * * *")
-    _scheduler.add_job(job_invoice_fetch, CronTrigger.from_crontab(invoice_cron), id="invoice_fetch", replace_existing=True)
+    _add_job(job_invoice_fetch, CronTrigger.from_crontab(invoice_cron), id="invoice_fetch", replace_existing=True)
 
     # Weekly email digest every Monday at 09:00 UTC
     weekly_cron = os.environ.get("FINOPS_WEEKLY_CRON", "0 9 * * 1")
-    _scheduler.add_job(job_weekly_email_digest, CronTrigger.from_crontab(weekly_cron), id="weekly_digest", replace_existing=True)
+    _add_job(job_weekly_email_digest, CronTrigger.from_crontab(weekly_cron), id="weekly_digest", replace_existing=True)
 
     # Weekly Slack insight every Monday at 09:30 UTC (30 min after email)
     weekly_slack_cron = os.environ.get("FINOPS_WEEKLY_SLACK_CRON", "30 9 * * 1")
-    _scheduler.add_job(job_weekly_slack_insight, CronTrigger.from_crontab(weekly_slack_cron), id="weekly_slack_insight", replace_existing=True)
+    _add_job(job_weekly_slack_insight, CronTrigger.from_crontab(weekly_slack_cron), id="weekly_slack_insight", replace_existing=True)
 
     # Auto-verify acted-on recommendations daily at 03:00 UTC, so a merged-and-applied
     # rightsizing PR gets its realized saving recorded within 24h, as the PR body
     # promises. Closes the find -> fix -> prove loop without a human re-running anything.
     verify_cron = os.environ.get("FINOPS_VERIFY_CRON", "0 3 * * *")
-    _scheduler.add_job(job_auto_verify, CronTrigger.from_crontab(verify_cron), id="auto_verify", replace_existing=True)
+    _add_job(job_auto_verify, CronTrigger.from_crontab(verify_cron), id="auto_verify", replace_existing=True)
 
     # Credit-to-cash flip watch daily at 04:00 UTC. Fires once when promotional
     # credits stop covering the bill — the moment an early startup first feels
     # cost pain, which AWS sends no native notification for.
     credit_cron = os.environ.get("FINOPS_CREDIT_CRON", "0 4 * * *")
-    _scheduler.add_job(job_credit_check, CronTrigger.from_crontab(credit_cron), id="credit_check", replace_existing=True)
+    _add_job(job_credit_check, CronTrigger.from_crontab(credit_cron), id="credit_check", replace_existing=True)
 
     # AI/token spend monitor at 05:00 UTC: token-spend spikes + commitment attention
     ai_monitor_cron = os.environ.get("FINOPS_AI_MONITOR_CRON", "0 5 * * *")
-    _scheduler.add_job(job_ai_monitor, CronTrigger.from_crontab(ai_monitor_cron), id="ai_monitor", replace_existing=True)
+    _add_job(job_ai_monitor, CronTrigger.from_crontab(ai_monitor_cron), id="ai_monitor", replace_existing=True)
 
 
     _scheduler.start()

@@ -58,7 +58,13 @@ def backfill_from_cost_explorer(days: int = _TARGET_DAYS) -> dict:
 
         from ..storage.snapshots import store_snapshot
 
-        ce = boto3.client("ce", region_name="us-east-1")
+        # Through the gate, not around it. This runs from _snapshot_all on every
+        # scheduled snapshot and paginates, so it is not one Cost Explorer
+        # request on a timer, it is several. Routed here it refuses in an
+        # unattended context and the CUR covers the same history for free.
+        from ..billing_access import ce_client
+
+        ce = ce_client(region="us-east-1", reason="anomaly backfill")
         sts_account = boto3.client("sts").get_caller_identity()["Account"]
         end = date.today()
         start = end - timedelta(days=days)

@@ -49,6 +49,7 @@ vendor, not about this code.
 from __future__ import annotations
 
 import ast
+import inspect
 import io
 import json
 import logging
@@ -230,13 +231,23 @@ def test_the_cron_it_arms_is_the_billed_and_ticket_filing_pair(monkeypatch):
         "FINOPS_DB_PATH; the test cannot observe what gets armed"
     )
     armed = _armed_jobs()
+
+    # Jobs are registered wrapped, so the mark that forbids a billed Cost
+    # Explorer call on a timer is carried by the thing APScheduler actually
+    # runs (jobs._add_job). inspect.unwrap follows functools.wraps' __wrapped__
+    # to the real function, so a genuine rename or replacement still fails
+    # here; only the wrapper is seen through.
     assert armed.get("snapshot") is not None
-    assert armed["snapshot"].func is jobs.job_snapshot, (
+    assert inspect.unwrap(armed["snapshot"].func) is jobs.job_snapshot, (
         "the 01:00 job is no longer job_snapshot, which is the Cost Explorer "
         "path the spend-safety tests above are written about"
     )
+    assert armed["snapshot"].func is not jobs.job_snapshot, (
+        "the snapshot job was armed unwrapped, so nothing marks it unattended "
+        "and Cost Explorer is reachable from the cron again"
+    )
     assert armed.get("anomaly") is not None
-    assert armed["anomaly"].func is jobs.job_detect_and_alert, (
+    assert inspect.unwrap(armed["anomaly"].func) is jobs.job_detect_and_alert, (
         "the 02:00 job is no longer job_detect_and_alert, which is the path "
         "that auto-creates Jira/Linear/GitHub tickets unattended"
     )

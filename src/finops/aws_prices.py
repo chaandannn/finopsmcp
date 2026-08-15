@@ -66,6 +66,13 @@ ATHENA_MIN_BYTES_BILLED = 10 * 1024 * 1024
 S3_LIST_PER_1000 = 0.005
 S3_GET_PER_1000 = 0.0004
 
+# CloudWatch GetMetricData, per METRIC requested (not per request: one call can
+# carry 500). The first million API requests a month are free, which no other
+# billing-data source offers, and it is why AWS/Billing EstimatedCharges is the
+# only "what has today cost so far" figure that does not put a meter on asking.
+CLOUDWATCH_PER_1000_METRICS = 0.01
+CLOUDWATCH_FREE_REQUESTS_PER_MONTH = 1_000_000
+
 # S3 data transfer OUT to the internet, per GB, first 10TB. Zero when the reader
 # runs in the same region as the bucket, which is the hosted case and the reason
 # a hosted box can honestly claim it adds nothing to the bill. A laptop pays

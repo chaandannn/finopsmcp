@@ -248,8 +248,8 @@ def test_the_aws_setup_path_points_at_a_template_that_exists():
 # SHRINK as call sites move to billing_access.ce_client(). It may never grow: a
 # new entry means a new way to bill the customer that bypasses the gate.
 LEGACY_CE_SITES: frozenset[str] = frozenset({
-    "anomaly/backfill.py", "anomaly/detector.py", "attribution/fetcher.py",
-    "cli_scan.py", "connectors/aws.py", "connectors/aws_org.py",
+    "anomaly/detector.py", "attribution/fetcher.py",
+    "cli_scan.py", "connectors/aws_org.py",
     "connectors/aws_services/bedrock.py", "connectors/aws_services/documentdb.py",
     "connectors/aws_services/marketplace.py", "connectors/aws_services/textract.py",
     "connectors/kubernetes_costs.py", "connectors/llm_costs.py",
