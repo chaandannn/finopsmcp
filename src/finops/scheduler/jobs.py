@@ -402,7 +402,25 @@ def _run(coro):
 
 
 def job_snapshot() -> None:
+    """Ingest, then roll up. The rollup is the half that makes it readable.
+
+    _snapshot_all has been writing cost_snapshots on this cron all along and
+    nothing read it: the dashboard fetches from the provider APIs live instead,
+    under a 30-second cap. Refreshing here is what turns the ingest into
+    something a page can serve from, and it belongs in the same job so the two
+    can never drift out of step.
+
+    A rollup failure must not fail the snapshot. The source of truth is
+    cost_snapshots; a stale rollup is recoverable on the next run, a lost
+    snapshot is a hole in the customer's history that CE may not restate.
+    """
     _run(_snapshot_all())
+    try:
+        from ..storage.rollups import refresh_rollups
+        stats = refresh_rollups()
+        log.info("rollups refreshed after snapshot: %s cells", stats.get("cells"))
+    except Exception as exc:
+        log.warning("rollup refresh failed after snapshot: %s", exc)
 
 
 def job_detect_and_alert() -> None:
