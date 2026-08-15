@@ -42,6 +42,36 @@ ALB_HOURLY = 0.0225
 NLB_HOURLY = 0.0225
 CLB_HOURLY = 0.025
 
+# ── what reading the bill costs the customer ─────────────────────────────────
+#
+# nable's claim is that scanning never adds to the bill. That is only checkable
+# if the price of every read we perform is written down somewhere, so these are
+# here to be summed rather than asserted.
+#
+# The contrast that motivates the CUR-direct reader: Cost Explorer bills per
+# REQUEST and Athena bills per BYTE SCANNED, while an S3 GET of a file the
+# customer already pays to store is three orders of magnitude cheaper than
+# either. Same data, same detail, different meter.
+
+# Cost Explorer, per API request. The only one of these that recurs per QUESTION
+# rather than per byte, which is what makes it expensive on a timer.
+COST_EXPLORER_PER_REQUEST = 0.01
+
+# Athena, per TB scanned, with a 10MB per-query floor AWS bills regardless.
+ATHENA_PER_TB_SCANNED = 5.00
+ATHENA_MIN_BYTES_BILLED = 10 * 1024 * 1024
+
+# S3 request pricing, us-east-1 Standard. LIST is ~12x a GET, which is why the
+# reader lists once per period and then reads only what changed.
+S3_LIST_PER_1000 = 0.005
+S3_GET_PER_1000 = 0.0004
+
+# S3 data transfer OUT to the internet, per GB, first 10TB. Zero when the reader
+# runs in the same region as the bucket, which is the hosted case and the reason
+# a hosted box can honestly claim it adds nothing to the bill. A laptop pays
+# this, so it is counted rather than assumed away.
+S3_EGRESS_PER_GB = 0.09
+
 # Rounded to cents at definition, not at each use. An hourly rate times 730 lands
 # on fractions of a cent (0.0225 * 730 = 16.425), and a caller that rounds for
 # display then no longer equals the constant it came from. Every comparison

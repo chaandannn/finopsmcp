@@ -111,6 +111,17 @@ org = [
 croniter = [
     "croniter>=2.0.0",          # precise cron scheduling for report subscriptions
 ]
+cur = [
+    # Reads the AWS Cost and Usage Report straight out of the customer's own S3
+    # bucket, which is the only path to their bill that does not bill them for
+    # the privilege: Cost Explorer charges $0.01 per request and Athena $5 per
+    # TB scanned, both to the customer's account. An S3 GET of a file they
+    # already pay to store is fractions of a cent. Optional because it is 30MB
+    # and the free local CLI answers interactive questions through Cost
+    # Explorer, where one request is the right price for an answer somebody is
+    # waiting for. Hosted boxes install it and never call Cost Explorer at all.
+    "duckdb>=1.0.0",
+]
 all = [
     "snowflake-connector-python>=3.6.0",
     "msal>=1.28.0",
@@ -122,6 +133,7 @@ all = [
     "kubernetes>=29.0.0",
     "psycopg2-binary>=2.9.0",
     "croniter>=2.0.0",
+    "duckdb>=1.0.0",           # see [cur]: read the bill from S3 instead of paying Athena
     "azure-mgmt-costmanagement>=4.0.0",
     "azure-identity>=1.15.0",
     "pyasn1>=0.6.4",  # see [gcp] extra: keep the transitive off the 0.6.3 advisories

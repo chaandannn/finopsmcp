@@ -133,7 +133,34 @@ async def _snapshot_all() -> dict:
     }
 
     results: dict[str, str] = {}
+
+    # AWS comes from the billing export when there is one. The export is the
+    # customer's own file in their own bucket, so reading it costs a few S3 GETs;
+    # the connector path below reaches Cost Explorer, which bills them $0.01 per
+    # request, on a timer, with nobody watching. Same numbers, different meter.
+    #
+    # Skipping the connector on success is the whole saving. Running both would
+    # read the bill twice and pay for one of them anyway.
+    cur_ok = False
+    try:
+        from ..connectors import cur_s3
+        if cur_s3.is_configured():
+            out = cur_s3.ingest_recent(days=3)
+            cur_ok = out["rows_written"] > 0 or out["files_read"] > 0
+            if cur_ok:
+                results["aws"] = (
+                    f"ok — {out['rows_written']} rows from the billing export, "
+                    f"${out['cost']['usd']:.6f}")
+                log.info("Snapshot: aws via CUR — %d rows over %d day(s), $%.6f",
+                         out["rows_written"], out["days_written"], out["cost"]["usd"])
+    except Exception as exc:
+        # Never fatal. A CUR that cannot be read should fall through to the path
+        # that works, not take the whole nightly snapshot down with it.
+        log.warning("CUR ingest failed, falling back to the AWS connector: %s", exc)
+
     for name, connector in connectors.items():
+        if name == "aws" and cur_ok:
+            continue
         if not await connector.is_configured():
             continue
         try:
