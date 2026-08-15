@@ -223,10 +223,11 @@ async def get_efficiency_scorecard(
             raw_commits = analyze_commitments(tag_filter=tag_filter)
             if raw_commits:
                 commitment = {
-                    "coverage_pct": (
-                        raw_commits.savings_plan_coverage_pct +
-                        raw_commits.ri_coverage_pct
-                    ) / 2,
+                    # None-safe: either instrument may be unreadable. Falls back
+                    # to 0.0 only for the scorecard's numeric contract, and
+                    # coverage_known says which it was.
+                    "coverage_pct": raw_commits.combined_coverage_pct or 0.0,
+                    "coverage_known": raw_commits.combined_coverage_pct is not None,
                     "on_demand_usd": raw_commits.uncovered_on_demand_usd,
                     "potential_savings_usd": sum(
                         r.get("monthly_savings", 0)

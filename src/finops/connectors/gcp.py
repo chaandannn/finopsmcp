@@ -42,8 +42,13 @@ class GCPConnector(BaseConnector):
         )
         if has_creds and self._billing_account_ids:
             return True
+        # to_thread: the GCP probe walks Application Default Credentials
+        # synchronously. Same reasoning as azure.py's is_configured, and the two
+        # compound because _active() gathers them.
+        import asyncio
+
         from ..ambient import PROBES
-        amb = PROBES["gcp"]()
+        amb = await asyncio.to_thread(PROBES["gcp"])
         if amb.usable and not self._billing_account_ids:
             self._billing_account_ids = amb.scopes
         return amb.usable

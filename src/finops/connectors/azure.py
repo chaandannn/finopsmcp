@@ -30,8 +30,23 @@ class AzureConnector(BaseConnector):
         required = ["AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET", "AZURE_TENANT_ID"]
         if all(os.getenv(v) for v in required) and self._subscription_ids:
             return True
+        # to_thread, not a direct call. PROBES["azure"] shells out to the Azure
+        # SDK's credential chain, which is synchronous and capped at 6s. Calling
+        # it straight from a coroutine pins the event loop for that whole time:
+        # nothing else runs, not the sibling provider probe in the same gather,
+        # not the per-provider timeout that is supposed to bound a hung API, not
+        # a streaming response to the user.
+        #
+        # _active() gathers is_configured() across providers and is the front
+        # door for essentially every cost tool, so on a machine where the SDKs
+        # are installed and the credential chain is slow (the docker and
+        # enterprise image) the user waits Azure's probe PLUS GCP's, serially,
+        # once every ambient.CACHE_TTL_S of tool use. Up to 12 seconds of dead
+        # air before an answer starts.
+        import asyncio
+
         from ..ambient import PROBES
-        amb = PROBES["azure"]()
+        amb = await asyncio.to_thread(PROBES["azure"])
         if amb.usable and not self._subscription_ids:
             # Adopt what the ambient credential can actually see, so the rest of
             # the connector has a scope to query without a second setup step.

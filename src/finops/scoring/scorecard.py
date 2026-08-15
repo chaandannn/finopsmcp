@@ -70,6 +70,43 @@ def _clamp(v: float, lo: float = 0.0, hi: float = 100.0) -> float:
     return max(lo, min(hi, v))
 
 
+# Metadata keys one dimension publishes and build_scorecard reads back out. A
+# dimension's metadata is otherwise free-form and local to that dimension; these
+# five are the only cross-boundary contract, and they are the only ones where a
+# producer that forgets to publish costs the customer a number.
+#
+# The cost of not naming them: _score_commitment_coverage computed
+# potential_savings_usd into a local, never wrote it to meta, and build_scorecard
+# read it back with .get(key, 0). A dict default cannot tell "never published"
+# from "genuinely zero", so an account at 10% coverage with a $16,000/mo Savings
+# Plan opportunity was graded worst on commitments and told it could recover $0,
+# for as long as that code has existed, with nothing red anywhere.
+_CROSS_DIMENSION_KEYS: dict[str, str] = {
+    "total_waste_usd": "waste_reduction",
+    "potential_savings_usd": "commitment_coverage",
+}
+
+
+def _require_published(dim: "DimensionScore", key: str) -> float:
+    """Read a cross-dimension metadata key, refusing to invent a zero for it.
+
+    A dimension that could not be computed says so with data_available=False and
+    contributes nothing, which is a real answer. A dimension that ran and then
+    failed to publish its key is a wiring bug, and silently scoring it as $0 is
+    how this one survived. Absent-but-available is loud; everything else keeps
+    the scorecard building, because a partial score beats no score.
+    """
+    if key in dim.metadata:
+        return float(dim.metadata[key] or 0)
+    if not dim.data_available:
+        return 0.0
+    raise KeyError(
+        f"dimension {dim.name!r} ran with data available but never published "
+        f"{key!r}, which build_scorecard needs for the recoverable total. "
+        f"It published: {sorted(dim.metadata)}"
+    )
+
+
 # ── Score result dataclasses ──────────────────────────────────────────────────
 
 @dataclass
@@ -360,6 +397,19 @@ def _score_commitment_coverage(
     potential_savings = commitment_data.get("potential_savings_usd", 0)
     meta["coverage_pct"] = coverage_pct
     meta["on_demand_spend_usd"] = on_demand_spend
+    # build_scorecard reads this key back out to compute the headline
+    # "Estimated $X/month recoverable". It was computed into the local above and
+    # never published, so the read always found the .get() default and the
+    # commitment component of the recoverable total was silently zero: an account
+    # at 10% coverage with a $16,000/mo Savings Plan opportunity was graded worst
+    # on commitments and then told it could recover $0. The dollar figure did
+    # survive verbatim in the actions text below, which is why the report named
+    # the problem, priced it, and still totalled it at nothing.
+    #
+    # This is why _CROSS_DIMENSION_KEYS exists below: .get(key, 0) cannot tell
+    # "the producer never wrote it" from "the producer wrote zero", so nothing
+    # about this failure was observable from either side.
+    meta["potential_savings_usd"] = potential_savings
 
     # 70% coverage = 100 score; 0% = 0; penalise for high on-demand waste
     raw = _clamp(coverage_pct / 70 * 100)
@@ -479,8 +529,30 @@ def _score_anomaly_response(
         from sqlalchemy import select, and_, func
 
         engine = get_engine()
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).isoformat()
-        ack_cutoff = (datetime.now(timezone.utc) - timedelta(hours=response_window_hours))
+        # datetime objects, NOT .isoformat(). anomalies.detected_at is a DateTime
+        # column; binding a string makes SQLAlchemy type the parameter as String
+        # and skip the DateTime bind processor, so SQLite compares two strings
+        # that are not in the same format:
+        #
+        #   stored by the DateTime processor : '2026-08-06 14:30:00.000000'
+        #   bound from .isoformat()          : '2026-08-06T12:00:00+00:00'
+        #
+        # A space sorts before a T, so every anomaly on the same UTC date as the
+        # cutoff compares as OLDER than it, whatever the clock says. Measured: an
+        # anomaly 45.5 hours old, comfortably inside the 48 hour response window,
+        # counted as overdue; binding the datetime returns 0.
+        #
+        # The same defect on `cutoff` runs the other way: an anomaly 29d18h old
+        # sorted below a 30 day cutoff and vanished from total_anomalies_30d, so
+        # the dimension reported "No anomalies detected in the last 30 days" and
+        # handed out a flat 80 to an account that had them.
+        #
+        # Both feed the customer-facing scorecard and the tickets
+        # create_scorecard_tickets opens from it. PostgreSQL casts the literal
+        # and gets this right, so the default local install was the wrong one and
+        # the shared-Postgres deployment hid it.
+        cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+        ack_cutoff = datetime.now(timezone.utc) - timedelta(hours=response_window_hours)
 
         with engine.connect() as conn:
             total_q = conn.execute(
@@ -491,7 +563,7 @@ def _score_anomaly_response(
                 select(func.count()).where(
                     and_(
                         anomalies.c.detected_at >= cutoff,
-                        anomalies.c.detected_at <= ack_cutoff.isoformat(),
+                        anomalies.c.detected_at <= ack_cutoff,
                         anomalies.c.acknowledged == False,  # noqa: E712
                     )
                 )
@@ -567,32 +639,30 @@ def _get_score_trend(scope: str, current_score: float) -> tuple[str, float]:
     Returns (trend_label, delta_pts).
     """
     try:
-        from ..storage.db import get_engine
-        from sqlalchemy import text
+        from ..storage.db import get_engine, scorecard_history
+        from sqlalchemy import select
 
         engine = get_engine()
         week_ago = (date.today() - timedelta(days=7)).isoformat()
 
+        # No CREATE TABLE here. scorecard_history is declared on
+        # storage.db.metadata now, so create_all renders it for whichever dialect
+        # is connected and _run_sqlite_migrations can evolve it like every other
+        # table. It used to be a hand-written CREATE TABLE string in this file,
+        # duplicated between here and _persist_score, carrying AUTOINCREMENT,
+        # which PostgreSQL rejects as a syntax error. Both sites wrapped
+        # everything in a bare except that only log.debug'd, so on a shared-team
+        # Postgres deployment the table was never created, every read and write
+        # failed silently, and the scorecard reported "no_history" forever while
+        # looking perfectly healthy.
         with engine.connect() as conn:
-            # Create table if it doesn't exist
-            conn.execute(text("""
-                CREATE TABLE IF NOT EXISTS scorecard_history (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    scope TEXT NOT NULL,
-                    score_date TEXT NOT NULL,
-                    total_score REAL NOT NULL,
-                    grade TEXT NOT NULL,
-                    details TEXT,
-                    captured_at TEXT NOT NULL
-                )
-            """))
-            conn.commit()
-
-            row = conn.execute(text("""
-                SELECT total_score FROM scorecard_history
-                WHERE scope = :scope AND score_date <= :cutoff
-                ORDER BY score_date DESC LIMIT 1
-            """), {"scope": scope, "cutoff": week_ago}).fetchone()
+            row = conn.execute(
+                select(scorecard_history.c.total_score)
+                .where(scorecard_history.c.scope == scope)
+                .where(scorecard_history.c.score_date <= week_ago)
+                .order_by(scorecard_history.c.score_date.desc())
+                .limit(1)
+            ).fetchone()
 
         if not row:
             return "no_history", 0.0
@@ -611,39 +681,38 @@ def _get_score_trend(scope: str, current_score: float) -> tuple[str, float]:
 def _persist_score(scope: str, score: float, grade: str, details: dict) -> None:
     """Save today's score for trend tracking."""
     try:
-        from ..storage.db import get_engine
-        from sqlalchemy import text
+        from ..storage.db import get_engine, scorecard_history
 
         engine = get_engine()
         today = date.today().isoformat()
         now   = datetime.now(timezone.utc).isoformat()
 
-        with engine.connect() as conn:
-            conn.execute(text("""
-                CREATE TABLE IF NOT EXISTS scorecard_history (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    scope TEXT NOT NULL,
-                    score_date TEXT NOT NULL,
-                    total_score REAL NOT NULL,
-                    grade TEXT NOT NULL,
-                    details TEXT,
-                    captured_at TEXT NOT NULL
+        # Core statements against the declared table, so the dialect connected
+        # decides the SQL. The hand-written CREATE TABLE that used to live here
+        # (a second copy of the one in _get_score_trend) carried AUTOINCREMENT,
+        # which PostgreSQL rejects outright, and the bare except below meant a
+        # shared-team deployment simply never persisted a score and never said so.
+        #
+        # Delete-then-insert in ONE transaction, not two autocommits. The old
+        # version ran both on a plain connect() and committed at the end, so a
+        # concurrent writer could land between them; today the unique index on
+        # (scope, score_date) would reject that second write anyway, which is the
+        # point of having the constraint rather than emulating it.
+        with engine.begin() as conn:
+            conn.execute(
+                scorecard_history.delete().where(
+                    (scorecard_history.c.scope == scope)
+                    & (scorecard_history.c.score_date == today)
                 )
-            """))
-            # Upsert today's score
-            conn.execute(text("""
-                DELETE FROM scorecard_history
-                WHERE scope = :scope AND score_date = :today
-            """), {"scope": scope, "today": today})
-            conn.execute(text("""
-                INSERT INTO scorecard_history (scope, score_date, total_score, grade, details, captured_at)
-                VALUES (:scope, :today, :score, :grade, :details, :now)
-            """), {
-                "scope": scope, "today": today,
-                "score": round(score, 1), "grade": grade,
-                "details": json.dumps(details), "now": now,
-            })
-            conn.commit()
+            )
+            conn.execute(scorecard_history.insert().values(
+                scope=scope,
+                score_date=today,
+                total_score=round(score, 1),
+                grade=grade,
+                details=json.dumps(details),
+                captured_at=now,
+            ))
     except Exception as e:
         log.debug("Could not persist scorecard: %s", e)
 
@@ -695,10 +764,14 @@ def build_scorecard(
     # Trend
     trend, delta = _get_score_trend(scope, total)
 
-    # Potential savings
+    # Potential savings. Both keys are read across a dimension boundary, so both
+    # go through _require_published: a .get() default here quietly turns a
+    # producer that forgot to publish into a $0 component, which is exactly how
+    # the commitment opportunity vanished from this total. A missing key now says
+    # so instead of costing the customer the sentence.
     potential = (
-        waste.metadata.get("total_waste_usd", 0)
-        + commits.metadata.get("potential_savings_usd", 0) * 0.7
+        _require_published(waste, "total_waste_usd")
+        + _require_published(commits, "potential_savings_usd") * 0.7
     )
 
     # Top wins — pick the 3 lowest-scoring dimensions' top action

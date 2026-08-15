@@ -197,16 +197,32 @@ async def _section_commitments(filters: dict, **_) -> tuple[list[dict], str]:
         if not analysis:
             return [], ""
 
+        # None means the CE coverage call was denied, not that coverage is zero.
+        # Say "unknown" rather than crashing on the comparison or, worse, painting
+        # a red light on a customer whose coverage nobody could read.
         sp_cov = analysis.savings_plan_coverage_pct
         ri_cov = analysis.ri_coverage_pct
         waste  = analysis.total_waste_usd
-        emoji  = "🟢" if sp_cov >= 80 else "🟡" if sp_cov >= 50 else "🔴"
+        score  = analysis.combined_coverage_pct
+        emoji  = "⚪" if score is None else "🟢" if score >= 80 else "🟡" if score >= 50 else "🔴"
 
         blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": (
-            f"{emoji} *Commitments* — SP coverage {sp_cov:.0f}%, RI coverage {ri_cov:.0f}%\n"
+            f"{emoji} *Commitments* — SP coverage "
+            f"{'unknown' if sp_cov is None else format(sp_cov, '.0f') + '%'}, "
+            f"RI coverage {'unknown' if ri_cov is None else format(ri_cov, '.0f') + '%'}\n"
             f"  Unused commitment waste: *${waste:,.0f}/mo*"
         )}}]
-        return blocks, f"SP {sp_cov:.0f}% / RI {ri_cov:.0f}% coverage, ${waste:,.0f}/mo waste"
+        # The plain-text fallback needs the same None handling as the blocks
+        # above. It did not have it, and because this whole section is wrapped in
+        # a try/except that logs and returns empty, the result was not a crash: a
+        # customer missing ce:GetSavingsPlansCoverage simply had the commitments
+        # section VANISH from their weekly digest, every week, with the reason
+        # only in a debug log they never see. A missing section reads as "nothing
+        # to report here", which is the opposite of true for an account with
+        # unreadable coverage and $50,000/mo uncovered on-demand.
+        _sp = "unknown" if sp_cov is None else f"{sp_cov:.0f}%"
+        _ri = "unknown" if ri_cov is None else f"{ri_cov:.0f}%"
+        return blocks, f"SP {_sp} / RI {_ri} coverage, ${waste:,.0f}/mo waste"
     except Exception as e:
         log.warning("commitments section failed: %s", e)
         return [], ""

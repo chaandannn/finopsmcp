@@ -7,6 +7,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import and_, select
+from sqlalchemy.exc import IntegrityError
 
 from ..storage.db import anomalies, get_engine
 from ..storage.snapshots import get_history
@@ -257,39 +258,74 @@ def persist_anomaly(result: AnomalyResult) -> tuple[int, bool]:
     Postgres, the shared-team mode the Startups tier sells).
     """
     engine = get_engine()
-    with engine.begin() as conn:
-        existing = conn.execute(
-            select(anomalies.c.id).where(
-                and_(
-                    anomalies.c.provider == result.provider,
-                    anomalies.c.service == result.service,
-                    anomalies.c.account_id == result.account_id,
-                    anomalies.c.snapshot_date == result.snapshot_date.isoformat(),
-                    anomalies.c.direction == result.direction,
-                )
-            ).limit(1)
-        ).first()
-        if existing is not None:
-            return int(existing[0]), False
+    dedup = and_(
+        anomalies.c.provider == result.provider,
+        anomalies.c.service == result.service,
+        anomalies.c.account_id == result.account_id,
+        anomalies.c.snapshot_date == result.snapshot_date.isoformat(),
+        anomalies.c.direction == result.direction,
+    )
 
-        r = conn.execute(
-            anomalies.insert().values(
-                provider=result.provider,
-                service=result.service,
-                account_id=result.account_id,
-                detected_at=datetime.now(timezone.utc),
-                snapshot_date=result.snapshot_date.isoformat(),
-                severity=result.severity,
-                direction=result.direction,
-                pct_change=result.pct_change,
-                z_score=result.z_score,
-                baseline_mean=result.baseline_mean,
-                current_amount=result.current_amount,
-                acknowledged=False,
-                notified=False,
+    def _lookup(conn) -> int | None:
+        row = conn.execute(select(anomalies.c.id).where(dedup).limit(1)).first()
+        return int(row[0]) if row is not None else None
+
+    with engine.begin() as conn:
+        existing = _lookup(conn)
+        if existing is not None:
+            return existing, False
+
+        try:
+            r = conn.execute(
+                anomalies.insert().values(
+                    provider=result.provider,
+                    service=result.service,
+                    account_id=result.account_id,
+                    detected_at=datetime.now(timezone.utc),
+                    snapshot_date=result.snapshot_date.isoformat(),
+                    severity=result.severity,
+                    direction=result.direction,
+                    pct_change=result.pct_change,
+                    z_score=result.z_score,
+                    baseline_mean=result.baseline_mean,
+                    current_amount=result.current_amount,
+                    acknowledged=False,
+                    notified=False,
+                )
             )
-        )
-        return int(r.inserted_primary_key[0]), True
+            return int(r.inserted_primary_key[0]), True
+        except IntegrityError:
+            # Somebody else inserted the same spend event between our SELECT and
+            # our INSERT. The ux_anom_dedup unique index is what turns that into
+            # a catchable error instead of a second row, and this is the half
+            # that decides what the caller is told.
+            #
+            # `False` matters more than the id. scheduler/jobs.py keys every
+            # downstream action on is_new: Slack, Teams, the n8n push, and the
+            # ticket. Reporting True here would fire all four a second time for
+            # one spend event, which is the exact outcome the docstring above
+            # promises cannot happen. The row exists and the alerts already
+            # fired; our job is to say so, not to say we created it.
+            #
+            # Re-read on a FRESH connection. This transaction is poisoned by the
+            # failed statement, and on PostgreSQL every subsequent statement in
+            # it raises InFailedSqlTransaction, so the lookup has to happen
+            # outside it.
+            pass
+
+    with engine.connect() as conn:
+        winner = _lookup(conn)
+    if winner is not None:
+        return winner, False
+    # The unique index rejected the insert and the row is not there to be found,
+    # which means the collision was on something other than the dedup tuple.
+    # Raising beats returning a fabricated id: a caller that believes it has an
+    # anomaly id will write it into a ticket that points at nothing.
+    raise RuntimeError(
+        "anomaly insert was rejected as a duplicate but no matching row exists "
+        f"for {result.provider}/{result.service}/{result.account_id} "
+        f"{result.snapshot_date.isoformat()} {result.direction}"
+    )
 
 
 def get_active_anomalies(

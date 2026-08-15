@@ -354,14 +354,89 @@ def _severity_from_savings_co(monthly_savings: float) -> str:
 # CPU check and Compute Optimizer can both flag the same instance with different
 # waste_type strings; collapsing them to one resource-level key stops the same
 # instance's savings being counted twice in the audit total.
+# Waste types that describe the SAME action on the same resource, grouped by the
+# family they collapse into. This map is the only thing standing between the
+# audit total and double-counting one instance, and for most of its life half of
+# it addressed nobody.
+#
+# Measured 2026-08-14 by walking every `"waste_type": "..."` literal in the tree
+# and diffing it against these keys:
+#
+#   lambda_over_provisioned_memory   no detector has ever emitted this. The one
+#                                    in waste.py emits lambda_memory_over-
+#                                    provisioned. The words are transposed.
+#   idle_rds                         emitted only by cli_scan._demo_payload, the
+#                                    StreamCo sample data, which returns before
+#                                    the audit runs and never reaches dedup. A
+#                                    demo string was load-bearing in production
+#                                    dedup, or would have been if it had matched
+#                                    anything real.
+#
+# Meanwhile the two waste types the deep audit's own RDS detectors actually emit
+# were both absent, so a quiet oversized database collected "stop it" AND
+# "downsize it", each priced in full, and the audit claimed about 1.5x the
+# instance's entire cost as recoverable from it.
+#
+# A key here that matches nothing is invisible: the map is consulted with .get()
+# and a miss just means "not a rightsizing finding", which is the normal case for
+# most findings. Nothing can go red. tests/test_audit_cost_math.py now walks the
+# same literals and fails on any key no detector emits, which is the only way
+# this stays true.
 _RIGHTSIZING_FAMILY: dict[str, str] = {
     "idle_ec2_low_cpu": "ec2-rightsize",
     "compute_optimizer_overprovisioned_ec2": "ec2-rightsize",
-    "idle_rds": "rds-rightsize",
+    # Both RDS detectors describe one action on one instance: this database is
+    # too big for its load. Stop-it and shrink-it are alternatives, never a sum.
+    "rds_idle_no_connections": "rds-rightsize",
+    "rds_overprovisioned": "rds-rightsize",
     "compute_optimizer_overprovisioned_rds": "rds-rightsize",
     "compute_optimizer_overprovisioned_lambda": "lambda-rightsize",
-    "lambda_over_provisioned_memory": "lambda-rightsize",
+    "lambda_memory_overprovisioned": "lambda-rightsize",
 }
+
+
+def _monthly_savings(finding: dict) -> float | None:
+    """A finding's priced monthly saving, or None when it was never priced.
+
+    Not every detected waste has a price. An Aurora Serverless v2 database has no
+    entry in the instance-hour tables because it is not billed per instance-hour,
+    so check_rds_idle can prove nobody has connected to it in 30 days and still
+    have nothing to put in estimated_monthly_savings. It writes None, which is
+    the honest answer: the idle signal was measured, the dollars were not.
+
+    Every consumer read that with `.get("estimated_monthly_savings", 0)`, which
+    does NOT return 0 here. A dict default only applies when the key is ABSENT,
+    and the key is present holding None. So the None flowed straight through:
+
+      one unpriced finding   -> sum() raises TypeError on int + None
+      two or more            -> the descending sort raises on None < float first,
+                                and the by_category / by_severity / by_region
+                                accumulators raise after that
+
+    run_deep_audit therefore raised instead of returning, and cli_scan calls it
+    with no try/except, so one un-pricable database killed `nable scan` with a
+    raw traceback and the customer lost every waste finding in every region.
+    Fixing only the sort key moves the crash two lines down, which is why this is
+    one helper used at every site rather than a guard at each.
+
+    Three states, kept distinct on purpose: a number is a price, None is "not
+    priced", and 0.0 is "priced at zero". Collapsing None into 0.0 would stop the
+    crash and start a quieter lie, counting un-pricable findings as free.
+    """
+    value = finding.get("estimated_monthly_savings")
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        # A detector wrote something non-numeric. Unpriced is the truthful
+        # reading, and it is better than crashing the whole audit over one field.
+        return None
+
+
+def _savings_or_zero(finding: dict) -> float:
+    """For ordering and comparison only, never for a number shown to anyone."""
+    return _monthly_savings(finding) or 0.0
 
 
 def _annotate_evidence(findings: list[dict]) -> list[dict]:
@@ -405,7 +480,7 @@ def _dedup_findings(findings: list[dict]) -> list[dict]:
             f"{finding.get('resource_id','')}{finding.get('waste_type','')}".encode()
         ).hexdigest()[:16]
         existing = by_exact.get(key)
-        if existing is None or finding.get("estimated_monthly_savings", 0) > existing.get("estimated_monthly_savings", 0):
+        if existing is None or _savings_or_zero(finding) > _savings_or_zero(existing):
             by_exact[key] = finding
 
     # Level 2: collapse rightsizing-family findings per resource
@@ -426,7 +501,7 @@ def _dedup_findings(findings: list[dict]) -> list[dict]:
             new_co = finding.get("source") == "compute_optimizer"
             if (new_co and not cur_co) or (
                 new_co == cur_co
-                and finding.get("estimated_monthly_savings", 0) > current.get("estimated_monthly_savings", 0)
+                and _savings_or_zero(finding) > _savings_or_zero(current)
             ):
                 family_winner[fam_key] = finding
 
@@ -624,7 +699,11 @@ def run_deep_audit(
 
     # ── Deduplicate & sort ────────────────────────────────────────────────────
     all_findings = _dedup_findings(all_findings)
-    all_findings.sort(key=lambda f: f.get("estimated_monthly_savings", 0), reverse=True)
+    # Priced findings first, descending; unpriced last rather than crashing the
+    # comparison. reverse=True makes the True group (priced) lead.
+    all_findings.sort(
+        key=lambda f: (_monthly_savings(f) is not None, _savings_or_zero(f)),
+        reverse=True)
 
     # ── Evidence classification ───────────────────────────────────────────────
     # Runs AFTER dedup so it annotates only the findings that survive, and after
@@ -634,7 +713,12 @@ def run_deep_audit(
     evidence_totals = _split_evidence_totals(all_findings)
 
     # ── Aggregations ──────────────────────────────────────────────────────────
-    total_savings = sum(f.get("estimated_monthly_savings", 0) for f in all_findings)
+    # Only priced findings reach the money total. An unpriced one stays in
+    # `findings` because its waste signal is real and measured, but it must not
+    # be silently added as $0 to a figure a customer is asked to believe.
+    priced = [v for v in (_monthly_savings(f) for f in all_findings) if v is not None]
+    total_savings = sum(priced)
+    unpriced_count = len(all_findings) - len(priced)
 
     by_category: dict[str, dict] = {}
     by_severity: dict[str, dict] = {}
@@ -644,22 +728,25 @@ def run_deep_audit(
         cat = f.get("waste_type", "unknown")
         sev = f.get("severity", "low")
         reg = f.get("region", "unknown")
-        sav = f.get("estimated_monthly_savings", 0)
+        sav = _monthly_savings(f)
 
         if cat not in by_category:
             by_category[cat] = {"count": 0, "total_estimated_monthly_savings": 0.0}
         by_category[cat]["count"] += 1
-        by_category[cat]["total_estimated_monthly_savings"] += sav
+        if sav is not None:
+            by_category[cat]["total_estimated_monthly_savings"] += sav
 
         if sev not in by_severity:
             by_severity[sev] = {"count": 0, "total_estimated_monthly_savings": 0.0}
         by_severity[sev]["count"] += 1
-        by_severity[sev]["total_estimated_monthly_savings"] += sav
+        if sav is not None:
+            by_severity[sev]["total_estimated_monthly_savings"] += sav
 
         if reg not in by_region:
             by_region[reg] = {"count": 0, "total_estimated_monthly_savings": 0.0}
         by_region[reg]["count"] += 1
-        by_region[reg]["total_estimated_monthly_savings"] += sav
+        if sav is not None:
+            by_region[reg]["total_estimated_monthly_savings"] += sav
 
     # Round aggregated values
     for d in list(by_category.values()) + list(by_severity.values()) + list(by_region.values()):
@@ -672,6 +759,9 @@ def run_deep_audit(
         "checks_run": sorted(active_checks),
         "total_findings": len(all_findings),
         "total_estimated_monthly_savings": round(total_savings, 2),
+        # How many findings are real but un-pricable, so the gap between
+        # total_findings and the money total is stated instead of inferred.
+        "unpriced_findings": unpriced_count,
         "total_estimated_annual_savings": round(total_savings * 12, 2),
         # The honest split of that same total. `measured_monthly_savings` is what we
         # observed and will stand behind; `unconfirmed_monthly_opportunity` is a work

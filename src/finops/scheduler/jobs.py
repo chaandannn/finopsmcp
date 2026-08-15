@@ -286,16 +286,64 @@ async def _send_daily_digest() -> bool:
         grand_total = day_total(yesterday)
         prev_total = day_total(two_days_ago)
 
-        # by provider
-        rows = conn.execute(
-            select(
-                cost_snapshots.c.provider,
-                func.sum(cost_snapshots.c.amount_usd).label("total"),
+        # by provider, for BOTH days.
+        #
+        # The delta used to be a bare subtraction of two whole-day sums with
+        # nothing comparing which providers each day covered. _snapshot_all
+        # records `results[name] = f"error: {exc}"` for a provider whose fetch
+        # failed and job_snapshot discards that dict, so a failed AWS snapshot
+        # simply left no rows for yesterday. The digest then compared a
+        # Datadog-only yesterday against an AWS+Datadog day before and posted:
+        #
+        #     vs yesterday: -94.1% (-$90,000.00)
+        #
+        # Nothing dropped. The only provider present in both windows was flat.
+        # Comparing the provider SETS rather than trusting a status flag catches
+        # this whatever the cause: a failed snapshot, a disconnected provider,
+        # or the first day of a newly connected one, and it works on data
+        # already written.
+        def by_provider_on(d: date) -> dict[str, float]:
+            rows = conn.execute(
+                select(
+                    cost_snapshots.c.provider,
+                    func.sum(cost_snapshots.c.amount_usd).label("total"),
+                )
+                .where(cost_snapshots.c.snapshot_date == d.isoformat())
+                .group_by(cost_snapshots.c.provider)
+            ).fetchall()
+            return {r.provider: float(r.total) for r in rows}
+
+        by_provider = by_provider_on(yesterday)
+        by_provider_prev = by_provider_on(two_days_ago)
+
+        only_before = sorted(set(by_provider_prev) - set(by_provider))
+        only_now = sorted(set(by_provider) - set(by_provider_prev))
+        coverage_note = ""
+        if only_before or only_now:
+            # Compare the providers BOTH days actually cover, so the percentage
+            # describes spend rather than coverage. The headline total stays the
+            # real yesterday figure; only the basis of the delta narrows.
+            common = set(by_provider) & set(by_provider_prev)
+            prev_total = sum(v for k, v in by_provider_prev.items() if k in common)
+            grand_total_for_delta = sum(v for k, v in by_provider.items() if k in common)
+            missing = ", ".join(p.upper() for p in only_before)
+            added = ", ".join(p.upper() for p in only_now)
+            bits = []
+            if missing:
+                bits.append(f"{missing} has no snapshot for {yesterday.isoformat()}")
+            if added:
+                bits.append(f"{added} is new since {two_days_ago.isoformat()}")
+            coverage_note = (
+                "⚠️ Incomplete comparison: " + "; ".join(bits) + ". "
+                "The change below covers only "
+                + (", ".join(p.upper() for p in sorted(common)) or "no provider")
+                + ", so it is not the whole bill moving."
             )
-            .where(cost_snapshots.c.snapshot_date == yesterday.isoformat())
-            .group_by(cost_snapshots.c.provider)
-        ).fetchall()
-        by_provider = {r.provider: float(r.total) for r in rows}
+            # Feed the renderer the like-for-like pair. Without this the
+            # percentage is a coverage artefact wearing a spend label.
+            grand_total_delta_basis = grand_total_for_delta
+        else:
+            grand_total_delta_basis = grand_total
 
         # top services
         svc_rows = conn.execute(
@@ -322,12 +370,18 @@ async def _send_daily_digest() -> bool:
     sent = False
     if slack.is_configured():
         try:
-            sent = await slack.send_daily_digest(yesterday, grand_total, prev_total, by_provider, top_services, len(active))
+            sent = await slack.send_daily_digest(
+                yesterday, grand_total, prev_total, by_provider, top_services,
+                len(active), delta_basis=grand_total_delta_basis,
+                coverage_note=coverage_note)
         except Exception:
             log.exception("Slack daily digest failed")
     if teams.is_configured():
         try:
-            sent = await teams.send_daily_digest(yesterday, grand_total, prev_total, by_provider, top_services, len(active))
+            sent = await teams.send_daily_digest(
+                yesterday, grand_total, prev_total, by_provider, top_services,
+                len(active), delta_basis=grand_total_delta_basis,
+                coverage_note=coverage_note)
         except Exception:
             log.exception("Teams daily digest failed")
 
@@ -693,10 +747,43 @@ def job_auto_verify() -> None:
 
 # ── Scheduler lifecycle ───────────────────────────────────────────────────────
 
+def scheduler_enabled() -> bool:
+    """Unattended jobs are opt-in, and this is the only place that decides.
+
+    FINOPS_ENABLE_SCHEDULER was documented in `finops --help` and read by
+    nothing. server.py called start_scheduler() unconditionally, so installing
+    nable in an editor armed nine cron jobs nobody asked for, and setting the
+    variable to 0 changed nothing at all.
+
+    That is not a tidiness problem. job_snapshot makes a billed
+    ce:GetCostAndUsage call every night against the user's real account, and the
+    ticket jobs file issues into their tracker at 02:00 with nobody watching.
+    An editor install is someone trying the product, not consenting to nightly
+    unattended spend on their behalf.
+
+    Off unless explicitly on, because the failure directions are not
+    symmetrical: a user who wanted the cron and did not get it notices and turns
+    it on, while a user who did not want it finds out from a bill.
+    """
+    return os.environ.get("FINOPS_ENABLE_SCHEDULER", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
 def start_scheduler() -> BackgroundScheduler | None:
     global _scheduler
     if _scheduler and _scheduler.running:
         return _scheduler
+
+    # Gated here rather than at the call site, so a second entry point cannot
+    # arm the cron by forgetting to ask.
+    if not scheduler_enabled():
+        log.info(
+            "Scheduler not started: unattended jobs are opt-in. Set "
+            "FINOPS_ENABLE_SCHEDULER=1 to run snapshots, digests and anomaly "
+            "checks on a timer."
+        )
+        return None
 
     if not _acquire_scheduler_lock():
         log.info(
@@ -842,8 +929,14 @@ async def run_weekly_insight_now() -> bool:
     try:
         grand_total, this_week = _week(this_start, today)
         prev_total, last_week = _week(last_start, last_end)
-    except Exception:
-        grand_total, prev_total, this_week, last_week = 0.0, 0.0, {}, {}
+    except Exception as exc:
+        # Do NOT fall through with zeros. This used to swallow the failure and
+        # carry on, so a snapshot query that never ran was posted to the team's
+        # Slack as "Weekly cost: $0 (+0.0% vs last week)" and the tool reported
+        # sent: True. Everyone reading that channel now believes the bill went to
+        # nothing. A number nable never read must not be published as one it did.
+        log.error("weekly insight: snapshot query failed, refusing to post: %s", exc)
+        return False
 
     movers = []
     for key in set(this_week) | set(last_week):

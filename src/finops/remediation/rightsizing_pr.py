@@ -45,11 +45,19 @@ log = logging.getLogger(__name__)
 # ── Git helper ────────────────────────────────────────────────────────────────
 
 def run_git(tf_dir: str, *args: str) -> str:
+    # env=: git runs hooks and core.fsmonitor from the target repo's own
+    # .git/config, so a repository nable was pointed at can execute a program of
+    # its choosing. With no env= that program inherited every credential the
+    # vault decrypted into os.environ at startup. The user's own exported
+    # variables still pass through; only nable's decrypted copies are removed.
+    from ..security.vault import child_env
+
     result = subprocess.run(
         ["git", *args],
         cwd=tf_dir,
         capture_output=True,
         text=True,
+        env=child_env(),
     )
     if result.returncode != 0:
         raise RuntimeError(
@@ -162,6 +170,36 @@ def open_rightsizing_pr(
 
     Returns a dict with pr_url, files_modified, recommendations_acted_on, and any errors.
     """
+    # The kill switch is checked HERE, at the function that does the writing,
+    # not at each caller. Two MCP tools consulted remediation_pr_enabled() and
+    # the Slack approval handler did not, so approving a rightsizing action in
+    # Slack rewrote the customer's Terraform and pushed a branch with the switch
+    # off. That is the same shape as the auth kill switch that considered only
+    # one login method: a gate that every caller must remember is a gate that
+    # one caller will forget, and the one that forgot was the interactive path
+    # where a human thought they were just clicking approve.
+    #
+    # dry_run and patch_only are BOTH exempt, and getting that wrong is how this
+    # comment earned its length. The gate's scope, stated in gate.py, is "may
+    # nable push a branch and open a pull request in our repositories at all" —
+    # an outward question about a remote. patch_only answers it by never asking:
+    # it returns before any git, subprocess or HTTP call in this function, into a
+    # directory the caller named explicitly with tf_dir.
+    #
+    # I first gated patch_only anyway, reasoning that it still edits the working
+    # tree. That made disabled_response() a liar: its own message offers
+    # patch_only as the way to proceed, so a user following the refusal verbatim
+    # hit the same refusal. Three pre-existing tests caught it. Gating the escape
+    # hatch the refusal recommends is exactly the bug the paragraph above warns
+    # about, committed one paragraph later.
+    #
+    # If patch_only should be gated too, that widens the switch past what gate.py
+    # documents and needs to be decided there, in one place, not inferred here.
+    from .gate import disabled_response, remediation_pr_enabled
+
+    if not (dry_run or patch_only) and not remediation_pr_enabled():
+        return disabled_response()
+
     engine = get_engine()
 
     # 1. Load recommendations
@@ -349,6 +387,32 @@ def open_rightsizing_pr(
     # 5. Git: create branch, stage, commit, push
     validate_git_ref(branch, "branch")
     validate_git_ref(base_branch, "base_branch")
+
+    # The edits are already on disk at this point. If any git step fails the
+    # branch is half-made and nable's instance-type change is sitting in the
+    # customer's working tree, unstaged and unexplained. `git status` says
+    # "M main.tf" and the next `terraform apply` in that directory applies a
+    # change no human approved, which is the exact opposite of propose-only.
+    #
+    # So the failure path puts the tree back. Only files nable wrote are
+    # touched, by explicit path, and only if git itself reports them dirty.
+    def _restore_working_tree() -> list[str]:
+        restored = []
+        for f in modified_files:
+            try:
+                run_git(tf_dir, "checkout", "--", f)
+                restored.append(f)
+            except RuntimeError as undo_exc:      # pragma: no cover, best effort
+                log.error("could not restore %s after a failed git step: %s", f, undo_exc)
+        try:
+            # Leaving a stranded branch is untidy but harmless; leaving the
+            # customer checked out ON it is not, because their next commit
+            # lands somewhere they did not choose.
+            run_git(tf_dir, "checkout", base_branch)
+        except RuntimeError:
+            pass
+        return restored
+
     try:
         run_git(tf_dir, "checkout", "-b", branch)
         run_git(tf_dir, "add", "--", *modified_files)
@@ -363,9 +427,16 @@ def open_rightsizing_pr(
         )
         run_git(tf_dir, "push", "-u", "origin", branch)
     except RuntimeError as exc:
+        restored = _restore_working_tree()
         return {
             "error": f"Git operation failed: {exc}",
-            "files_modified": modified_files,
+            "files_modified": [],
+            "files_restored": restored,
+            "working_tree": (
+                "Your working tree was restored. nable's edits were reverted rather "
+                "than left staged, so nothing it wrote can reach a terraform apply "
+                "without a human choosing it."
+            ),
             "branch": branch,
             "pr_url": None,
         }

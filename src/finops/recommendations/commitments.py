@@ -69,11 +69,13 @@ class TaggedCoverageEstimate:
 
 @dataclass
 class CommitmentAnalysis:
-    # Current state
-    savings_plan_coverage_pct: float
+    # Current state. Coverage is None when the call was denied or failed:
+    # "unknown" needs to be representable, because 0.0 reads as "nothing is
+    # covered" and that is what recommended a purchase off a failed read.
+    savings_plan_coverage_pct: float | None
     savings_plan_utilization_pct: float
     savings_plan_unused_usd: float
-    ri_coverage_pct: float
+    ri_coverage_pct: float | None
     ri_utilization_pct: float
     ri_unused_usd: float
 
@@ -88,8 +90,29 @@ class CommitmentAnalysis:
         return self.savings_plan_unused_usd + self.ri_unused_usd
 
     @property
+    def combined_coverage_pct(self) -> float | None:
+        """Average of the instruments that answered, or None if neither did.
+
+        Every consumer wanted this and each rolled its own, as
+        `(sp + ri) / 2`, which raises the moment either is None. Three of them
+        did: tools/commitments, notifications/reports and tools/attribution. That
+        was live for any customer missing ce:GetSavingsPlansCoverage, which is a
+        separate IAM action from the Cost Explorer reads most people grant, so
+        the crash needed no unusual setup at all.
+
+        Averaging only the instruments that answered is the honest reading: if RI
+        coverage is 40% and SP coverage could not be read, "40%" is a better
+        answer than "20%", which silently assumes the unreadable half is zero.
+        """
+        values = [v for v in (self.savings_plan_coverage_pct, self.ri_coverage_pct)
+                  if v is not None]
+        return sum(values) / len(values) if values else None
+
+    @property
     def coverage_score(self) -> str:
-        avg = (self.savings_plan_coverage_pct + self.ri_coverage_pct) / 2
+        avg = self.combined_coverage_pct
+        if avg is None:
+            return "unknown"
         if avg >= 80:
             return "good"
         if avg >= 50:
@@ -203,9 +226,14 @@ def _savings_plan_coverage(
         totals = resp.get("Total", {}).get("CoverageHours", {})
         return float(totals.get("CoverageHoursPercentage", 0))
     except Exception as e:
+        # None, not 0.0. "We could not read your coverage" and "you have no
+        # coverage" are opposite facts, and 0.0 conflated them into the one that
+        # triggers a purchase: a missing ce:GetSavingsPlansCoverage permission
+        # produced "Your SP coverage is 0%" and a recommendation to commit
+        # $5,940/mo. A denied read must never turn into advice to spend money.
         from .._logutil import note_sp_error
         note_sp_error(log, "SP coverage", e)
-        return 0.0
+        return None
 
 
 def _ri_utilization(ce_client: Any, start: str, end: str) -> dict[str, float]:
@@ -233,7 +261,23 @@ def _ri_coverage(
     start: str,
     end: str,
     tag_filter: dict | None = None,
-) -> float:
+) -> float | None:
+    """RI coverage %, or None when Cost Explorer would not answer.
+
+    Returns None rather than 0.0 on failure, matching _savings_plan_coverage.
+    They were inconsistent: a denied ce:GetSavingsPlansCoverage produced None
+    while a denied ce:GetReservationCoverage produced a confident 0.0, and 0%
+    coverage is the ALARMING reading. It says this account has no reserved
+    capacity and should go buy some, which for a large account is a five-figure
+    recommendation derived entirely from a permission the customer had not
+    granted.
+
+    Same shape as the savings-plans version that was fixed earlier, in the same
+    file, one function apart. It stayed because the only caller
+    (genuine_savings.fetch_commitment_context) folded both into a context whose
+    `available` flag hid the difference, so the two halves of one answer could
+    disagree about what a failure means without anything looking wrong.
+    """
     try:
         kwargs: dict[str, Any] = {
             "TimePeriod": {"Start": start, "End": end},
@@ -248,7 +292,7 @@ def _ri_coverage(
         return float(total.get("CoverageHoursPercentage", 0))
     except Exception as e:
         log.warning("RI coverage fetch failed: %s", e)
-        return 0.0
+        return None
 
 
 def _uncovered_on_demand_monthly(
@@ -303,13 +347,35 @@ def _uncovered_on_demand(
 
 
 def _build_recommendations(
-    sp_coverage: float,
+    sp_coverage: float | None,
     uncovered_od: float,
     sp_util: float,
     ri_util: float,
     monthly_uncovered_series: list[float] | None = None,
 ) -> list[dict[str, Any]]:
     recs: list[dict[str, Any]] = []
+
+    # sp_coverage is None when the coverage call was denied or failed. Every
+    # commitment recommendation below is an argument about how much of the bill
+    # is already covered, so with that unknown there is no argument to make. It
+    # used to arrive as 0.0, which reads as "nothing is covered" and is the most
+    # aggressive possible reading of "we could not look": a missing
+    # ce:GetSavingsPlansCoverage permission produced a recommendation to commit
+    # thousands of dollars a month.
+    if sp_coverage is None:
+        return [{
+            "type": "coverage_unavailable",
+            "title": "Commitment advice unavailable: coverage could not be read",
+            "detail": (
+                "nable could not read your Savings Plans coverage, so it does not "
+                "know how much of your on-demand spend is already committed. "
+                "Recommending a purchase without that would be guessing with your "
+                "money. Grant ce:GetSavingsPlansCoverage and run this again."
+            ),
+            "monthly_savings": None,
+            "confidence": "none",
+            "blocked_reason": "coverage unavailable, missing ce:GetSavingsPlansCoverage",
+        }]
 
     # Size to the CONSISTENT BASELINE: the floor of monthly uncovered on-demand (what
     # is uncovered EVERY month), not the 3-month average or a peak. Committing to the
@@ -557,10 +623,14 @@ def analyze_commitments(
         )
 
         return CommitmentAnalysis(
-            savings_plan_coverage_pct=round(sp_coverage, 1),
+            # None survives to the caller rather than being rounded into a
+            # number. commitment_summary and the scorecard both read this field,
+            # and both need to be able to say "unknown".
+            savings_plan_coverage_pct=(
+                None if sp_coverage is None else round(sp_coverage, 1)),
             savings_plan_utilization_pct=round(sp_util_data["utilization_pct"], 1),
             savings_plan_unused_usd=round(sp_util_data["unused_usd"], 2),
-            ri_coverage_pct=round(ri_coverage, 1),
+            ri_coverage_pct=(None if ri_coverage is None else round(ri_coverage, 1)),
             ri_utilization_pct=round(ri_util_data["utilization_pct"], 1),
             ri_unused_usd=round(ri_util_data["unused_usd"], 2),
             uncovered_on_demand_usd=round(uncovered_od, 2),

@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import subprocess
+import tempfile
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -603,21 +604,42 @@ def estimate_from_file(path: str) -> dict[str, Any]:
 def estimate_from_dir(tf_dir: str) -> dict[str, Any]:
     """Run `terraform plan -json` in tf_dir and estimate cost delta."""
     tf_bin = os.environ.get("TERRAFORM_BIN", "terraform")
-    # First: terraform plan -out=.plan.tmp
-    r1 = subprocess.run(
-        [tf_bin, "plan", "-out=.plan.tmp", "-input=false"],
-        cwd=tf_dir, capture_output=True, text=True, timeout=300,
-    )
-    if r1.returncode != 0:
-        raise RuntimeError(f"terraform plan failed:\n{r1.stderr[:2000]}")
-    # Second: terraform show -json .plan.tmp
-    r2 = subprocess.run(
-        [tf_bin, "show", "-json", ".plan.tmp"],
-        cwd=tf_dir, capture_output=True, text=True, timeout=60,
-    )
-    if r2.returncode != 0:
-        raise RuntimeError(f"terraform show -json failed:\n{r2.stderr[:2000]}")
-    data = json.loads(r2.stdout)
+    # env=: terraform runs in a directory the caller named, loads the provider
+    # plugins that directory declares, and executes its `data "external"`
+    # programs. With no env= every one of those held the decrypted contents of
+    # the user's vault. Being a read does not help here: the read is what spawns
+    # the process. The user's own exported credentials still pass through, so a
+    # plan against a backend authenticated from their shell keeps working; only
+    # nable's decrypted copies are withheld.
+    from ..security.vault import child_env
+
+    tf_env = child_env()
+
+    # The plan file goes to a temp dir, not `-out=.plan.tmp` inside the caller's
+    # repo. Costing a change is a read, and a read has no business writing into
+    # someone's working tree. It also left the file behind on every path,
+    # including the error paths, so a `git status` in the customer's
+    # infrastructure repo came back dirty because they asked what something cost.
+    #
+    # -lock=false because a plan does not need the state lock. Taking it meant a
+    # cost estimate blocked the customer's own applies, and on the 300s timeout
+    # below the process is killed without terraform ever releasing it, leaving a
+    # stale lock on their remote state that a human has to go and break.
+    with tempfile.TemporaryDirectory(prefix="nable-tfplan-") as tmp:
+        plan_path = os.path.join(tmp, "plan.bin")
+        r1 = subprocess.run(
+            [tf_bin, "plan", "-out=" + plan_path, "-input=false", "-lock=false"],
+            cwd=tf_dir, capture_output=True, text=True, timeout=300, env=tf_env,
+        )
+        if r1.returncode != 0:
+            raise RuntimeError(f"terraform plan failed:\n{r1.stderr[:2000]}")
+        r2 = subprocess.run(
+            [tf_bin, "show", "-json", plan_path],
+            cwd=tf_dir, capture_output=True, text=True, timeout=60, env=tf_env,
+        )
+        if r2.returncode != 0:
+            raise RuntimeError(f"terraform show -json failed:\n{r2.stderr[:2000]}")
+        data = json.loads(r2.stdout)
     return estimate_plan(data)
 
 

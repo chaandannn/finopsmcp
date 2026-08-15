@@ -45,16 +45,48 @@ _ctx_cache: tuple[float, "CommitmentContext"] | None = None
 
 @dataclass
 class CommitmentContext:
-    """Account-level EC2 commitment coverage, used to discount on-demand savings."""
+    """Account-level EC2 commitment coverage, used to discount on-demand savings.
+
+    Coverage is `float | None`, and the distinction is load-bearing. 0.0 means
+    "measured, and this account has no commitments"; None means "could not be
+    read", which is overwhelmingly a missing ce:GetSavingsPlansCoverage or
+    ce:GetReservationCoverage permission. Those two answers lead to opposite
+    conclusions about how much a rightsizing really saves.
+    """
     available: bool = False
-    sp_coverage_pct: float = 0.0     # Savings Plans coverage of EC2 usage
-    ri_coverage_pct: float = 0.0     # Reserved Instance coverage of EC2 usage
+    sp_coverage_pct: float | None = 0.0   # Savings Plans coverage of EC2 usage
+    ri_coverage_pct: float | None = 0.0   # Reserved Instance coverage of EC2 usage
+
+    @property
+    def has_coverage_data(self) -> bool:
+        """True only if at least one instrument actually reported a number."""
+        return self.sp_coverage_pct is not None or self.ri_coverage_pct is not None
 
     @property
     def combined_pct(self) -> float:
+        """The stronger of the two, treating an unreadable instrument as absent.
+
+        This used to be a bare max() over both fields, which raised TypeError the
+        moment either was None. _savings_plan_coverage and _ri_coverage return
+        None when Cost Explorer denies the call, and fetch_commitment_context set
+        available=True regardless, so a customer missing those two IAM actions
+        got a context claiming to have data and crashing on read.
+
+        That permission gap is common enough that the audit fixtures model it as
+        the default case, and it reached three call sites: effective_savings
+        (adjust_savings), rightsizing_summary's pricing_basis block, and the RDS
+        and ECS tools now sharing that block. It only stayed hidden because on
+        those paths the measured-rate tier usually answers first and returns
+        before the commitment fallback is consulted.
+
+        Returning 0.0 for "unreadable" is the conservative direction: no coverage
+        discount is applied, so a saving is quoted at the un-discounted figure
+        rather than silently reduced by a number nobody could read.
+        """
         # Coverage instruments don't stack on the same instance-hour; take the
         # stronger of the two as the conservative "how committed is this account".
-        return max(self.sp_coverage_pct, self.ri_coverage_pct)
+        values = [v for v in (self.sp_coverage_pct, self.ri_coverage_pct) if v is not None]
+        return max(values) if values else 0.0
 
 
 @dataclass
@@ -88,7 +120,16 @@ def fetch_commitment_context(ce_client: Any = None) -> CommitmentContext:
         start, end = _get_date_range(months_back=1)
         sp = _savings_plan_coverage(ce_client, start, end)
         ri = _ri_coverage(ce_client, start, end)
-        ctx = CommitmentContext(available=True, sp_coverage_pct=sp, ri_coverage_pct=ri)
+        # available means "we have coverage data", not "we tried". Both helpers
+        # return None when Cost Explorer denies the call, and marking that
+        # available=True produced a context every consumer trusted and then
+        # crashed reading. If neither instrument answered, this account has no
+        # commitment data and callers must fall through to their next tier.
+        ctx = CommitmentContext(
+            available=sp is not None or ri is not None,
+            sp_coverage_pct=sp,
+            ri_coverage_pct=ri,
+        )
     except Exception as e:  # pragma: no cover - defensive, CE optional
         log.debug("commitment context unavailable: %s", e)
 

@@ -97,8 +97,14 @@ def daily_digest_card(
     by_provider: dict[str, float],
     top_services: list[dict],
     active_anomaly_count: int,
+    delta_basis: float | None = None,
+    coverage_note: str = "",
 ) -> dict:
-    delta = grand_total - prev_total
+    # delta_basis, not grand_total: see slack.daily_digest_blocks. When the two
+    # days cover different providers the caller narrows both sides so the
+    # percentage is about spend rather than about which snapshots landed.
+    _basis = grand_total if delta_basis is None else delta_basis
+    delta = _basis - prev_total
     delta_pct = (delta / prev_total * 100) if prev_total else 0
     sign = "+" if delta >= 0 else ""
     trend = "📈" if delta > 0 else "📉" if delta < 0 else "➡️"
@@ -138,6 +144,8 @@ def daily_digest_card(
                 },
             ],
         },
+        *([{"type": "TextBlock", "text": coverage_note, "wrap": True,
+            "color": "Warning", "spacing": "Medium"}] if coverage_note else []),
         {"type": "TextBlock", "text": "By provider", "weight": "Bolder", "spacing": "Medium"},
         {"type": "FactSet", "facts": provider_facts},
         {"type": "TextBlock", "text": "Top services", "weight": "Bolder", "spacing": "Medium"},
@@ -204,6 +212,20 @@ async def send_daily_digest(
     by_provider: dict[str, float],
     top_services: list[dict],
     active_anomaly_count: int,
+    delta_basis: float | None = None,
+    coverage_note: str = "",
 ) -> bool:
-    card = daily_digest_card(report_date, grand_total, prev_total, by_provider, top_services, active_anomaly_count)
+    """`delta_basis` is the yesterday figure the change is computed FROM, which
+    is not always `grand_total`. When the two days do not cover the same
+    providers, the caller narrows both sides to the providers present in both,
+    so the percentage describes spend instead of coverage. `grand_total` stays
+    the real, complete yesterday number for the headline.
+
+    `coverage_note`, when set, names what is missing and must be rendered. A
+    percentage a reader cannot see the caveat for is the defect this fixes: a
+    failed AWS snapshot produced "vs yesterday: -94.1% (-$90,000.00)" when
+    nothing had dropped."""
+    card = daily_digest_card(
+        report_date, grand_total, prev_total, by_provider, top_services,
+        active_anomaly_count, delta_basis=delta_basis, coverage_note=coverage_note)
     return await _post(card)

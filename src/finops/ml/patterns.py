@@ -29,6 +29,47 @@ from typing import Any, Callable
 log = logging.getLogger(__name__)
 
 
+# Short names patterns may ask for that the alias map does not key, because the
+# map is keyed on what a HUMAN types ("ec2", "s3") and patterns were written with
+# API-ish spellings. Kept deliberately small: anything resolvable through the
+# alias map is not repeated here, so there is one place to change a CE name.
+_SERVICE_SPELLINGS: dict[str, str] = {
+    "amazonec2": "ec2",
+    "amazon ec2": "ec2",
+    "amazons3": "s3",
+    "amazon s3": "s3",
+    "amazoncloudwatch": "cloudwatch",
+    "awsdatatransfer": "data transfer",
+    "aws data transfer": "data transfer",
+    "amazonrds": "rds",
+    "amazon rds": "rds",
+}
+
+
+def _ce_service_name(service: str) -> str | None:
+    """The Cost Explorer SERVICE value for a service a pattern names, or None.
+
+    Single source of truth is connectors/universal.py's alias map, which already
+    records what CE returns and carries the comment explaining that CE uses long
+    names. This resolves through it rather than restating any CE name here: a
+    second copy of "Amazon Elastic Compute Cloud" is how the last set of these
+    literals drifted out of date without anyone noticing.
+    """
+    try:
+        from ..connectors.universal import _AWS_ALIASES
+    except Exception:  # pragma: no cover - defensive; patterns must never crash
+        return None
+
+    key = service.strip().lower()
+    key = _SERVICE_SPELLINGS.get(key, key)
+    if key in _AWS_ALIASES:
+        return _AWS_ALIASES[key]
+    # Already a CE name (or a suffixed one): hand it back unchanged.
+    if service in set(_AWS_ALIASES.values()):
+        return service
+    return None
+
+
 @dataclass
 class PatternContext:
     """Input snapshot passed to every pattern checker."""
@@ -58,8 +99,57 @@ class PatternContext:
             for v in self.daily_costs.values()
         )
 
+    def service_series(self, service: str) -> list[float]:
+        """Daily cost series for a service, matched the way Cost Explorer names it.
+
+        Every pattern in this file used to index daily_costs directly with a
+        short, readable name: "Amazon EC2", "Amazon S3", "AmazonCloudWatch",
+        "AWSDataTransfer". daily_costs is built straight from
+        cost_snapshots.service, which holds the raw Cost Explorer SERVICE
+        dimension, and Cost Explorer emits none of those. It says "Amazon Elastic
+        Compute Cloud - Compute", "Amazon Simple Storage Service", "Amazon
+        CloudWatch", "AWS Data Transfer".
+
+        So every one of those lookups returned an empty list, and every pattern
+        that gated on the resulting $0 bailed before emitting: the gp2 fallback,
+        S3 intelligent tiering, savings-plans coverage, the NAT spike, weekend
+        waste. scan_waste_patterns then returned total_monthly_waste: 0.0 with no
+        error, which a customer reads as "your account is clean". On a $27,000/mo
+        account at 0% Savings Plans coverage, the largest finding the product can
+        make was silently unreachable.
+
+        Nothing could catch it. A dict miss returns the default, a $0 service is
+        a legitimate state, and a pattern that declines to fire looks identical
+        to one that had nothing to say.
+
+        Resolution order, cheapest first:
+          1. exact key, so a caller that already passes the CE name is untouched
+          2. the CE name from the repo's own alias map, plus its usage-type
+             suffixes: CE splits EC2 into "- Compute", "- Data Transfer", "-
+             Other", and the compute line is not the whole service
+          3. nothing, and $0 is then a real answer rather than a missed lookup
+        """
+        if service in self.daily_costs:
+            return self.daily_costs[service]
+
+        canonical = _ce_service_name(service)
+        if canonical is None:
+            return []
+
+        # Sum every CE bucket that belongs to this service. "Amazon Elastic
+        # Compute Cloud - Compute" and "... - Data Transfer" are both EC2, and a
+        # pattern asking what EC2 costs means all of it.
+        matched = [
+            v for k, v in self.daily_costs.items()
+            if k == canonical or k.startswith(canonical + " ")
+        ]
+        if not matched:
+            return []
+        width = max(len(v) for v in matched)
+        return [sum(v[i] for v in matched if i < len(v)) for i in range(width)]
+
     def service_monthly(self, service: str) -> float:
-        vals = self.daily_costs.get(service, [])
+        vals = self.service_series(service)
         if not vals:
             return 0.0
         tail = vals[-30:] if len(vals) >= 30 else vals
@@ -302,7 +392,10 @@ def _check_weekend_waste(ctx: PatternContext) -> PatternMatch | None:
     Compute spend on weekends similar to weekdays — dev/staging should be stopped.
     Weekend cost should ideally be <20% of weekday cost for non-prod workloads.
     """
-    ec2_series = ctx.daily_costs.get("Amazon EC2", [])
+    # service_series, not daily_costs.get: the raw dict is keyed on the CE
+    # SERVICE value, and "Amazon EC2" is not one. This read returned [] on
+    # every real account.
+    ec2_series = ctx.service_series("Amazon EC2")
     if len(ec2_series) < 14:
         return None
 

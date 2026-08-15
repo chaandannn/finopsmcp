@@ -56,6 +56,14 @@ import threading
 import time
 
 DOCS_LINE = "docs: https://getnable.com/docs/cli"
+
+# Staleness check state. The network call runs in a daemon thread started at
+# scan start so it overlaps the AWS work and costs the user nothing; the exit
+# paths read it with a short join. Module-level rather than passed around
+# because every exit path needs it and threading it through six signatures is
+# how one of them ends up forgetting.
+_stale_thread: "threading.Thread | None" = None
+_stale_note: str | None = None
 _FINDING_FLOOR_USD = 25.0  # findings below this monthly value stay out of v1 output
 _MAX_FINDINGS_SHOWN = 5
 _SCAN_DEADLINE_S = 45.0
@@ -121,10 +129,44 @@ def _emit(event: str, props: dict, wait: bool) -> None:
 
 # ── failure rendering: problem + cause + exact fix + docs link, never a trace ──
 
+def _staleness_line(timeout: float = 0.4) -> str | None:
+    """The one-line "you are on an old build" note, if the check has an answer.
+
+    Started in the background at scan start, read here. Short timeout because a
+    failing scan must stay fast: if PyPI has not answered by now, the note is
+    dropped rather than made to wait. It is advice, not the result.
+    """
+    global _stale_thread, _stale_note
+    try:
+        if _stale_thread is not None:
+            _stale_thread.join(timeout)
+        return _stale_note
+    except Exception:
+        return None
+
+
 def _fail(out, code: int, lines: list[str], error_class: str, t0: float,
           exc: Exception | None = None, props: dict | None = None) -> int:
     for line in lines:
         print(line, file=out)
+
+    # Staleness FIRST among the follow-ups, because on an old build it is very
+    # often the actual answer and the message above is not. Measured 2026-08-14:
+    # 19 of 20 scans in 48 hours failed, and the ones carrying a version were on
+    # 0.8.201 and 0.8.202 telling the user "boto3 is not installed; reinstall
+    # with pip install finops-mcp". boto3 was installed. The real cause was a
+    # boto3/botocore skew, diagnosed properly in 0.8.207, and the advice they
+    # were given was a no-op: `pip install` without -U on an installed package
+    # prints "Requirement already satisfied" and changes nothing. They were sent
+    # in a circle by a build that predates the fix.
+    #
+    # A version gap does not prove THIS failure is fixed upstream, so the wording
+    # claims only what is true: there is a newer build, here is how to get it.
+    stale = _staleness_line()
+    if stale:
+        print(file=out)
+        print(_bold("  " + stale), file=out)
+
     print(_dim(DOCS_LINE), file=out)
     # version + exception CLASS NAME only (never the message: messages carry
     # paths and account details). Without these, a month of real failures was
@@ -509,6 +551,17 @@ def _render(out, spend, report, *, demo: bool, ce_denied: bool, extra_blocks=Non
 
     if _has_aws and not (spend and spend.get("total")):
         print(_dim("run `nable scan --spend` for the spend breakdown (uses Cost Explorer, ~$0.02)"), file=out)
+
+    # A scan that worked still deserves to know it is running an old build, but
+    # quietly: this is dim, one line, below the result. On the failure path the
+    # same note is bold and above the docs line, because there it is often the
+    # answer rather than a footnote. Demo mode never reaches here with a real
+    # scan, so a `--demo` run is not nagged.
+    if not demo:
+        stale = _staleness_line()
+        if stale:
+            print(_dim("  " + stale), file=out)
+
     print(_dim(DOCS_LINE), file=out)
 
 
@@ -614,6 +667,28 @@ def run(args) -> int:
     print(f"{_bold('nable scan')} {_dim('· profile ' + profile)}", file=out)
     _emit("cli_scan_started", {"demo": demo}, wait=False)
 
+    # Kick the staleness check off here, immediately after the first print, so
+    # the PyPI round trip overlaps the AWS work instead of adding to it. The
+    # exit paths join it briefly and drop the note if it has not answered.
+    #
+    # server.py has run this check since it was written; the CLI never has, and
+    # the CLI is where a stale build hurts most. `nable scan` is the first thing
+    # a new user runs, and on a pinned config it can be nine releases behind
+    # without anything on screen saying so. update_check already handles the
+    # hard parts (airgap, no-telemetry, memoisation, a 2s cap), so this is a
+    # call, not a second implementation.
+    def _check_staleness() -> None:
+        global _stale_note
+        try:
+            from .update_check import staleness_note
+            _stale_note = staleness_note()
+        except Exception:
+            _stale_note = None
+
+    global _stale_thread
+    _stale_thread = threading.Thread(target=_check_staleness, daemon=True)
+    _stale_thread.start()
+
     if demo:
         demo_spend, report = _demo_payload()
         # Demo mirrors real behavior: the spend headline only appears with --spend.
@@ -677,8 +752,13 @@ def run(args) -> int:
             # "absent" means this environment installed the package without its
             # dependencies. Name that, because "reinstall" alone sends people to
             # repeat the command that already skipped them.
-            from .install_health import missing_core_dependencies
+            from .install_health import install_shape, missing_core_dependencies
             others = [d for d in missing_core_dependencies() if d not in ("boto3", "botocore")]
+            # WHICH kind of install skipped the dependencies. Without this the
+            # event says "boto3 absent" and stops, which is where 13 of these
+            # left me on 2026-08-14: the cause was un-nameable from the data, so
+            # nothing could be fixed. Categories only, never paths.
+            deps.update({k: str(v) for k, v in install_shape().items()})
             lines = ["nable is installed but its dependencies are not."]
             if others:
                 lines.append(f"  also missing: {', '.join(others)}")

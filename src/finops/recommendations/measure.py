@@ -107,16 +107,32 @@ def _effective_rate(list_estimate: float, row: Any) -> tuple[float, str] | None:
     Returns (usd, basis) or None when no rate data is available."""
     if list_estimate <= 0:
         return None
+    from .effective_savings import adjust_savings, detect_savings_context
+
     try:
-        from .effective_savings import adjust_savings, detect_savings_context
         ctx = detect_savings_context()
         adjusted = adjust_savings(list_estimate, resource_type=getattr(row, "resource_type", None), ctx=ctx)
-        if adjusted.basis in ("effective_rate", "commitment_coverage"):
-            return round(adjusted.effective, 2), "effective_rate"
-        return None
     except Exception as exc:
+        # Genuinely absent rate data: no CUR, no snapshots, a provider that will
+        # not answer. Tier 3 (list price) is the correct fallback and the caller
+        # labels it honestly. This except covers the LOOKUP only.
         log.debug("effective-rate adjustment unavailable: %s", exc)
         return None
+
+    # Deliberately outside the try. This read used to say `adjusted.effective`,
+    # a field AdjustedSavings has never had, and the resulting AttributeError was
+    # caught above and logged at DEBUG. Tier 2 of a documented three-tier ladder
+    # was therefore dead on every install since it shipped, and every confirmed
+    # downsize banked at full list price: for a customer on a 35% EDP, $280.32
+    # where the truth was $182.21. Nothing failed, no test went red, and the
+    # number was simply wrong by exactly the customer's discount.
+    #
+    # A typo in a field name is a coding error, not a missing-data condition, and
+    # it must not be able to hide in the same handler as "this customer has no
+    # CUR". Attribute access on the result stays out here where it can raise.
+    if adjusted.basis in ("effective_rate", "commitment_coverage"):
+        return round(adjusted.effective_savings, 2), "effective_rate"
+    return None
 
 
 def measure_realized_savings(row: Any, confirmed_estimate: float | None) -> tuple[float, str]:

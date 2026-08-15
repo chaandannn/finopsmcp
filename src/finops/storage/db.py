@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import os
 import stat
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -26,6 +27,11 @@ log = logging.getLogger(__name__)
 
 _DATA_DIR: Path | None = None
 _ENGINE: Engine | None = None
+# Held only while an engine is being built. get_engine used to assign _ENGINE and
+# THEN run create_all and the migrations, so a concurrent caller took the
+# `if _ENGINE is not None` fast path and got an engine whose tables did not exist
+# yet. See get_engine for what that cost.
+_ENGINE_LOCK = threading.Lock()
 
 metadata = MetaData()
 
@@ -546,8 +552,41 @@ Index("ix_ac_date_team",      attributed_costs.c.snapshot_date, attributed_costs
 Index("ix_ac_team",           attributed_costs.c.team)
 
 # anomalies: report sections filter by date and ack status
+scorecard_history = Table(
+    "scorecard_history", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("scope", String(128), nullable=False),
+    Column("score_date", String(10), nullable=False),      # YYYY-MM-DD
+    Column("total_score", Float, nullable=False),
+    Column("grade", String(4), nullable=False),
+    Column("details", Text, nullable=True),                # JSON
+    Column("captured_at", String(32), nullable=False),     # ISO timestamp
+    # One score per scope per day. The old code emulated this with a DELETE
+    # followed by an INSERT, which is a lost update waiting to happen and needed
+    # two statements to say what a constraint says once.
+    Index("ux_scorecard_scope_date", "scope", "score_date", unique=True),
+)
+
 Index("ix_anom_date",         anomalies.c.snapshot_date)
 Index("ix_anom_ack",          anomalies.c.acknowledged)
+# The tuple persist_anomaly dedups on, enforced by the database rather than by
+# every caller hoping to win a race.
+#
+# persist_anomaly's docstring has always promised that a cron retry, the
+# run_anomaly_check_now tool, or a fail-open second scheduler process "cannot
+# re-insert the same spend event or re-fire its alerts and tickets". It was a
+# plain SELECT-then-INSERT with nothing making the pair atomic, and only these
+# two NON-unique indexes behind it. _acquire_scheduler_lock fails open on any
+# error, which is exactly how two schedulers come to exist at once, and
+# scheduler/jobs.py keys every downstream action on the is_new flag: both runs
+# post to Slack and Teams, push to n8n, and open a ticket for one spend event.
+#
+# A unique index, not a UniqueConstraint, so it can also be created on an
+# existing database by the migration below. Named so the migration can look for
+# it by name on either backend.
+Index("ux_anom_dedup", anomalies.c.provider, anomalies.c.service,
+      anomalies.c.account_id, anomalies.c.snapshot_date, anomalies.c.direction,
+      unique=True)
 
 # org_accounts: sync looks up by (account_id, provider) — must be unique
 Index("ix_org_acct_provider", org_accounts.c.account_id, org_accounts.c.cloud_provider,
@@ -637,23 +676,53 @@ def get_engine() -> Engine:
       Credentials never leave the machine; only the DB connection is shared.
     """
     global _ENGINE
-    if _ENGINE is not None:
-        return _ENGINE
+    engine = _ENGINE
+    if engine is not None:
+        return engine
 
+    # Build into a LOCAL and publish only at the end.
+    #
+    # This used to assign _ENGINE first and run metadata.create_all and the
+    # migrations after, with no lock and no second publish. A concurrent caller
+    # took the fast path above, got an engine whose schema did not exist yet, and
+    # died on "no such table: cost_snapshots".
+    #
+    # Every threaded host reaches this on first run: the ThreadingHTTPServer
+    # behind `finops serve`, the Slack Bolt listener pool, the enterprise box's
+    # prewarm thread next to its uvicorn thread, and any asyncio.to_thread
+    # fan-out. It is a first-run crash at exactly the moment the activation data
+    # says people give up, and it is invisible on a second run because the file
+    # already has its schema.
+    #
+    # The lock also stops two threads building two engines over one SQLite file,
+    # which is not merely wasteful: both would run create_all and the migrations
+    # concurrently against the same database.
+    with _ENGINE_LOCK:
+        # Re-check inside the lock: another thread may have finished while this
+        # one waited, and it published a fully built engine.
+        if _ENGINE is not None:
+            return _ENGINE
+        engine = _build_engine()
+        _ENGINE = engine          # the ONLY publish, and it is last
+        return engine
+
+
+def _build_engine() -> Engine:
+    """Create the engine and bring its schema up to date. Never publishes."""
     database_url = os.environ.get("DATABASE_URL", "")
 
     if database_url and _is_postgres(database_url):
         # Shared Postgres mode
         # psycopg2 or asyncpg must be installed: pip install finops-mcp[postgres]
-        _ENGINE = create_engine(
+        engine = create_engine(
             database_url,
             pool_pre_ping=True,          # detect stale connections
             pool_size=5,
             max_overflow=10,
             connect_args={"connect_timeout": 10},
         )
-        metadata.create_all(_ENGINE)
-        _run_sqlite_migrations(_ENGINE)
+        metadata.create_all(engine)
+        _run_sqlite_migrations(engine)
     else:
         # Local SQLite mode (default)
         # Priority: FINOPS_DB_PATH > FINOPS_PROFILE > default ~/.finops/finops.db
@@ -662,7 +731,7 @@ def get_engine() -> Engine:
             db_path = Path(db_path_env).expanduser()
         else:
             db_path = data_dir() / "finops.db"
-        _ENGINE = create_engine(
+        engine = create_engine(
             f"sqlite:///{db_path}",
             connect_args={
                 "check_same_thread": False,
@@ -672,7 +741,7 @@ def get_engine() -> Engine:
             },
         )
 
-        @event.listens_for(_ENGINE, "connect")
+        @event.listens_for(engine, "connect")
         def _set_sqlite_pragmas(dbapi_conn, _connection_record):
             """Apply WAL mode and busy_timeout on every new connection."""
             cursor = dbapi_conn.cursor()
@@ -681,8 +750,8 @@ def get_engine() -> Engine:
             cursor.execute("PRAGMA foreign_keys=ON")
             cursor.close()
 
-        metadata.create_all(_ENGINE)
-        _run_sqlite_migrations(_ENGINE)
+        metadata.create_all(engine)
+        _run_sqlite_migrations(engine)
         db_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
         # WAL mode creates -wal/-shm sidecars under the process umask; they
         # briefly hold recently written rows, so clamp them too when present.
@@ -691,7 +760,7 @@ def get_engine() -> Engine:
             if _side.exists():
                 _side.chmod(stat.S_IRUSR | stat.S_IWUSR)
 
-    return _ENGINE
+    return engine
 
 
 def _add_column_ddl(engine: Engine, table: str, column: str) -> str:
@@ -781,6 +850,35 @@ def _run_sqlite_migrations(engine: Engine) -> None:
         # >= 3.35 (bundled with Python >= 3.11, which is nable's floor) supports
         # DROP COLUMN; on anything older this warns and the onboarding budget step
         # degrades to a clean one-line message instead of a traceback.
+        # The anomaly dedup index, for databases created before it existed.
+        # create_all builds indexes only for tables it CREATES, so an existing
+        # anomalies table never gets it and the duplicate-alert race stays open
+        # on precisely the installs that have been running longest.
+        #
+        # Deduplicate first or the CREATE fails: any database that has already
+        # lost this race holds rows the constraint forbids, and a failed index
+        # creation would leave those installs unprotected forever with only a
+        # warning in a log. Keeping MIN(id) keeps the row whose alerts already
+        # fired, so nothing that has been acknowledged or ticketed is discarded.
+        try:
+            if "ux_anom_dedup" not in {
+                ix["name"] for ix in inspect(engine).get_indexes("anomalies")
+            }:
+                dupes = conn.execute(text(
+                    "DELETE FROM anomalies WHERE id NOT IN ("
+                    "  SELECT MIN(id) FROM anomalies"
+                    "  GROUP BY provider, service, account_id, snapshot_date, direction)"
+                )).rowcount
+                conn.execute(text(
+                    "CREATE UNIQUE INDEX ux_anom_dedup ON anomalies "
+                    "(provider, service, account_id, snapshot_date, direction)"
+                ))
+                conn.commit()
+                log.info("Migration: anomaly dedup index created (%s duplicate "
+                         "row(s) removed)", dupes if dupes and dupes > 0 else 0)
+        except Exception as exc:
+            log.warning("anomaly dedup index migration skipped: %s", exc)
+
         for _tbl, _col in (("budgets", "block_at_pct"),):
             try:
                 # Inspector, not PRAGMA: same reason as above. This orphan-column

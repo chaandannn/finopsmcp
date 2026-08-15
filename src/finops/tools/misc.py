@@ -166,49 +166,54 @@ async def get_savings_summary() -> dict:
 
 
 @_srv.mcp.tool()
-async def activate_pro(license_key: str = "") -> dict:
+async def activate_pro() -> dict:
     """
-    Activate your nable Pro or Team license right here, no terminal, no restart.
+    Show how to activate your nable Pro or Team license on this machine.
 
-    Paste the license key from your receipt email (it starts with FINOPS-2-).
-    nable validates it locally, stores it on this machine, and unlocks the paid
-    features in this same session immediately. The key is verified offline with a
-    public key bundled in nable; nothing about it is sent anywhere.
+    Deliberately takes no arguments. A licence key pasted into this conversation
+    reaches the model provider as a tool-call argument before nable ever sees it,
+    and stays in that provider's history. validate_key checks the signature, the
+    plan and the expiry with no machine binding, so anyone who can read that
+    transcript holds a working, transferable entitlement until it expires.
+    connect_azure refuses an Azure secret for exactly this reason, and a licence
+    key is no different.
+
+    The key is taken in your OWN terminal instead, where it goes straight into
+    local storage.
 
     Examples:
-        - "Activate my license FINOPS-2-..."
-        - "I just paid for Pro, here's my key"
+        - "Activate my license"
+        - "I just paid for Pro, how do I turn it on?"
 
-    Args:
-        license_key: Your license key from the receipt email (FINOPS-2-...).
     """
-    from ..license import store_license, get_status
+    from ..license import get_status
 
-    key = (license_key or "").strip()
-    if not key:
-        return {
-            "activated": False,
-            "message": ("Paste your license key to activate (it starts with FINOPS-2- and is in "
-                        "your receipt email). No terminal or restart needed."),
-            "get_pro": _srv._UPGRADE_URL,
-        }
-
-    status = store_license(key)
-    if status.mode in ("pro", "team", "enterprise", "trial"):
-        # store_license cleared the cached status, so get_status re-reads and this
-        # running server is Pro from the next call on. No restart required.
-        live = get_status()
+    live = get_status()
+    if live.mode in ("pro", "team", "enterprise"):
         return {
             "activated": True,
             "plan": live.mode,
             "email": getattr(live, "email", "") or None,
-            "message": f"{live.mode.upper()} is active on this machine now. No restart needed.",
-            "note": "The key was verified offline and stored locally; nothing left your machine.",
+            "message": f"{live.mode.upper()} is already active on this machine.",
         }
 
     return {
         "activated": False,
-        "plan": status.mode,
-        "error": status.message or "That license key did not validate.",
+        "plan": live.mode,
+        "activate_with": "finops login",
+        "message": (
+            "Run `finops login` in your terminal. It emails you an 8-digit code, "
+            "verifies it, and stores the licence on this machine, so there is no "
+            "key for you to copy at all. If you would rather paste the key from "
+            "your receipt, `finops license` takes it in the terminal, where it "
+            "is verified offline and stored locally. Either way, not here."
+        ),
+        "why_not_here": (
+            "A tool argument travels to the model provider before nable sees it, "
+            "and stays in that conversation history. The key has no machine "
+            "binding, so anyone reading the transcript could use it. If you have "
+            "already pasted one into a chat, treat it as exposed and ask for a "
+            "replacement."
+        ),
         "get_pro": _srv._UPGRADE_URL,
     }

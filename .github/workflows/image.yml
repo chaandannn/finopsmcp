@@ -70,3 +70,32 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository_owner }}/finops:${{ steps.meta.outputs.version }}
             ghcr.io/${{ github.repository_owner }}/finops:latest
+
+      # Prove the artifact is usable by a STRANGER, not just by this job.
+      #
+      # A push succeeding says the registry accepted the bytes. It says nothing
+      # about whether the package is public, and a GHCR container package is
+      # private by default: every release could go green for months while every
+      # `docker pull` from outside failed with "denied". The self-host path in
+      # the README and docker-compose.selfhost.yml is exactly that pull, so a
+      # private package turns the first thing a new user runs into an error.
+      #
+      # `docker logout` first, because the job is still authenticated from the
+      # login step above and would otherwise pull with credentials no reader has.
+      # That is the whole point: the check has to run as the reader does.
+      - name: Verify the published image pulls anonymously
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.meta.outputs.version }}"
+          IMAGE="ghcr.io/${{ github.repository_owner }}/finops"
+          docker logout ghcr.io
+          for tag in "$VERSION" latest; do
+            echo "Pulling ${IMAGE}:${tag} with no credentials..."
+            if ! docker pull --quiet "${IMAGE}:${tag}"; then
+              echo "::error::${IMAGE}:${tag} is not anonymously pullable. The GHCR"
+              echo "::error::package is probably private. Make it public at"
+              echo "::error::https://github.com/orgs/${{ github.repository_owner }}/packages/container/finops/settings"
+              exit 1
+            fi
+          done
+          echo "Both tags pull with no credentials."

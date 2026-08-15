@@ -9,6 +9,81 @@ from __future__ import annotations
 from .. import server as _srv
 
 
+async def _price_on_customer_rates(findings: list[dict], resource_type: str) -> dict:
+    """Re-price list-price findings on the customer's measured rate, and say so.
+
+    get_rightsizing_recommendations (EC2) has always routed savings through
+    detect_savings_context + adjust_savings and returned a `pricing_basis` block
+    saying how the figure was priced. get_rds_rightsizing_recommendations and
+    get_ecs_rightsizing_recommendations did neither: they summed the list-price
+    hourly tables and returned the raw figure with no label.
+
+    So for a customer with a measured 35% EDP, an RDS downsize really worth
+    ~$325/mo was quoted at $499, while its EC2 sibling in the same session was
+    quoted correctly, and nothing in either response marked them as different
+    bases. Two tools in one family answering "how much will this save" on
+    incompatible arithmetic is worse than either being wrong alone, because a
+    reader comparing them has no way to know.
+
+    This exists as one shared helper rather than a third copy of the logic. The
+    audit that found this also found the EC2/RDS ALB price drifting apart and a
+    dedup map keyed on strings nothing emitted: every one of those was two copies
+    of a rule that were only equal on the day they were written.
+
+    Adds to each finding, leaving the original figure intact so nothing that
+    reads estimated_monthly_savings changes meaning:
+      adjusted_monthly_savings  the figure on the customer's real rates
+      savings_basis             effective_rate | commitment_coverage | list_price
+
+    Returns the pricing_basis block for the response. Degrades to list price with
+    a low-confidence label when no rate data is reachable, which is the honest
+    answer for a customer with no CUR and no Cost Explorer access.
+    """
+    from ..recommendations.effective_savings import adjust_savings, detect_savings_context
+
+    try:
+        ctx = await _srv.asyncio.to_thread(detect_savings_context)
+    except Exception as exc:
+        _srv.log.debug("savings context unavailable, pricing at list: %s", exc)
+        return {"basis": {"list_price": len(findings)}, "confidence": {"low": len(findings)},
+                "note": ("Savings are shown at list price because no rate data was "
+                         "reachable. Connect your Cost and Usage Report (CUR) to price "
+                         "them on your real rates.")}
+
+    bases: dict[str, int] = {}
+    confidences: dict[str, int] = {}
+    adjusted_total = 0.0
+
+    for f in findings:
+        listed = f.get("estimated_monthly_savings")
+        if listed is None:
+            continue
+        a = adjust_savings(float(listed), resource_type=resource_type, ctx=ctx)
+        f["adjusted_monthly_savings"] = round(a.effective_savings, 2)
+        f["savings_basis"] = a.basis
+        adjusted_total += a.effective_savings
+        bases[a.basis] = bases.get(a.basis, 0) + 1
+        confidences[a.confidence] = confidences.get(a.confidence, 0) + 1
+
+    pricing: dict = {"basis": bases, "confidence": confidences,
+                     "adjusted_total_monthly_savings": round(adjusted_total, 2)}
+
+    rate = getattr(ctx, "rate", None)
+    if rate is not None and getattr(rate, "confidence", "low") in ("high", "medium"):
+        pricing["effective_discount_pct"] = round(
+            float(getattr(rate, "overall_discount_pct", 0.0)) * 100, 1)
+        pricing["rate_source"] = getattr(rate, "source", "measured")
+    cc = getattr(ctx, "commitment", None)
+    if cc is not None and getattr(cc, "available", False):
+        pricing["commitment_coverage_pct"] = round(cc.combined_pct, 1)
+    if "list_price" in bases:
+        pricing["note"] = (
+            "Some savings are shown at list price because no rate data was found. "
+            "Connect your Cost and Usage Report (CUR) to price them on your real rates."
+        )
+    return pricing
+
+
 @_srv.mcp.tool()
 async def take_snapshot_now() -> dict:
     """
@@ -467,11 +542,18 @@ async def get_rds_rightsizing_recommendations(
         except Exception as exc:
             _srv.log.debug("RDS rec tracking skipped: %s", exc)
 
+        # Same basis as the EC2 sibling. Without this the RDS tool quotes list
+        # price with no label while get_rightsizing_recommendations quotes the
+        # customer's measured rate, and nothing marks them as different answers.
+        pricing = await _price_on_customer_rates(all_findings, resource_type="rds")
+
         kept, omitted = _srv.fit_to_budget(all_findings)
         return {
             "count": len(all_findings),
             "total_monthly_savings": round(total_savings, 2),
             "total_annual_savings": round(total_savings * 12, 2),
+            "adjusted_monthly_savings": pricing.get("adjusted_total_monthly_savings"),
+            "pricing_basis": pricing,
             "regions_scanned": regions,
             "findings": kept,
             **({"findings_truncated": True, "hint": f"Showing {len(kept)} of {len(all_findings)} findings (highest savings first) to stay within token budget."} if omitted else {}),
@@ -806,11 +888,15 @@ async def get_ecs_rightsizing_recommendations(
         all_findings.sort(key=lambda x: x.get("estimated_monthly_savings", 0), reverse=True)
         total_savings = sum(f.get("estimated_monthly_savings", 0) for f in all_findings)
 
+        pricing = await _price_on_customer_rates(all_findings, resource_type="ecs")
+
         kept, omitted = _srv.fit_to_budget(all_findings, max_tokens=6000)
         result = {
             "count": len(all_findings),
             "total_monthly_savings": round(total_savings, 2),
             "total_annual_savings": round(total_savings * 12, 2),
+            "adjusted_monthly_savings": pricing.get("adjusted_total_monthly_savings"),
+            "pricing_basis": pricing,
             "regions_scanned": regions,
             "findings": kept,
             "tip": (
@@ -1820,7 +1906,7 @@ async def audit_cloudwatch_metric_cardinality(
         - "Find CloudWatch metrics costing us money"
     """
     if err := _srv.require_role("analyst"):
-        return err
+        return _srv.deny_text(err)
     try:
         from ..recommendations.cloudwatch_cardinality import audit_cloudwatch_metric_cardinality as _audit
         aws = _srv.CLOUD_CONNECTORS.get("aws")
@@ -1897,7 +1983,7 @@ async def audit_cloudwatch_orphaned_alarms(
         - "How much are we wasting on CloudWatch alarms?"
     """
     if err := _srv.require_role("analyst"):
-        return err
+        return _srv.deny_text(err)
     try:
         from ..recommendations.cloudwatch_alarms import audit_cloudwatch_orphaned_alarms as _audit
         aws = _srv.CLOUD_CONNECTORS.get("aws")
@@ -1977,7 +2063,7 @@ async def audit_cloudwatch_logs_ia_opportunities(
         - "How much can we save on CloudWatch log ingestion?"
     """
     if err := _srv.require_role("analyst"):
-        return err
+        return _srv.deny_text(err)
     try:
         from ..recommendations.cloudwatch_logs_ia import audit_cloudwatch_logs_ia_opportunities as _audit
         aws = _srv.CLOUD_CONNECTORS.get("aws")

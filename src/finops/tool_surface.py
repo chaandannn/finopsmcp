@@ -488,6 +488,14 @@ WRITE_TOOLS: frozenset[str] = frozenset({
     "set_business_metrics", "start_dashboard_server", "subscribe_to_report",
     "sync_budgets_from_yaml", "take_snapshot_now", "verify_savings",
     "remember_cost_context", "forget_cost_context",
+    # These three spawn `terraform plan` in a directory the caller names. A plan
+    # is a read of your infrastructure, but it is not a read of the MACHINE: it
+    # runs the provider plugins that directory declares and executes its
+    # `data "external"` programs. readOnlyHint is a promise to the client that a
+    # tool cannot have side effects, and some clients auto-approve on it, so
+    # advertising these as read-only meant a caller-supplied directory could get
+    # a process spawned without anyone being asked.
+    "estimate_terraform_cost", "estimate_change_cost", "check_action_policy",
 })
 # The subset that removes/revokes something (destructiveHint = true). Additive
 # writes (create/set/send/pin/open-PR) are writes but NOT destructive.

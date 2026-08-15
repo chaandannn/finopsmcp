@@ -181,9 +181,7 @@ def _build_html(
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>nable · Account Dashboard · {_esc(account_label)}</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@300;400;500;600&display=swap">
-<style>
+<!-- No webfont link: this page must render with zero network calls. --><style>
   :root {{
     --bg:        #0d0f10;
     --bg-1:      #111416;
@@ -203,7 +201,9 @@ def _build_html(
   *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
 
   body {{
-    font-family: 'Bricolage Grotesque', system-ui, sans-serif;
+    /* Bricolage Grotesque was retired in DESIGN.md and was never going to load
+       here anyway once the remote stylesheet went. Geist is the shipped face. */
+    font-family: 'Geist', system-ui, sans-serif;
     background: var(--bg);
     color: var(--fg);
     font-size: 14px;
