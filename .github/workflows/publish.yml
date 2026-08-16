@@ -40,7 +40,12 @@ jobs:
         run: python -m twine check dist/*
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@a892a5a61159132606e93a2fa6f4358831b04d26 # v1.14.2
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        # NOTE: this must be the COMMIT sha, not the annotated tag object's.
+        # The action runs as a Docker image tagged by commit, so pinning the
+        # tag object gave `manifest unknown` on a 404. `gh api .../git/ref/
+        # tags/X` returns object.type="tag" for an annotated tag and must be
+        # dereferenced; `gh api .../commits/vX.Y.Z --jq .sha` gives it directly.
         # Pinned by SHA, not tag, and bumped deliberately: the previous pin
         # bundled twine 6.1.0, which rejects Metadata-Version 2.5 with
         # "not a valid metadata version". hatchling emits 2.5 now, so
