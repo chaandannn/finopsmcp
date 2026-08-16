@@ -1,30 +1,32 @@
-"""
-APScheduler jobs that run on a schedule to:
-  1. Take daily cost snapshots from all active connectors
-  2. Detect anomalies and send alerts
-  3. Send a daily digest to Slack/Teams
+"""The work: take a snapshot, detect anomalies, send a digest. On demand.
+
+This module is the WHAT. It no longer contains the WHEN.
+
+Every function here runs because something asked it to, right then: an MCP tool
+("take a cost snapshot now", "send the digest now"), a CLI command, or the
+hosted cron. The cron itself, the nine registrations and the cross-host lock
+that stops two boxes double-sending, moved to nable-enterprise on 2026-08-15,
+because running unattended forever is the hosted product and answering a
+question is the open one.
+
+What that buys the open package, beyond tidiness: nothing here ever sets the
+unattended mark, so an Apache-2.0 install has no path that can reach a billed
+Cost Explorer request with nobody watching. Not "is discouraged from" — has no
+path. finops.billing_access still holds the policy and the single permitted
+client construction, open, for anyone who wants to audit that claim.
+
+The pairing to keep in mind when editing: _snapshot_all / _detect_and_alert /
+_send_daily_digest do the work, run_*_now are the on-demand entry points MCP
+tools call, and finops.scheduler.cron (closed) is what calls them on a timer.
 """
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import functools
 import logging
 import os
 from datetime import date, timedelta
 
-from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.cron import CronTrigger
-
 log = logging.getLogger("finops.scheduler")
-
-_scheduler: BackgroundScheduler | None = None
-
-# Holds the single-owner lock (a DB connection or a file handle) for the life of
-# the process so two processes pointing at the same database do not both run the
-# digest/anomaly jobs and double-send. Fixed 64-bit key for the PG advisory lock.
-_scheduler_lock_handle = None
-_SCHED_LOCK_KEY = 0x6E61626C  # 'nabl'
 
 
 def should_alert(direction: str, severity: str) -> bool:
@@ -50,56 +52,6 @@ def should_alert(direction: str, severity: str) -> bool:
     return severity == "high"
 
 
-def _acquire_scheduler_lock() -> bool:
-    """Best-effort single-owner guard across processes sharing one database.
-
-    Postgres (shared team mode): a session-level advisory lock, so only one of
-    several hosts pointing at the same Postgres owns the schedule. SQLite / local:
-    a non-blocking file lock keyed on the DB path, so `finops serve` and a separate
-    `finops-mcp` on the same host do not both fire. Fails OPEN (returns True) on any
-    error or unsupported platform: better to run than to silently never send.
-    """
-    global _scheduler_lock_handle
-    try:
-        from ..storage.db import get_engine, _is_postgres
-        url = os.environ.get("DATABASE_URL", "")
-        if url and _is_postgres(url):
-            conn = get_engine().raw_connection()
-            cur = conn.cursor()
-            cur.execute("SELECT pg_try_advisory_lock(%s)", (_SCHED_LOCK_KEY,))
-            if cur.fetchone()[0]:
-                _scheduler_lock_handle = (conn, cur)  # hold for process lifetime
-                return True
-            cur.close()
-            conn.close()
-            return False
-        import fcntl  # unix-only; Windows raises ImportError -> fail open below
-        import hashlib
-        import tempfile
-        # Key the lock on the RESOLVED database location. The old fallback used a
-        # raw env var that is usually unset, so every SQLite instance on a host
-        # shared one "default" lock and all but one silently lost their
-        # digest/anomaly jobs even when they used different database files.
-        ident = url or os.environ.get("FINOPS_DB_PATH", "")
-        if not ident:
-            try:
-                from ..storage.db import data_dir
-                ident = str(data_dir() / "finops.db")
-            except Exception:
-                ident = "default"
-        key = hashlib.sha256(ident.encode()).hexdigest()[:16]
-        path = os.path.join(tempfile.gettempdir(), f"nable-sched-{key}.lock")
-        fh = open(path, "w")
-        try:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            fh.close()
-            return False
-        _scheduler_lock_handle = fh  # keep fd open so the lock is held
-        return True
-    except Exception as exc:  # noqa: BLE001
-        log.warning("Scheduler single-owner lock unavailable (%s); proceeding.", exc)
-        return True
 
 
 # ── Core job functions ────────────────────────────────────────────────────────
@@ -109,14 +61,13 @@ async def _snapshot_all() -> dict:
     # Day-one anomalies: when history is thinner than the detector's minimum,
     # backfill baselines from Cost Explorer first, so the anomaly job that runs
     # right after this has something to compare against on a fresh install.
-    # Under the same fallback as the snapshot below: free where a billing-export
-    # reader exists, billed only where it is the sole path, never both.
+    # Cost Explorer is reached through billing_access, which refuses in an
+    # unattended context. Nothing in the open package sets that mark, so this
+    # runs for a person who asked and refuses on the hosted cron, where the
+    # billing export covers the same history for free.
     try:
         from ..anomaly.backfill import backfill_from_cost_explorer
-        from ..billing_access import billed_fallback
-
-        with billed_fallback("day-one anomaly baseline"):
-            backfill_from_cost_explorer()
+        backfill_from_cost_explorer()
     except Exception:
         pass
     from ..connectors.aws import AWSConnector
@@ -174,24 +125,18 @@ async def _snapshot_all() -> dict:
             # exactly the behaviour this whole change removed.
             log.warning("CUR ingest failed; AWS history will be short this run: %s", exc)
 
-    from ..billing_access import billed_fallback
-
     for name, connector in connectors.items():
         if name == "aws" and cur_ok:
             continue
         if not await connector.is_configured():
             continue
         try:
-            # AWS is the only provider whose read is metered per request, so it
-            # is the only one that needs the hole in the unattended rule. On an
-            # open install with no export reader this is the sole path to
-            # nightly history, and collecting nothing silently is the worse
-            # failure. billed_fallback refuses to open when a reader IS present,
-            # so a hosted box cannot reach this by breaking.
-            ctx = (billed_fallback(f"nightly {name} snapshot") if name == "aws"
-                   else contextlib.nullcontext())
-            with ctx:
-                summary = await connector.get_costs(yesterday, today, granularity="DAILY")
+            # No special case for AWS any more. Called on demand this reaches
+            # Cost Explorer, which is the right price for an answer somebody is
+            # waiting for; called from the hosted cron the unattended mark makes
+            # billing_access refuse, and the billing export above has already
+            # covered the same day for free.
+            summary = await connector.get_costs(yesterday, today, granularity="DAILY")
             for entry in summary.entries:
                 if entry.amount > 0:
                     store_snapshot(
@@ -442,36 +387,10 @@ async def _send_daily_digest() -> bool:
     return sent
 
 
-# ── Sync wrappers for APScheduler ─────────────────────────────────────────────
-
-def _as_unattended(fn):
-    """Mark a scheduled job as work nobody is watching.
-
-    Everything the job calls inherits the mark, which is what stops a
-    per-request Cost Explorer charge accruing on a timer. It is applied at
-    REGISTRATION rather than inside each job so a new job added later is covered
-    by default: the failure this guards against is the call site somebody forgot,
-    and a rule you have to remember is not a rule.
-
-    Set inside the wrapper, not around it: APScheduler runs jobs in a thread
-    pool, and a contextvar set on the registering thread would not be visible on
-    the worker that actually runs the job.
-    """
-    @functools.wraps(fn)
-    def runner(*a, **kw):
-        from ..billing_access import unattended_context
-        with unattended_context():
-            return fn(*a, **kw)
-    return runner
+# ── Sync entry points (MCP tools and the hosted cron both call these) ────────
 
 
-def _add_job(fn, trigger, *, id: str, **kw):
-    """The only place a job is registered, so the mark cannot be skipped.
 
-    tests/test_unattended_never_bills.py asserts nothing calls
-    _scheduler.add_job directly.
-    """
-    return _scheduler.add_job(_as_unattended(fn), trigger, id=id, **kw)
 
 
 def _run(coro):
@@ -485,57 +404,14 @@ def _run(coro):
         return None
 
 
-def job_snapshot() -> None:
-    """Ingest, then roll up if anything is installed that rolls up.
-
-    cost_snapshots is the source of truth and this job's only required output.
-    The precomputed aggregates that let a dashboard serve a month total as one
-    row read live in nable-enterprise and arrive in this namespace through that
-    package's seam, so on an open install the import simply fails and the
-    snapshot stands alone. Nothing in the open product reads them.
-
-    A rollup failure must not fail the snapshot either way. A stale rollup is
-    recoverable on the next run; a lost snapshot is a hole in the customer's
-    history that Cost Explorer may never restate.
-    """
-    _run(_snapshot_all())
-    try:
-        from ..storage.rollups import refresh_rollups  # type: ignore[attr-defined]
-    except ImportError:
-        return
-    try:
-        stats = refresh_rollups()
-        log.info("rollups refreshed after snapshot: %s cells", stats.get("cells"))
-    except Exception as exc:
-        log.warning("rollup refresh failed after snapshot: %s", exc)
 
 
-def job_detect_and_alert() -> None:
-    _run(_detect_and_alert())
 
 
-def job_daily_digest() -> None:
-    _run(_send_daily_digest())
 
 
-def job_invoice_fetch() -> None:
-    """Fetch and parse invoice emails from the configured IMAP mailbox."""
-    try:
-        from ..connectors.invoice.parser import fetch_and_store_invoices
-        stored = fetch_and_store_invoices()
-        if stored:
-            log.info("Invoice fetch: stored %d invoices", len(stored))
-    except Exception:
-        log.exception("Invoice fetch job failed")
 
 
-def job_weekly_slack_insight() -> None:
-    """Send the weekly Slack insight (top movers, savings, anomalies, budget alerts)."""
-    try:
-        _run(run_weekly_insight_now())
-        log.info("Weekly Slack insight sent")
-    except Exception:
-        log.exception("Weekly Slack insight failed")
 
 
 def job_weekly_email_digest() -> None:
@@ -707,14 +583,6 @@ def _mark_credit_alert_sent(key: str) -> None:
         log.debug("Could not persist credit alert state")
 
 
-def job_credit_check() -> None:
-    """Check the AWS credit-to-cash flip and alert once when it trips."""
-    try:
-        result = _run(_check_credits_and_alert())
-        if result:
-            log.info("Credit check: status=%s", result.get("status"))
-    except Exception:
-        log.exception("Credit check job failed")
 
 
 # ── AI / token spend monitor ──────────────────────────────────────────────────
@@ -824,161 +692,18 @@ async def _check_ai_spend_and_alert() -> dict | None:
     return {"findings": findings, "sent": sent}
 
 
-def job_ai_monitor() -> None:
-    """Watch token/LLM spend for spikes and commitment contracts needing attention."""
-    try:
-        result = _run(_check_ai_spend_and_alert())
-        if result:
-            log.info("AI spend monitor: %d finding(s)", len(result.get("findings", [])))
-    except Exception:
-        log.exception("AI spend monitor job failed")
 
 
-def job_auto_verify() -> None:
-    """Verify acted-on recommendations against live cloud state and record realized
-    savings. This is what makes the rightsizing PR body's promise ("nable will
-    auto-verify the change and record realized savings within 24h") actually true:
-    without it, verification only ran when a human remembered to call verify_savings().
-    Re-reads the actual instance type, so it only confirms a saving once the merged
-    change has been applied; otherwise it is a harmless no-op until next run."""
-    try:
-        from ..recommendations.savings_tracker import auto_verify_acted_on
-        verified = auto_verify_acted_on()
-        if verified:
-            log.info("Auto-verify: confirmed %d realized saving(s)", len(verified))
-    except Exception:
-        log.exception("Auto-verify job failed")
 
 
 # ── Scheduler lifecycle ───────────────────────────────────────────────────────
 
-def scheduler_enabled() -> bool:
-    """Unattended jobs are opt-in, and this is the only place that decides.
-
-    FINOPS_ENABLE_SCHEDULER was documented in `finops --help` and read by
-    nothing. server.py called start_scheduler() unconditionally, so installing
-    nable in an editor armed nine cron jobs nobody asked for, and setting the
-    variable to 0 changed nothing at all.
-
-    That is not a tidiness problem. job_snapshot makes a billed
-    ce:GetCostAndUsage call every night against the user's real account, and the
-    ticket jobs file issues into their tracker at 02:00 with nobody watching.
-    An editor install is someone trying the product, not consenting to nightly
-    unattended spend on their behalf.
-
-    Off unless explicitly on, because the failure directions are not
-    symmetrical: a user who wanted the cron and did not get it notices and turns
-    it on, while a user who did not want it finds out from a bill.
-    """
-    return os.environ.get("FINOPS_ENABLE_SCHEDULER", "").strip().lower() in (
-        "1", "true", "yes", "on",
-    )
 
 
-def start_scheduler() -> BackgroundScheduler | None:
-    global _scheduler
-    if _scheduler and _scheduler.running:
-        return _scheduler
-
-    # Gated here rather than at the call site, so a second entry point cannot
-    # arm the cron by forgetting to ask.
-    if not scheduler_enabled():
-        log.info(
-            "Scheduler not started: unattended jobs are opt-in. Set "
-            "FINOPS_ENABLE_SCHEDULER=1 to run snapshots, digests and anomaly "
-            "checks on a timer."
-        )
-        return None
-
-    if not _acquire_scheduler_lock():
-        log.info(
-            "Another process already owns the nable scheduler for this database; "
-            "not starting digest/anomaly jobs here (prevents double-sends)."
-        )
-        return None
-
-    _scheduler = BackgroundScheduler(timezone="UTC")
-
-    # Daily snapshot at 01:00 UTC
-    snapshot_cron = os.environ.get("FINOPS_SNAPSHOT_CRON", "0 1 * * *")
-    _add_job(job_snapshot, CronTrigger.from_crontab(snapshot_cron), id="snapshot", replace_existing=True)
-
-    # Anomaly check at 02:00 UTC (after snapshot)
-    anomaly_cron = os.environ.get("FINOPS_ANOMALY_CRON", "0 2 * * *")
-    _add_job(job_detect_and_alert, CronTrigger.from_crontab(anomaly_cron), id="anomaly", replace_existing=True)
-
-    # Daily digest at 09:00 UTC
-    digest_cron = os.environ.get("FINOPS_DIGEST_CRON", "0 9 * * *")
-    _add_job(job_daily_digest, CronTrigger.from_crontab(digest_cron), id="digest", replace_existing=True)
-
-    # Invoice email fetch every 6 hours
-    invoice_cron = os.environ.get("FINOPS_INVOICE_CRON", "0 */6 * * *")
-    _add_job(job_invoice_fetch, CronTrigger.from_crontab(invoice_cron), id="invoice_fetch", replace_existing=True)
-
-    # Weekly email digest every Monday at 09:00 UTC
-    weekly_cron = os.environ.get("FINOPS_WEEKLY_CRON", "0 9 * * 1")
-    _add_job(job_weekly_email_digest, CronTrigger.from_crontab(weekly_cron), id="weekly_digest", replace_existing=True)
-
-    # Weekly Slack insight every Monday at 09:30 UTC (30 min after email)
-    weekly_slack_cron = os.environ.get("FINOPS_WEEKLY_SLACK_CRON", "30 9 * * 1")
-    _add_job(job_weekly_slack_insight, CronTrigger.from_crontab(weekly_slack_cron), id="weekly_slack_insight", replace_existing=True)
-
-    # Auto-verify acted-on recommendations daily at 03:00 UTC, so a merged-and-applied
-    # rightsizing PR gets its realized saving recorded within 24h, as the PR body
-    # promises. Closes the find -> fix -> prove loop without a human re-running anything.
-    verify_cron = os.environ.get("FINOPS_VERIFY_CRON", "0 3 * * *")
-    _add_job(job_auto_verify, CronTrigger.from_crontab(verify_cron), id="auto_verify", replace_existing=True)
-
-    # Credit-to-cash flip watch daily at 04:00 UTC. Fires once when promotional
-    # credits stop covering the bill — the moment an early startup first feels
-    # cost pain, which AWS sends no native notification for.
-    credit_cron = os.environ.get("FINOPS_CREDIT_CRON", "0 4 * * *")
-    _add_job(job_credit_check, CronTrigger.from_crontab(credit_cron), id="credit_check", replace_existing=True)
-
-    # AI/token spend monitor at 05:00 UTC: token-spend spikes + commitment attention
-    ai_monitor_cron = os.environ.get("FINOPS_AI_MONITOR_CRON", "0 5 * * *")
-    _add_job(job_ai_monitor, CronTrigger.from_crontab(ai_monitor_cron), id="ai_monitor", replace_existing=True)
 
 
-    _scheduler.start()
-    log.info("Scheduler started (snapshot=%s, anomaly=%s, digest=%s)", snapshot_cron, anomaly_cron, digest_cron)
-    return _scheduler
 
 
-def _release_scheduler_lock() -> None:
-    """Release the cross-process single-owner lock so another host can take over
-    and we do not leak the DB connection / file descriptor."""
-    global _scheduler_lock_handle
-    h = _scheduler_lock_handle
-    _scheduler_lock_handle = None
-    if h is None:
-        return
-    try:
-        if isinstance(h, tuple):  # (conn, cur) for the Postgres advisory lock
-            conn, cur = h
-            try:
-                cur.execute("SELECT pg_advisory_unlock(%s)", (_SCHED_LOCK_KEY,))
-            except Exception:
-                pass
-            cur.close()
-            conn.close()
-        else:  # a file handle holding an fcntl flock
-            import fcntl
-            try:
-                fcntl.flock(h.fileno(), fcntl.LOCK_UN)
-            except Exception:
-                pass
-            h.close()
-    except Exception as exc:  # noqa: BLE001
-        log.debug("Scheduler lock release failed: %s", exc)
-
-
-def stop_scheduler() -> None:
-    global _scheduler
-    if _scheduler and _scheduler.running:
-        _scheduler.shutdown(wait=False)
-    _scheduler = None
-    _release_scheduler_lock()
 
 
 # ── Manual triggers (used by MCP tools) ──────────────────────────────────────
