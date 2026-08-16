@@ -64,14 +64,16 @@ PKG = pathlib.Path(billing_access.__file__).parent
 #       -> _section_commitments -> recommendations/commitments.py
 #         -> boto3.client("ce")            BILLED, and in_unattended_context() False
 #
-# So `finops-slack` with a subscription carrying the commitments section still
-# bills per report. It is opt-in, a separate console script, and strictly better
-# than the nightly cron this replaced, but the absolute claim was wrong.
+# `finops-slack` then moved to nable-enterprise with the rest of the always-on
+# layer, which is why the list below is one entry shorter than the finding.
 #
-# pr_comments/webhook.py is on the list as a background path too, though its
-# reads go to the AWS Pricing API, which is free.
+# pr_comments/webhook.py stays: it is a background path, but its reads go to the
+# AWS Pricing API, which is free. It is the last entry, and it is here to be
+# removed rather than tolerated.
 UNMARKED_BACKGROUND_PATHS: frozenset[str] = frozenset({
-    "slack_bot/app.py",
+    # slack_bot/app.py came off this list on 2026-08-15 by MOVING to
+    # nable-enterprise, which is what an entry on a shrinking ratchet is
+    # supposed to end as. It was the only one that reached a billed API.
     "pr_comments/webhook.py",
 })
 

@@ -416,82 +416,10 @@ def open_rightsizing_recommendation():
         ))
 
 
-def _approve_from_slack(repo) -> dict:
-    """Drive the real Slack approval path: draft a pending action, then approve
-    it as a second person with the analyst role, exactly as the button handler
-    does. Nothing here is stubbed."""
-    from finops.slack_bot import remediation as slack_remediation
-
-    action_id = slack_remediation._create_pending(
-        kind="rightsizing_pr",
-        payload={"tf_dir": str(repo), "github_repo": "acme/infra",
-                 "recommendation_ids": None, "branch": "fix/rightsizing"},
-        preview="Terraform rightsizing PR",
-        requested_by="U_ALICE",
-    )
-    return slack_remediation.approve_action(
-        action_id, resolved_by="U_BOB", role="analyst"
-    )
 
 
-def test_slack_approval_does_not_write_to_the_repo_while_prs_are_disabled(
-    iac_repo, open_rightsizing_recommendation
-):
-    """FAILS TODAY. The bug is real.
-
-    remediation_pr_enabled() is the switch a security team is told to use when
-    they ask "can nable open pull requests in our repos?". It defaults to OFF
-    and it is consulted in two MCP tool wrappers only. The Slack approval
-    handler is not one of them, so a click in Slack patches the customer's .tf
-    files, creates a branch and commits, and would push it if a remote existed.
-    Here the push is the only step that fails, and only because this fixture
-    has no remote.
-
-    What breaks in production: a company that reviewed nable.policy.yaml and
-    signed off on "nable may not open PRs in our repositories" gets PRs. The
-    two gates are inversely correlated, which makes it worse: drafting turns
-    itself on whenever FINOPS_REQUIRE_AUTH=1, which is what server.py:1375
-    tells enterprises to set.
-    """
-    from finops.remediation.gate import remediation_pr_enabled
-    assert remediation_pr_enabled() is False, "fixture setup: the gate must be off"
-
-    result = _approve_from_slack(iac_repo)
-
-    assert (iac_repo / "main.tf").read_text() == _TF_BEFORE, (
-        "the approval handler rewrote the customer's Terraform while the "
-        "declared remediation kill switch was off"
-    )
-    assert not _git(iac_repo, "branch", "--list", "fix/rightsizing").stdout.strip(), (
-        "the approval handler created a branch in the customer's repository "
-        "while the declared remediation kill switch was off"
-    )
-    blob = json.dumps(result).lower()
-    assert "remediation" in blob and result.get("error"), (
-        f"the refusal must name the gate so an operator can find it, got {result!r}"
-    )
 
 
-def test_enabling_the_gate_still_lets_an_approved_pr_proceed(
-    iac_repo, open_rightsizing_recommendation, monkeypatch
-):
-    """PASSES TODAY and must keep passing.
-
-    The pair to the test above, and the reason it cannot be satisfied by
-    refusing everything. An operator who set FINOPS_REMEDIATION_ENABLED=true
-    has opted in, and the approval flow must still patch the file and create
-    the branch. If this goes red the fix turned an opt-in gate into a wall and
-    the remediation feature is dead.
-    """
-    monkeypatch.setenv("FINOPS_REMEDIATION_ENABLED", "true")
-    _approve_from_slack(iac_repo)
-
-    assert "m5.large" in (iac_repo / "main.tf").read_text(), (
-        "an explicitly enabled remediation did not patch the Terraform"
-    )
-    assert _git(iac_repo, "branch", "--list", "fix/rightsizing").stdout.strip(), (
-        "an explicitly enabled remediation did not create the branch"
-    )
 
 
 def test_every_ungated_pr_call_site_is_covered_by_the_kill_switch():

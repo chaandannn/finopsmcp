@@ -91,10 +91,6 @@ pdf = [
     "pdfplumber>=0.10.0",
     "pillow>=12.3.0",  # constrain pdfplumber's transitive pillow off the 12.2.0 image-parsing CVEs
 ]
-slack = [
-    "slack-bolt>=1.18.0",
-    "anthropic>=0.25.0",
-]
 pr-comments = [
     "httpx>=0.27.0",
     "anthropic>=0.25.0",
@@ -117,7 +113,6 @@ all = [
     "keyring>=25.0.0",
     "pdfplumber>=0.10.0",
     "pillow>=12.3.0",  # see [pdf] extra: keep pillow off the 12.2.0 CVEs
-    "slack-bolt>=1.18.0",
     "anthropic>=0.25.0",
     "kubernetes>=29.0.0",
     "psycopg2-binary>=2.9.0",
@@ -152,7 +147,6 @@ finops            = "finops.setup_wizard:main"
 # also answer to `nable`. Same target as the shim package's entry point, so when
 # both are installed the duplicate script name resolves to identical behavior.
 nable             = "finops.entry:main"
-finops-slack      = "finops.slack_bot.app:main"
 finops-pr-webhook = "finops.pr_comments.webhook:main"
 finops-doctor     = "finops.doctor:main"
 finops-estimate   = "finops.connectors.terraform_estimate:main"
