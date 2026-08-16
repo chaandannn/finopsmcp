@@ -122,15 +122,6 @@ def test_blind_spots_empty_when_no_ai_marketplace_spend():
 
 # ── scheduler registration ───────────────────────────────────────────────────
 
-def test_scheduler_registers_credit_check():
-    from finops.scheduler.jobs import start_scheduler, stop_scheduler
-    sched = start_scheduler()
-    try:
-        if sched is None:
-            pytest.skip("scheduler single-owner lock held elsewhere")
-        assert sched.get_job("credit_check") is not None, "credit_check job not registered"
-    finally:
-        stop_scheduler()
 
 
 def test_partial_current_month_does_not_false_flip():

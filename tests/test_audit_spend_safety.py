@@ -7,15 +7,14 @@ open today, and each one fails silently, which is the part that matters: nothing
 logs, nothing errors, and the surface that was supposed to stop the action
 reports success.
 
-  1. `finops.server.main()` arms nine cron jobs before it serves a single
-     request, with no opt-in of any kind (server.py:1381). Adding nable to
-     Claude Desktop or Cursor therefore signs the user up for a nightly Cost
-     Explorer pull, which AWS bills per request, plus unattended Jira/Linear/
-     GitHub ticket creation at 02:00. Every other surface treats the scheduler
-     as opt-in and says so in writing: docs/DEPLOY.md, the setup wizard and the
-     enterprise dashboard all gate it on FINOPS_ENABLE_SCHEDULER. That variable
-     is read nowhere in server.py, so tests/test_mcp_stdio_smoke.py setting it
-     to 0 with the comment "no scheduler racing the test" reaches nothing.
+  1. FIXED, then moved. `finops.server.main()` used to arm nine cron jobs
+     before serving a request, with no opt-in, so adding nable to Claude
+     Desktop signed the user up for a nightly billed Cost Explorer pull and
+     unattended ticket creation at 02:00. It was gated on
+     FINOPS_ENABLE_SCHEDULER, and on 2026-08-15 the cron moved to
+     nable-enterprise entirely: the open package now has no background path,
+     which is a stronger guarantee than the gate. Those tests live in
+     nable-enterprise/tests/test_cron_seam.py now.
 
   2. The agent guardrail's AWS classifiers hard-code `aws <service> <verb>`
      adjacency (guard.py:48-59), so one global CLI option defeats them.
@@ -49,6 +48,7 @@ vendor, not about this code.
 from __future__ import annotations
 
 import ast
+import inspect
 import io
 import json
 import logging
@@ -114,13 +114,14 @@ def _isolated(monkeypatch, tmp_path):
     root = logging.getLogger()
     prior_level, prior_handlers = root.level, list(root.handlers)
 
-    # Another test file may have left a scheduler running; start_scheduler()
-    # returns it untouched, which would mask both the bug and its fix.
-    jobs.stop_scheduler()
+    # No scheduler to stop any more: the cron moved to nable-enterprise on
+    # 2026-08-15 and the open package has no background path at all. The tests
+    # that checked WHICH jobs get armed went with it (tests/test_cron_seam.py
+    # there); tests/test_open_package_never_runs_unattended.py here asserts the
+    # absence instead.
     try:
         yield
     finally:
-        jobs.stop_scheduler()
         db_mod._ENGINE, db_mod._DATA_DIR = prior_engine, prior_dir
         srv._MCP_SESSION, srv._stale_note = prior_session, prior_note
         set_current_identity(prior_identity)
@@ -148,98 +149,14 @@ def _run_editor_startup(monkeypatch) -> None:
     assert reached, "main() never reached mcp.run(); this is not the server path"
 
 
-def _armed_jobs() -> dict:
-    sched = jobs._scheduler
-    if sched is None or not sched.running:
-        return {}
-    return {j.id: j for j in sched.get_jobs()}
 
 
-def test_scheduler_off_must_be_honoured_by_the_mcp_entry_point(monkeypatch):
-    """FAILS TODAY. The bug is real.
-
-    A user who set FINOPS_ENABLE_SCHEDULER=0 still gets nine cron jobs, because
-    server.py:1381 calls start_scheduler() with no gate and that variable is
-    read nowhere in the file. In production this is a nightly
-    ce:GetCostAndUsage billed to an account whose owner explicitly opted out,
-    plus tickets filed into their tracker at 02:00 with nobody watching.
-    """
-    monkeypatch.setenv("FINOPS_ENABLE_SCHEDULER", "0")
-    _run_editor_startup(monkeypatch)
-    assert not _armed_jobs(), (
-        "FINOPS_ENABLE_SCHEDULER=0 and the MCP server armed these jobs anyway: "
-        f"{sorted(_armed_jobs())}. Each nightly snapshot is a billed Cost "
-        "Explorer request on an account whose owner opted out."
-    )
 
 
-def test_an_editor_install_with_no_opt_in_does_not_arm_the_cron(monkeypatch):
-    """FAILS TODAY. The bug is real.
-
-    The default case, which is every editor install: no FINOPS_ENABLE_SCHEDULER
-    set anywhere, and the stdio server arms the full cron set at startup. What
-    breaks in production is that adding nable to Cursor silently starts
-    spending the user's money and filing tickets in their tracker, which is not
-    what installing a read-only cost tool is understood to mean.
-
-    If the product ever decides unattended billed calls should be the default
-    for an editor install, this is the line where that gets decided on purpose
-    rather than by omission.
-    """
-    _run_editor_startup(monkeypatch)
-    assert not _armed_jobs(), (
-        "a bare editor install armed unattended jobs with no opt-in: "
-        f"{sorted(_armed_jobs())}"
-    )
 
 
-def test_an_explicit_opt_in_still_arms_the_scheduler(monkeypatch):
-    """PASSES TODAY and must keep passing.
-
-    The pair to the two tests above. Gating the scheduler must not turn into
-    deleting it: an operator who asked for FINOPS_ENABLE_SCHEDULER=1, the
-    documented self-host and enterprise posture, still needs their digests,
-    anomaly alerts and snapshots. If this goes red, the fix went too far and
-    every self-hosted box quietly stopped taking snapshots.
-    """
-    monkeypatch.setenv("FINOPS_ENABLE_SCHEDULER", "1")
-    _run_editor_startup(monkeypatch)
-    assert _armed_jobs(), (
-        "FINOPS_ENABLE_SCHEDULER=1 armed nothing; opting in must still work"
-    )
 
 
-def test_the_cron_it_arms_is_the_billed_and_ticket_filing_pair(monkeypatch):
-    """Pins what is actually at stake above.
-
-    Records which jobs the scheduler arms, so nobody can argue the tests above
-    are about a harmless background timer. `snapshot` is the Cost Explorer path
-    and `anomaly` is the one that calls create_ticket. If a rename ever
-    detaches these ids from these functions, the tests above are guarding
-    something other than what their docstrings claim.
-
-    Opts in explicitly now that unattended jobs are opt-in. That is the whole
-    point of the two tests above: without this line, nothing arms. Setting it
-    here keeps this a statement about WHAT gets armed, and leaves WHETHER it
-    arms to them.
-    """
-    monkeypatch.setenv("FINOPS_ENABLE_SCHEDULER", "1")
-    sched = jobs.start_scheduler()
-    assert sched is not None, (
-        "could not acquire the scheduler lock even with an isolated "
-        "FINOPS_DB_PATH; the test cannot observe what gets armed"
-    )
-    armed = _armed_jobs()
-    assert armed.get("snapshot") is not None
-    assert armed["snapshot"].func is jobs.job_snapshot, (
-        "the 01:00 job is no longer job_snapshot, which is the Cost Explorer "
-        "path the spend-safety tests above are written about"
-    )
-    assert armed.get("anomaly") is not None
-    assert armed["anomaly"].func is jobs.job_detect_and_alert, (
-        "the 02:00 job is no longer job_detect_and_alert, which is the path "
-        "that auto-creates Jira/Linear/GitHub tickets unattended"
-    )
 
 
 def test_the_snapshot_job_first_act_is_a_billed_cost_explorer_call(monkeypatch):
@@ -499,82 +416,10 @@ def open_rightsizing_recommendation():
         ))
 
 
-def _approve_from_slack(repo) -> dict:
-    """Drive the real Slack approval path: draft a pending action, then approve
-    it as a second person with the analyst role, exactly as the button handler
-    does. Nothing here is stubbed."""
-    from finops.slack_bot import remediation as slack_remediation
-
-    action_id = slack_remediation._create_pending(
-        kind="rightsizing_pr",
-        payload={"tf_dir": str(repo), "github_repo": "acme/infra",
-                 "recommendation_ids": None, "branch": "fix/rightsizing"},
-        preview="Terraform rightsizing PR",
-        requested_by="U_ALICE",
-    )
-    return slack_remediation.approve_action(
-        action_id, resolved_by="U_BOB", role="analyst"
-    )
 
 
-def test_slack_approval_does_not_write_to_the_repo_while_prs_are_disabled(
-    iac_repo, open_rightsizing_recommendation
-):
-    """FAILS TODAY. The bug is real.
-
-    remediation_pr_enabled() is the switch a security team is told to use when
-    they ask "can nable open pull requests in our repos?". It defaults to OFF
-    and it is consulted in two MCP tool wrappers only. The Slack approval
-    handler is not one of them, so a click in Slack patches the customer's .tf
-    files, creates a branch and commits, and would push it if a remote existed.
-    Here the push is the only step that fails, and only because this fixture
-    has no remote.
-
-    What breaks in production: a company that reviewed nable.policy.yaml and
-    signed off on "nable may not open PRs in our repositories" gets PRs. The
-    two gates are inversely correlated, which makes it worse: drafting turns
-    itself on whenever FINOPS_REQUIRE_AUTH=1, which is what server.py:1375
-    tells enterprises to set.
-    """
-    from finops.remediation.gate import remediation_pr_enabled
-    assert remediation_pr_enabled() is False, "fixture setup: the gate must be off"
-
-    result = _approve_from_slack(iac_repo)
-
-    assert (iac_repo / "main.tf").read_text() == _TF_BEFORE, (
-        "the approval handler rewrote the customer's Terraform while the "
-        "declared remediation kill switch was off"
-    )
-    assert not _git(iac_repo, "branch", "--list", "fix/rightsizing").stdout.strip(), (
-        "the approval handler created a branch in the customer's repository "
-        "while the declared remediation kill switch was off"
-    )
-    blob = json.dumps(result).lower()
-    assert "remediation" in blob and result.get("error"), (
-        f"the refusal must name the gate so an operator can find it, got {result!r}"
-    )
 
 
-def test_enabling_the_gate_still_lets_an_approved_pr_proceed(
-    iac_repo, open_rightsizing_recommendation, monkeypatch
-):
-    """PASSES TODAY and must keep passing.
-
-    The pair to the test above, and the reason it cannot be satisfied by
-    refusing everything. An operator who set FINOPS_REMEDIATION_ENABLED=true
-    has opted in, and the approval flow must still patch the file and create
-    the branch. If this goes red the fix turned an opt-in gate into a wall and
-    the remediation feature is dead.
-    """
-    monkeypatch.setenv("FINOPS_REMEDIATION_ENABLED", "true")
-    _approve_from_slack(iac_repo)
-
-    assert "m5.large" in (iac_repo / "main.tf").read_text(), (
-        "an explicitly enabled remediation did not patch the Terraform"
-    )
-    assert _git(iac_repo, "branch", "--list", "fix/rightsizing").stdout.strip(), (
-        "an explicitly enabled remediation did not create the branch"
-    )
 
 
 def test_every_ungated_pr_call_site_is_covered_by_the_kill_switch():

@@ -67,9 +67,9 @@ SUPPORTED: dict[str, tuple[str, ...]] = {
     "finops.remediation.rightsizing_pr": ("run_git", "validate_git_ref"),
     "finops.scheduler.jobs": ("run_snapshot_now",),
     "finops.server": ("CLOUD_CONNECTORS", "SAAS_CONNECTORS", "mcp", "nudge_url"),
-    "finops.slack_bot.llm": (
-        "LoopResult", "record_managed_ai_usage", "route_request",
-    ),
+    # finops.slack_bot.llm was here until 2026-08-15. The Slack bot moved to
+    # nable-enterprise, so it is no longer part of the open package's supported
+    # surface; nable-enterprise pins its own shape.
     "finops.storage.db": ("get_engine", "savings_recommendations"),
     "finops.tagging.hcl_patcher": (
         "apply_rightsizing_fix", "extract_sizing_value", "find_resource_file",

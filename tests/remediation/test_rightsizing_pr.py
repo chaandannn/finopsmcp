@@ -189,28 +189,8 @@ def test_resolves_from_terraform_state_without_cfg_tf_fields(tmp_path: Path) -> 
 
 # ── Test: the verification step is scheduled (closes the find->fix->prove loop) ─
 
-def test_job_auto_verify_runs_the_verifier_safely(monkeypatch) -> None:
-    from finops.scheduler import jobs
-    called = {}
-
-    def _fake():
-        called["ran"] = True
-        return []
-
-    monkeypatch.setattr("finops.recommendations.savings_tracker.auto_verify_acted_on", _fake)
-    jobs.job_auto_verify()  # must not raise
-    assert called.get("ran")
 
 
-def test_scheduler_registers_auto_verify() -> None:
-    from finops.scheduler.jobs import start_scheduler, stop_scheduler
-    sched = start_scheduler()
-    try:
-        if sched is None:
-            pytest.skip("scheduler single-owner lock held elsewhere")
-        assert sched.get_job("auto_verify") is not None, "auto_verify job not registered"
-    finally:
-        stop_scheduler()
 
 
 # ── Test: skipped when tf_resource_type is missing ────────────────────────────

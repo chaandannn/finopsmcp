@@ -47,6 +47,48 @@ def store_snapshot(
         ))
 
 
+def replace_provider_day(provider: str, day: date, rows: list[dict]) -> int:
+    """Replace everything a provider recorded for one day. Returns rows written.
+
+    store_snapshot upserts on (provider, service, account_id, region, date),
+    which is right when one source keeps writing the same day. It is wrong the
+    moment a SECOND source writes the same day under different service names.
+
+    Cost Explorer calls it "Amazon Elastic Compute Cloud - Compute". The CUR
+    calls the same spend "Amazon Elastic Compute Cloud". Those are different
+    keys, so an upsert would not overwrite the CE row, it would sit beside it,
+    and the day would read as twice the money. A cost tool that doubles a bill
+    because it got better at reading it is the worst possible bug to ship.
+
+    Replacing the whole provider-day is safe precisely because the CUR is
+    complete for any day it covers: there is nothing left over that should have
+    survived. Done in one transaction so a crash mid-write cannot leave the day
+    empty.
+    """
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(cost_snapshots.delete().where(
+            and_(cost_snapshots.c.provider == provider,
+                 cost_snapshots.c.snapshot_date == day.isoformat())))
+        if not rows:
+            return 0
+        now = _now()
+        conn.execute(cost_snapshots.insert(), [
+            {
+                "provider": provider,
+                "service": r.get("service") or "unknown",
+                "account_id": r.get("account_id") or "",
+                "region": r.get("region") or "",
+                "snapshot_date": day.isoformat(),
+                "amount_usd": float(r.get("amount_usd") or 0.0),
+                "granularity": r.get("granularity") or "DAILY",
+                "captured_at": now,
+            }
+            for r in rows
+        ])
+    return len(rows)
+
+
 def latest_captured_at() -> str | None:
     """ISO timestamp of the most recent cost snapshot, or None if there are none.
 

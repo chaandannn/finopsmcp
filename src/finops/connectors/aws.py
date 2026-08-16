@@ -151,15 +151,17 @@ class AWSConnector(BaseConnector):
 
         # Cost Explorer stays: it is what lets somebody point nable at
         # credentials they already have and get a number in a minute. The policy
-        # only stops it being called when it is unnecessary — an operator banned
+        # only stops it being called when it is unnecessary: an operator banned
         # it, or this is unattended work where a per-request charge would repeat
-        # on a timer with nobody watching. Callers in scheduled paths pass
-        # unattended=True.
-        from ..billing_access import cost_explorer_forbidden, ce_client
-
-        if cost_explorer_forbidden():
-            ce_client(reason="AWSConnector._make_client")   # raises, names the fix
-
+        # on a timer with nobody watching.
+        #
+        # Every branch below returns ce_client(...) rather than boto3.client("ce").
+        # It used to call ce_client ONLY to trip the kill switch and then build
+        # its own client, which meant the unattended rule was never reached from
+        # here and the nightly snapshot billed every customer $0.01 a request
+        # while billing_access.py forbade exactly that in words. A guard you call
+        # for its side effect and then walk past is not a guard.
+        from ..billing_access import ce_client
 
         # Without explicit timeouts botocore waits 60s per attempt with ~4
         # retries; under CE throttling that leaks worker threads for minutes
@@ -178,21 +180,26 @@ class AWSConnector(BaseConnector):
 
         # If a session was injected (via account registry), use it directly
         if self._session and not role_arn:
-            return self._session.client("ce", region_name=_region, config=_cfg)
+            return ce_client(self._session, region=_region, config=_cfg,
+                             reason="AWSConnector._make_client (session)")
 
         if role_arn:
+            # The assume-role round trip happens first, but the client is still
+            # built by the gate: an ungated construction here would be a second
+            # ungated construction, and the multi-account path is precisely where
+            # per-request charges multiply.
             sts = boto3.client("sts")
             assumed = sts.assume_role(RoleArn=role_arn, RoleSessionName="finops-mcp")
             creds = assumed["Credentials"]
-            return boto3.client(
-                "ce",
+            return ce_client(
+                region=_region, config=_cfg,
+                reason="AWSConnector._make_client (assumed role)",
                 aws_access_key_id=creds["AccessKeyId"],
                 aws_secret_access_key=creds["SecretAccessKey"],
                 aws_session_token=creds["SessionToken"],
-                region_name=_region,
-                config=_cfg,
             )
-        return boto3.client("ce", region_name=_region, config=_cfg)
+        return ce_client(region=_region, config=_cfg,
+                         reason="AWSConnector._make_client")
 
     def _account_id(self, role_arn: str | None = None) -> str:
         import boto3

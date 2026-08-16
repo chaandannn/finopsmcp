@@ -1,7 +1,9 @@
-"""
-Team tier ($1,000/mo flat) tests: plan validation, gating, and the bot's
-hard gate. The conversational Slack bot and chat remediation are Team-only;
-trial passes so demos feel the full product; no free questions.
+"""Team tier ($1,000/mo flat): plan validation and the license gate itself.
+
+The conversational Slack bot and chat remediation are the Team-only features
+these keys unlock, but the bot moved to nable-enterprise on 2026-08-15, so the
+tests that drive its gate went with it (tests/test_team_tier_bot_gate.py there).
+What stays here is finops.license, which is open and is what actually decides.
 """
 from __future__ import annotations
 
@@ -9,7 +11,6 @@ import pytest
 
 import finops.license as lic
 from finops.license import LicenseStatus
-from finops.slack_bot import app as slack_app
 
 
 @pytest.fixture(autouse=True)
@@ -62,25 +63,3 @@ def test_require_team_allows_team_and_trial(monkeypatch):
 def test_require_team_unknown_feature_fails_open(monkeypatch):
     monkeypatch.setattr(lic, "get_status", lambda: _status("free"))
     assert lic.require_team("not_a_team_feature") is None
-
-
-def test_bot_gate_blocks_free(monkeypatch):
-    monkeypatch.setattr("finops.license.check_license", lambda: _status("free"))
-    msg = slack_app._license_gate()
-    assert msg is not None
-    assert "Team" in msg and "trial" in msg
-
-
-def test_bot_gate_allows_team_and_trial(monkeypatch):
-    for mode in ("team", "trial", "enterprise"):
-        monkeypatch.setattr("finops.license.check_license", lambda m=mode: _status(m))
-        assert slack_app._license_gate() is None
-
-
-def test_bot_gate_fails_open_on_license_error(monkeypatch):
-    """A license-system bug must never take the bot down for paying users."""
-    def boom():
-        raise RuntimeError("keyring exploded")
-
-    monkeypatch.setattr("finops.license.check_license", boom)
-    assert slack_app._license_gate() is None

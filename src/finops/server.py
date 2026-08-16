@@ -1472,8 +1472,16 @@ def main() -> None:
             "All users have full access. Set FINOPS_REQUIRE_AUTH=1 to enforce RBAC."
         )
 
-    from .scheduler.jobs import start_scheduler
-    start_scheduler()
+    # The cron lives in nable-enterprise and arrives in this namespace through
+    # that package's seam. An open install is an MCP server and a CLI: it
+    # answers when asked and runs nothing on a timer, so there is simply
+    # nothing to start here and the import failing is the normal case.
+    try:
+        from .scheduler.cron import start_scheduler  # type: ignore[attr-defined]
+    except ImportError:
+        pass
+    else:
+        start_scheduler()
     # A real MCP session is starting: arm the one-time first-contact
     # confirmation (never armed for CLI-invoked tool calls, which would burn
     # the sentinel before the editor ever loads).

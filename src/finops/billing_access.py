@@ -36,12 +36,61 @@ tree: the list of legacy direct constructions may shrink and may never grow.
 """
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import logging
 import os
 from dataclasses import dataclass
 from typing import Any
 
 log = logging.getLogger("finops.billing_access")
+
+# Whether the code running right now is unattended. Set once, at the point a
+# scheduled job starts, and inherited by everything it calls.
+#
+# A contextvar rather than a parameter because the alternative is threading an
+# `unattended` flag through every function between the cron and the client, and
+# the one call site somebody forgets is the one that bills the customer forever.
+# This was not hypothetical: AWSConnector._make_client called ce_client() only
+# to trip the kill switch, then built its own client and never passed the flag,
+# so the nightly snapshot billed every customer while the module that forbids
+# exactly that sat one import away.
+#
+# contextvars, not a global, because they are per-thread and per-task: APScheduler
+# runs jobs in a pool, and a global would leak "unattended" into an interactive
+# question that happened to share a thread.
+_UNATTENDED: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "nable_unattended", default=False)
+
+
+@contextlib.contextmanager
+def unattended_context():
+    """Mark everything inside as scheduled work nobody is watching.
+
+    Wrap the job, not the call: the point is that a path nobody thought about
+    is covered by default rather than by remembering.
+    """
+    token = _UNATTENDED.set(True)
+    try:
+        yield
+    finally:
+        _UNATTENDED.reset(token)
+
+
+@contextlib.contextmanager
+def attended_context():
+    """The escape hatch, for work a person explicitly asked for from inside a
+    scheduled process. Rare and deliberate; there is no way to do it by accident."""
+    token = _UNATTENDED.set(False)
+    try:
+        yield
+    finally:
+        _UNATTENDED.reset(token)
+
+
+def in_unattended_context() -> bool:
+    return _UNATTENDED.get()
+
 
 # The opt-OUT. Cost Explorer is available by default because it is the on-ramp;
 # this is for organisations that want a hard guarantee it is never called.
@@ -154,19 +203,23 @@ def cost_explorer_forbidden() -> bool:
     return _env(FORBID_CE_ENV).lower() in ("1", "true", "yes")
 
 
-def cost_explorer_allowed(*, unattended: bool = False) -> bool:
+def cost_explorer_allowed(*, unattended: bool | None = None) -> bool:
     """May we call Cost Explorer right now?
 
     unattended: True for the overnight run, scheduled jobs, and anything else
         nobody is sitting in front of. A per-request charge on a timer is the
-        case that actually costs money, so it is never allowed there.
+        case that actually costs money, so it is never allowed there. Left as
+        None it is read from the ambient context, which is what makes the rule
+        apply to paths nobody remembered to annotate.
     """
     if cost_explorer_forbidden():
         return False
+    if unattended is None:
+        unattended = in_unattended_context()
     return not unattended
 
 
-def should_use_cost_explorer(provider: str = AWS, *, unattended: bool = False) -> bool:
+def should_use_cost_explorer(provider: str = AWS, *, unattended: bool | None = None) -> bool:
     """The whole policy in one call: is CE both permitted AND necessary?
 
     Returns False when the billing export is provisioned, because the export
@@ -180,19 +233,30 @@ def should_use_cost_explorer(provider: str = AWS, *, unattended: bool = False) -
 
 
 def ce_client(session: Any = None, *, region: str | None = None,
-              config: Any = None, reason: str = "", unattended: bool = False) -> Any:
+              config: Any = None, reason: str = "",
+              unattended: bool | None = None, **client_kwargs: Any) -> Any:
     """The only permitted Cost Explorer client in this package.
 
     Raises BillingAccessError when policy says this call should not happen: the
     operator banned CE, or it is an unattended path where a recurring
     per-request charge would accrue with nobody watching. The exception text is
     what a user reads, so it names the fix rather than the rule.
+
+    unattended defaults to the ambient context (see unattended_context), so a
+    scheduled path is refused whether or not its author thought about it.
+    Passing it explicitly still wins, in both directions.
+
+    client_kwargs pass through to the boto3 client, which is what lets the
+    assume-role path build a credentialled client here rather than doing it
+    itself and slipping the gate.
     """
     if cost_explorer_forbidden():
         raise BillingAccessError(
             f"Cost Explorer is disabled here ({FORBID_CE_ENV}=1). "
             + " ".join(ACCESS_PATHS[AWS].as_instructions())
         )
+    if unattended is None:
+        unattended = in_unattended_context()
     if unattended:
         raise BillingAccessError(
             "Cost Explorer is not used in scheduled or background work: it bills "
@@ -206,7 +270,7 @@ def ce_client(session: Any = None, *, region: str | None = None,
     import boto3
 
     region = region or os.getenv("AWS_DEFAULT_REGION", "us-east-1")
-    kwargs: dict[str, Any] = {"region_name": region}
+    kwargs: dict[str, Any] = {"region_name": region, **client_kwargs}
     if config is not None:
         kwargs["config"] = config
     if session is not None:
