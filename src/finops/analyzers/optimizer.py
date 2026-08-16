@@ -569,7 +569,12 @@ def run_deep_audit(
     try:
         session = _get_boto3_session(role_arn)
     except Exception as exc:
-        return {"error": f"Could not create AWS session: {exc}"}
+        # error_type alongside the message: the message carries a path or an
+        # account id so it can never be sent anywhere, and formatting the
+        # exception into a string threw the one safe, diagnosable part away.
+        # 36 machines hit this in 14 days and every event said "other".
+        return {"error": f"Could not create AWS session: {exc}",
+                "error_type": type(exc).__name__}
 
     # Discover account ID
     if account_id is None:
@@ -800,7 +805,12 @@ def get_instance_deep_analysis(
     try:
         session = _get_boto3_session(role_arn)
     except Exception as exc:
-        return {"error": f"Could not create AWS session: {exc}"}
+        # error_type alongside the message: the message carries a path or an
+        # account id so it can never be sent anywhere, and formatting the
+        # exception into a string threw the one safe, diagnosable part away.
+        # 36 machines hit this in 14 days and every event said "other".
+        return {"error": f"Could not create AWS session: {exc}",
+                "error_type": type(exc).__name__}
 
     from .cloudwatch import get_ec2_utilization
 
@@ -1001,7 +1011,12 @@ def scan_cloudwatch_log_waste(
     try:
         session = _get_boto3_session(role_arn)
     except Exception as exc:
-        return {"error": f"Could not create AWS session: {exc}"}
+        # error_type alongside the message: the message carries a path or an
+        # account id so it can never be sent anywhere, and formatting the
+        # exception into a string threw the one safe, diagnosable part away.
+        # 36 machines hit this in 14 days and every event said "other".
+        return {"error": f"Could not create AWS session: {exc}",
+                "error_type": type(exc).__name__}
 
     if regions is None:
         regions = _discover_regions(session)

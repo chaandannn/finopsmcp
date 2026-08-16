@@ -665,7 +665,11 @@ def run(args) -> int:
 
     # First print: no network, within 2s of process start.
     print(f"{_bold('nable scan')} {_dim('· profile ' + profile)}", file=out)
-    _emit("cli_scan_started", {"demo": demo}, wait=False)
+    # version here too: without it, started and failed cannot be joined per
+    # release, so "is the new build better" is unanswerable. 119 starts in
+    # 14 days carried no version while every failure did.
+    from . import __version__ as _sv
+    _emit("cli_scan_started", {"demo": demo, "version": _sv}, wait=False)
 
     # Kick the staleness check off here, immediately after the first print, so
     # the PyPI round trip overlaps the AWS work instead of adding to it. The
@@ -932,7 +936,8 @@ def run(args) -> int:
     if override:
         bad = [r for r in override if not _REGION_RE.match(r)]
         if bad:
-            return _fail(out, 1, [f"not valid region name(s): {', '.join(bad)}"], "other", t0)
+            return _fail(out, 1, [f"not valid region name(s): {', '.join(bad)}"],
+                         "bad-region-arg", t0, props={"n_bad": len(bad)})
         regions = override
     else:
         regions = _pick_regions(spend, session)
@@ -961,7 +966,11 @@ def run(args) -> int:
     )
 
     if report.get("error"):
-        return _fail(out, 1, [f"scan failed: {report['error']}"], "other", t0)
+        # Send the TYPE, never the message: the message interpolates the
+        # exception and carries paths and account ids. Without this the event
+        # said error_class="other", exc_type="" and named no cause at all.
+        return _fail(out, 1, [f"scan failed: {report['error']}"], "other", t0,
+                     props={"exc_type": report.get("error_type", "") or "unknown"})
 
     scanned = report.get("regions_scanned") or []
     has_results = bool(scanned)
