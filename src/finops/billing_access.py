@@ -250,6 +250,25 @@ def ce_client(session: Any = None, *, region: str | None = None,
     assume-role path build a credentialled client here rather than doing it
     itself and slipping the gate.
     """
+    # Demo mode FIRST, because it is the check whose absence costs money in the
+    # room. Measured 2026-08-16: a demo dashboard on a laptop with real AWS
+    # credentials ran the anomaly backfill, which reached this function, built a
+    # live client and pulled 307 rows of the presenter's actual spend into the
+    # demo database. Billed, mid-demo, from the product that exists to stop
+    # surprise charges.
+    #
+    # AWSConnector._make_client has always had this guard. ce_client did not, so
+    # the guard held on the path everyone looked at and not on the one nobody
+    # did. That asymmetry is the entire bug: a chokepoint that enforces some of
+    # the policy is a chokepoint people trust for all of it.
+    from .demo_data import is_demo
+
+    if is_demo():
+        raise BillingAccessError(
+            "Demo mode must never reach the real Cost Explorer API. Demo data "
+            "should have been served before this point; this is a bug in the "
+            "demo interception, not a configuration problem."
+        )
     if cost_explorer_forbidden():
         raise BillingAccessError(
             f"Cost Explorer is disabled here ({FORBID_CE_ENV}=1). "
