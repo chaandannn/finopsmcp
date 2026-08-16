@@ -40,7 +40,13 @@ jobs:
         run: python -m twine check dist/*
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
+        uses: pypa/gh-action-pypi-publish@a892a5a61159132606e93a2fa6f4358831b04d26 # v1.14.2
+        # Pinned by SHA, not tag, and bumped deliberately: the previous pin
+        # bundled twine 6.1.0, which rejects Metadata-Version 2.5 with
+        # "not a valid metadata version". hatchling emits 2.5 now, so
+        # v0.8.211 built fine and failed at upload. v1.14.2 ships twine
+        # 7.0.0; verified locally that 6.1.0 fails and 7.0.0 passes on the
+        # identical wheel, rather than assuming a newer pin would help.
         with:
           # PEP 740 provenance attestations (default on >= v1.11; set explicitly
           # so a future default change cannot silently drop them).
