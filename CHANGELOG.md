@@ -2,6 +2,14 @@
 
 All notable changes to finops-mcp (nable).
 
+## 0.8.211
+
+- **nable no longer bills you to look at your own bill.** Every scheduled snapshot called Cost Explorer, which AWS charges $0.01 per request against your account, on a timer, with nobody watching. `billing_access.py` has forbidden exactly that in writing since it was written, and the code went around it: the AWS connector called the guard only to trip the kill switch, then built its own client. Measured, not inferred. The guard now runs on that path, every branch of it including assume-role, and the anomaly backfill with it.
+- **Open source is the MCP server and the CLI, and nothing that runs on a timer.** The nine cron jobs, the two-way Slack bot and its 5-minute scheduler now live in the closed hosted layer. What stays is the WORK they ran: `run_snapshot_now`, `run_digest_now` and the rest are still here, still on-demand, still what "take a snapshot now" calls. Nothing here sets the unattended mark any more, so an Apache-2.0 install has no path to a billed request nobody asked for. Not discouraged from: has no path, and a ratchet fails the build if one appears.
+- Cost Explorer is untouched for an interactive question. One request is the right price for an answer somebody is waiting for, and it is what lets you point nable at credentials you already have and get a real number in a minute.
+- **`finops-slack` moves to the hosted package.** Its 5-minute report scheduler reached a billed Cost Explorer call through the commitments section. If you run the Slack bot, it comes from nable-enterprise now.
+- The Cost Explorer price is pinned in one place and a test fails if any of the six copies in the docs drift from it.
+
 ## 0.8.210
 
 - **Telemetry is off unless you turn it on.** It used to be opt-out. That is the wrong default for a tool that runs on your machine against your cloud account, and someone on r/selfhosted asked the question plainly enough that the answer had to change rather than be explained. Nothing is sent now without `NABLE_TELEMETRY=1`. `NABLE_NO_TELEMETRY=1` still wins over everything, so a dotfile that turns it off once keeps it off.
