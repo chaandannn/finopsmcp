@@ -144,7 +144,15 @@ def _broken_imports() -> list[str]:
                     continue
                 if _find_spec(f"{target}.{alias.name}") is not None:
                     continue  # it is a submodule, not an attribute
-                broken.append(f"{where}  {target} has no {alias.name!r}")
+                # Same exemption the missing-module branch above already makes,
+                # applied to a missing SUBMODULE of a package that does exist.
+                # `from ..connectors import cur_s3` is exactly that shape: the
+                # package is open, the reader ships in nable-enterprise and
+                # arrives through its seam. Wrapped in except ImportError it
+                # degrades rather than dying, which is the only thing this
+                # ratchet is looking for. An UNGUARDED one still fails here.
+                if node.lineno not in guarded:
+                    broken.append(f"{where}  {target} has no {alias.name!r}")
     return broken
 
 

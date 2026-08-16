@@ -91,6 +91,65 @@ def attended_context():
 def in_unattended_context() -> bool:
     return _UNATTENDED.get()
 
+
+# The free, S3-direct billing-export reader ships in nable-enterprise and lands
+# in this namespace through that package's seam. Its PRESENCE is what makes
+# "never bill the customer on a timer" achievable. Its ABSENCE means the only
+# path to nightly cost history is the billed one, and an open install that
+# silently collects nothing is worse than one that spends a cent a night.
+_EXPORT_READER = "finops.connectors.cur_s3"
+
+
+def export_reader_available() -> bool:
+    """Whether a free billing-export reader is installed."""
+    import importlib.util
+
+    try:
+        return importlib.util.find_spec(_EXPORT_READER) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+@contextlib.contextmanager
+def billed_fallback(reason: str):
+    """Knowingly permit ONE billed unattended call, because no free path exists.
+
+    This is the deliberate hole in the unattended rule, and it is shaped so it
+    cannot be widened by accident:
+
+      1. It refuses to open at all when a free reader IS installed. So it can
+         never be used to paper over a CUR that broke, a bucket whose
+         permissions changed, or an ingest that returned nothing. Only genuine
+         ABSENCE of the reader opens it, and absence is a packaging fact rather
+         than a runtime failure.
+      2. NABLE_NO_COST_EXPLORER still wins. A hosted box sets it, so a plugin
+         that fails to load produces no data loudly instead of a quiet charge.
+      3. It logs the charge at WARNING with the price every time. A cost tool
+         spending the customer's money in silence is the thing we are against,
+         not the cent.
+
+    Outside this block the unattended rule is absolute.
+    """
+    from .aws_prices import COST_EXPLORER_PER_REQUEST
+
+    if not in_unattended_context():
+        yield False
+        return
+    if cost_explorer_forbidden() or export_reader_available():
+        yield False
+        return
+
+    log.warning(
+        "Falling back to Cost Explorer for %s. No billing-export reader is "
+        "installed, so this is the only path to cost history, and each request "
+        "bills $%.2f to your AWS account. Configure the billing export to make "
+        "this free.", reason, COST_EXPLORER_PER_REQUEST)
+    token = _UNATTENDED.set(False)
+    try:
+        yield True
+    finally:
+        _UNATTENDED.reset(token)
+
 # The opt-OUT. Cost Explorer is available by default because it is the on-ramp;
 # this is for organisations that want a hard guarantee it is never called.
 FORBID_CE_ENV = "NABLE_NO_COST_EXPLORER"

@@ -7,6 +7,7 @@ APScheduler jobs that run on a schedule to:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import logging
 import os
@@ -108,9 +109,14 @@ async def _snapshot_all() -> dict:
     # Day-one anomalies: when history is thinner than the detector's minimum,
     # backfill baselines from Cost Explorer first, so the anomaly job that runs
     # right after this has something to compare against on a fresh install.
+    # Under the same fallback as the snapshot below: free where a billing-export
+    # reader exists, billed only where it is the sole path, never both.
     try:
         from ..anomaly.backfill import backfill_from_cost_explorer
-        backfill_from_cost_explorer()
+        from ..billing_access import billed_fallback
+
+        with billed_fallback("day-one anomaly baseline"):
+            backfill_from_cost_explorer()
     except Exception:
         pass
     from ..connectors.aws import AWSConnector
@@ -135,29 +141,40 @@ async def _snapshot_all() -> dict:
 
     results: dict[str, str] = {}
 
-    # AWS comes from the billing export when there is one. The export is the
-    # customer's own file in their own bucket, so reading it costs a few S3 GETs;
-    # the connector path below reaches Cost Explorer, which bills them $0.01 per
-    # request, on a timer, with nobody watching. Same numbers, different meter.
+    # AWS comes from the billing export when a reader for it is installed. The
+    # export is the customer's own file in their own bucket, so reading it costs
+    # a few S3 GETs; the connector path below reaches Cost Explorer, which bills
+    # them $0.01 per request, on a timer. Same numbers, different meter.
     #
-    # Skipping the connector on success is the whole saving. Running both would
-    # read the bill twice and pay for one of them anyway.
+    # The S3-direct reader ships in nable-enterprise and arrives in this
+    # namespace through that package's seam, so this import is expected to fail
+    # on an open install. Skipping the connector on success is the whole saving:
+    # running both would read the bill twice and pay for one of them anyway.
     cur_ok = False
     try:
-        from ..connectors import cur_s3
-        if cur_s3.is_configured():
-            out = cur_s3.ingest_recent(days=3)
-            cur_ok = out["rows_written"] > 0 or out["files_read"] > 0
-            if cur_ok:
-                results["aws"] = (
-                    f"ok: {out['rows_written']} rows from the billing export, "
-                    f"${out['cost']['usd']:.6f}")
-                log.info("Snapshot: aws via CUR, %d rows over %d day(s), $%.6f",
-                         out["rows_written"], out["days_written"], out["cost"]["usd"])
-    except Exception as exc:
-        # Never fatal. A CUR that cannot be read should fall through to the path
-        # that works, not take the whole nightly snapshot down with it.
-        log.warning("CUR ingest failed, falling back to the AWS connector: %s", exc)
+        from ..connectors import cur_s3  # type: ignore[attr-defined]
+    except ImportError:
+        cur_s3 = None
+    if cur_s3 is not None:
+        try:
+            if cur_s3.is_configured():
+                out = cur_s3.ingest_recent(days=3)
+                cur_ok = out["rows_written"] > 0 or out["files_read"] > 0
+                if cur_ok:
+                    results["aws"] = (
+                        f"ok: {out['rows_written']} rows from the billing export, "
+                        f"${out['cost']['usd']:.6f}")
+                    log.info("Snapshot: aws via CUR, %d rows over %d day(s), $%.6f",
+                             out["rows_written"], out["days_written"],
+                             out["cost"]["usd"])
+        except Exception as exc:
+            # Never fatal, and deliberately NOT a reason to fall back to the
+            # billed path: a reader that is installed but failing is a broken
+            # deployment, and quietly charging the customer to paper over it is
+            # exactly the behaviour this whole change removed.
+            log.warning("CUR ingest failed; AWS history will be short this run: %s", exc)
+
+    from ..billing_access import billed_fallback
 
     for name, connector in connectors.items():
         if name == "aws" and cur_ok:
@@ -165,7 +182,16 @@ async def _snapshot_all() -> dict:
         if not await connector.is_configured():
             continue
         try:
-            summary = await connector.get_costs(yesterday, today, granularity="DAILY")
+            # AWS is the only provider whose read is metered per request, so it
+            # is the only one that needs the hole in the unattended rule. On an
+            # open install with no export reader this is the sole path to
+            # nightly history, and collecting nothing silently is the worse
+            # failure. billed_fallback refuses to open when a reader IS present,
+            # so a hosted box cannot reach this by breaking.
+            ctx = (billed_fallback(f"nightly {name} snapshot") if name == "aws"
+                   else contextlib.nullcontext())
+            with ctx:
+                summary = await connector.get_costs(yesterday, today, granularity="DAILY")
             for entry in summary.entries:
                 if entry.amount > 0:
                     store_snapshot(
@@ -460,21 +486,24 @@ def _run(coro):
 
 
 def job_snapshot() -> None:
-    """Ingest, then roll up. The rollup is the half that makes it readable.
+    """Ingest, then roll up if anything is installed that rolls up.
 
-    _snapshot_all has been writing cost_snapshots on this cron all along and
-    nothing read it: the dashboard fetches from the provider APIs live instead,
-    under a 30-second cap. Refreshing here is what turns the ingest into
-    something a page can serve from, and it belongs in the same job so the two
-    can never drift out of step.
+    cost_snapshots is the source of truth and this job's only required output.
+    The precomputed aggregates that let a dashboard serve a month total as one
+    row read live in nable-enterprise and arrive in this namespace through that
+    package's seam, so on an open install the import simply fails and the
+    snapshot stands alone. Nothing in the open product reads them.
 
-    A rollup failure must not fail the snapshot. The source of truth is
-    cost_snapshots; a stale rollup is recoverable on the next run, a lost
-    snapshot is a hole in the customer's history that CE may not restate.
+    A rollup failure must not fail the snapshot either way. A stale rollup is
+    recoverable on the next run; a lost snapshot is a hole in the customer's
+    history that Cost Explorer may never restate.
     """
     _run(_snapshot_all())
     try:
-        from ..storage.rollups import refresh_rollups
+        from ..storage.rollups import refresh_rollups  # type: ignore[attr-defined]
+    except ImportError:
+        return
+    try:
         stats = refresh_rollups()
         log.info("rollups refreshed after snapshot: %s cells", stats.get("cells"))
     except Exception as exc:

@@ -105,7 +105,7 @@ def test_the_assume_role_path_goes_through_the_gate_too(monkeypatch):
 
 # ── the reproduction ─────────────────────────────────────────────────────────
 
-def test_the_real_nightly_snapshot_constructs_no_cost_explorer_client(
+def test_the_real_nightly_snapshot_does_not_bill_when_a_free_reader_exists(
         tmp_path, monkeypatch):
     """The bug, end to end, through the code the cron actually runs.
 
@@ -117,9 +117,17 @@ def test_the_real_nightly_snapshot_constructs_no_cost_explorer_client(
     The chain under test is job_snapshot -> asyncio.run -> Task -> to_thread ->
     _make_client. Each hop copies the context; a hop that did not would show up
     here and nowhere else.
+
+    Scoped to "a free reader exists" as of 2026-08-15, when the S3-direct
+    billing-export reader moved to nable-enterprise. On an OPEN install with no
+    reader there is no free path to nightly history, and the deliberate
+    billed_fallback opens: see tests/test_export_reader_seam.py, which pins that
+    hole to exactly the case where nothing free is installed. This test is the
+    other half, and it is the one that matters on a paying customer's box.
     """
     import boto3
 
+    from finops import billing_access
     from finops.scheduler import jobs
     from finops.storage import db
 
@@ -129,6 +137,11 @@ def test_the_real_nightly_snapshot_constructs_no_cost_explorer_client(
     monkeypatch.delenv("NABLE_NO_COST_EXPLORER", raising=False)
     db._ENGINE, db._DATA_DIR = None, None
 
+    # Stand in for the enterprise reader being installed. Any importable module
+    # does: what is under test is that a hosted box never reaches the billed
+    # path, not the reader's own behaviour.
+    monkeypatch.setattr(billing_access, "_EXPORT_READER", "finops.billing_access")
+
     billed: list[str] = []
     real_client = boto3.client
 
@@ -136,8 +149,9 @@ def test_the_real_nightly_snapshot_constructs_no_cost_explorer_client(
         if name == "ce":
             billed.append(name)
             raise AssertionError(
-                "the nightly snapshot built a Cost Explorer client; that is "
-                "$0.01 of the customer's money, per request, on a timer")
+                "the nightly snapshot built a Cost Explorer client on a box "
+                "that has a free billing-export reader; that is $0.01 of the "
+                "customer's money, per request, on a timer")
         return real_client(name, *a, **kw)
 
     monkeypatch.setattr(boto3, "client", watching_client)
