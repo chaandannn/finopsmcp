@@ -173,3 +173,48 @@ def test_cost_explorer_is_skipped_entirely_when_the_export_exists(monkeypatch):
     monkeypatch.setattr(billing_access, "provisioned", lambda p: True)
     assert billing_access.should_use_cost_explorer("aws") is False
     assert billing_access.should_use_cost_explorer("aws", unattended=False) is False
+
+
+def test_demo_mode_cannot_reach_cost_explorer_through_the_gate(monkeypatch):
+    """The guard has to live at the chokepoint, not next to it.
+
+    Measured 2026-08-16 by running the demo dashboard on a laptop with real AWS
+    credentials: the anomaly backfill reached ce_client, built a live client,
+    and pulled 307 rows of the presenter's ACTUAL spend into the demo database.
+    Billed, mid-demo, by the product that exists to stop surprise charges.
+
+    AWSConnector._make_client had this check and always has. ce_client did not.
+    So the guard held on the path everyone looks at and failed on the one nobody
+    did, which is the same shape as the unattended bug above: a chokepoint that
+    enforces part of the policy is trusted for all of it.
+    """
+    import boto3
+
+    monkeypatch.setattr("finops.demo_data.is_demo", lambda: True)
+    monkeypatch.delenv("NABLE_NO_COST_EXPLORER", raising=False)
+    built: list[str] = []
+    monkeypatch.setattr(boto3, "client",
+                        lambda name, **kw: built.append(name) or object())
+
+    with pytest.raises(BillingAccessError, match="Demo mode"):
+        billing_access.ce_client(reason="anomaly backfill")
+    assert built == [], "demo mode built a real Cost Explorer client"
+
+
+def test_the_demo_check_runs_before_every_other_gate(monkeypatch):
+    """Demo is checked first on purpose.
+
+    An interactive demo is exactly the context where the other gates all say
+    "allowed": somebody is watching, Cost Explorer is not banned, no export is
+    configured. Every other check passing is what makes this one load-bearing.
+    """
+    import boto3
+
+    monkeypatch.setattr("finops.demo_data.is_demo", lambda: True)
+    monkeypatch.delenv("NABLE_NO_COST_EXPLORER", raising=False)
+    monkeypatch.setattr(boto3, "client", lambda name, **kw: object())
+
+    # attended, permitted, unbanned: every other gate is open.
+    with attended_context():
+        with pytest.raises(BillingAccessError, match="Demo mode"):
+            billing_access.ce_client(unattended=False)
