@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import pathlib
 import re
+import os
 import subprocess
 import sys
 
@@ -106,7 +107,15 @@ def test_the_shim_module_ships_in_the_wheel():
 
 def _run_shim(fake_version: tuple[int, int]) -> subprocess.CompletedProcess:
     """Drive main() with a patched sys.version_info, in a subprocess so the
-    patch cannot leak and so we see exactly what a user's terminal would."""
+    patch cannot leak and so we see exactly what a user's terminal would.
+
+    PATH is emptied on purpose. Since the re-exec landed, an old interpreter
+    with uv available no longer prints this message, it fetches a 3.12 and gets
+    on with it, which is the point. The guarantee this test exists for is
+    narrower now and still load-bearing: when we CANNOT do it for them, they get
+    one actionable line and never a traceback. Hiding uv is how we test that case
+    on a machine that has uv. tests/test_shim_reexec.py covers the other half.
+    """
     code = (
         "import sys, collections\n"
         "V = collections.namedtuple('v','major minor micro releaselevel serial')\n"
@@ -115,7 +124,9 @@ def _run_shim(fake_version: tuple[int, int]) -> subprocess.CompletedProcess:
         "import nable_shim\n"
         "raise SystemExit(nable_shim.main())\n"
     )
-    return subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    env = {**os.environ, "PATH": "", "NABLE_SHIM_REEXEC": ""}
+    return subprocess.run([sys.executable, "-c", code], capture_output=True,
+                          text=True, env=env)
 
 
 @pytest.mark.parametrize("version", [(3, 8), (3, 9), (3, 10)])

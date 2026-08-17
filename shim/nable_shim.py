@@ -24,10 +24,18 @@ one it delegates and is invisible.
 """
 from __future__ import annotations
 
+import os
+import shutil
+import subprocess
 import sys
 
 MINIMUM = (3, 11)
 _RECOMMENDED = "3.12"
+
+# Set on the child so a re-exec can never loop. If the managed interpreter is
+# somehow still too old, the child prints the message and stops instead of
+# spawning another one forever.
+_REEXEC = "NABLE_SHIM_REEXEC"
 
 
 def _too_old_message() -> str:
@@ -43,9 +51,62 @@ def _too_old_message() -> str:
     )
 
 
-def main() -> int:
+def _reexec_argv(uv_path: str, argv: list[str]) -> list[str]:
+    """The command that runs nable under a managed interpreter.
+
+    uvx and `uv tool run` are the same thing under two names, and a machine may
+    have either on PATH.
+    """
+    if os.path.basename(uv_path).startswith("uvx"):
+        return [uv_path, "--python", _RECOMMENDED, "nable", *argv]
+    return [uv_path, "tool", "run", "--python", _RECOMMENDED, "nable", *argv]
+
+
+def _reexec_under_managed_python(argv: list[str]) -> int | None:
+    """Re-run this command under a managed interpreter, or return None.
+
+    Printing the right command and asking somebody to retype it is a handled
+    failure, and a handled failure is still a failure: they have to read it,
+    understand why their own python is the problem, and type again, at the exact
+    moment they were deciding whether this tool is worth the trouble. uv can
+    fetch an interpreter in a couple of seconds, so the honest thing is to do it
+    rather than to explain it.
+
+    Returns the child's exit code, or None when we could not do it and the
+    caller should fall back to the message. Never raises: a re-exec that fails
+    has to degrade into the old behaviour, not into a traceback, because the
+    whole point of this module is that an old interpreter never sees one.
+    """
+    if os.environ.get(_REEXEC):
+        return None                      # already a child; do not loop
+    uv = shutil.which("uvx") or shutil.which("uv")
+    if not uv:
+        return None                      # nothing to re-exec with
+
+    running = f"{sys.version_info.major}.{sys.version_info.minor}"
+    # Say what is happening. An unexplained pause while uv downloads an
+    # interpreter reads as a hang, and a hang is worse than the message was.
+    print(
+        f"  This is Python {running}, and nable needs "
+        f"{MINIMUM[0]}.{MINIMUM[1]}. Fetching Python {_RECOMMENDED} and "
+        f"continuing.",
+        file=sys.stderr,
+    )
+    env = {**os.environ, _REEXEC: "1"}
+    try:
+        return subprocess.run(_reexec_argv(uv, argv), env=env).returncode
+    except (OSError, subprocess.SubprocessError):
+        return None                      # fall back to telling them
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
     if sys.version_info < MINIMUM:
-        # Not a traceback. Somebody typed one command and deserves one answer.
+        rc = _reexec_under_managed_python(argv)
+        if rc is not None:
+            return rc
+        # Could not do it for them. Not a traceback: somebody typed one command
+        # and deserves one answer.
         print(_too_old_message(), file=sys.stderr)
         return 1
 
