@@ -37,6 +37,7 @@ from ..tagging.hcl_patcher import (
     generate_rightsizing_diff,
 )
 from ..tagging.tf_state import build_id_map, resolve_recommendation
+from ..context.workload import classify, suppression_note
 from ..integrations.ticketing import create_github_pr
 
 log = logging.getLogger(__name__)
@@ -146,6 +147,7 @@ def open_rightsizing_pr(
     pr_title: str | None = None,
     dry_run: bool = False,
     patch_only: bool = False,
+    include_nonprod: bool = False,
 ) -> dict[str, Any]:
     """
     Patch Terraform files for open rightsizing recommendations and open a GitHub PR.
@@ -241,6 +243,35 @@ def open_rightsizing_pr(
 
     for row in rows:
         rec_cfg = json.loads(row.recommended_config or "{}")
+
+        # Is this somewhere people are allowed to make a mess? A sandbox someone
+        # is deliberately hammering reads to a detector exactly like production
+        # waste, and a pull request against it teaches the team to close our pull
+        # requests unread. Suppress only on positive evidence: an untagged estate
+        # classifies "unknown" and proceeds exactly as it did before.
+        if not include_nonprod:
+            # getattr, not attribute access: rows reach here from the DB and from
+            # callers that build their own, and a classifier that raises on a
+            # missing optional field would take down rightsizing entirely to
+            # answer a question that is only ever advisory.
+            try:
+                _cfg = json.loads(getattr(row, "current_config", "") or "{}")
+            except (TypeError, ValueError):
+                _cfg = {}
+            ctx = classify(
+                tags=(_cfg.get("tags") if isinstance(_cfg, dict) else None) or {},
+                account_name=getattr(row, "account_id", "") or "",
+                resource_name=getattr(row, "resource_name", "") or "",
+            )
+            if ctx.is_nonprod:
+                skipped.append({
+                    "recommendation_id": row.id,
+                    "resource_id": row.resource_id,
+                    "reason": suppression_note(ctx),
+                    "workload": ctx.kind,
+                    "evidence": ctx.evidence,
+                })
+                continue
 
         # Resolution order:
         # 1. Terraform state (auto, using cloud resource ID)
