@@ -139,6 +139,63 @@ def test_plugin_pin_matches_package_version():
     assert plugin["version"] == pkg_version
 
 
+def test_dunder_version_matches_package():
+    """The one the CLI actually reads, and the one nobody guarded.
+
+    _installed_version() prefers finops.__version__ over dist metadata on
+    purpose: metadata freezes at install time and went stale on editable trees
+    (it reported 0.8.36 on a 0.8.171 tree). That makes __version__ the source of
+    truth for `nable --version`, for the telemetry every run reports itself
+    under, and, worst, for the pin written into the user's editor config.
+
+    Measured on a clean install of 0.8.211 from PyPI: pyproject said 0.8.211,
+    __init__.py still said 0.8.210, and setup offered to write
+    `uvx --python 3.12 finops-mcp==0.8.210` into Claude Desktop. The release was
+    published and could not reach anyone who onboarded after it.
+
+    This drift already had two tests, on plugin.json and server.json, both added
+    after a release failed silently the same way. The file the CLI reads had
+    none. That is what this is.
+    """
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    pyproject = (root / "pyproject.toml").read_text()
+    pkg_version = re.search(r'^version = "([^"]+)"', pyproject, re.M).group(1)
+
+    init = (root / "src/finops/__init__.py").read_text()
+    dunder = re.search(r'^__version__ = "([^"]+)"', init, re.M).group(1)
+
+    assert dunder == pkg_version, (
+        f"src/finops/__init__.py says {dunder} and pyproject says {pkg_version}. "
+        f"The CLI reports the former, so every editor config written by setup "
+        f"would pin finops-mcp=={dunder} and this release would reach nobody who "
+        f"onboards."
+    )
+
+
+def test_the_version_the_cli_reports_is_the_version_that_gets_pinned():
+    """Ties the two halves together, so moving one without the other fails.
+
+    The bug was not that a constant was stale. It was that the stale constant
+    silently became the version string in somebody else's Claude Desktop config.
+    """
+    import pathlib
+    import re
+
+    from finops.setup_wizard import _installed_version
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    pyproject = (root / "pyproject.toml").read_text()
+    pkg_version = re.search(r'^version = "([^"]+)"', pyproject, re.M).group(1)
+
+    assert _installed_version() == pkg_version, (
+        "the version the CLI reports, and writes into editor configs, is not the "
+        "version being released"
+    )
+
+
 def test_server_json_version_matches_package():
     """server.json feeds the MCP Registry publish, which rejects a duplicate or
     stale version. If a release bumps pyproject but forgets server.json, the

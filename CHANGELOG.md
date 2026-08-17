@@ -2,6 +2,11 @@
 
 All notable changes to finops-mcp (nable).
 
+## 0.8.212
+
+- **0.8.211 could not reach anyone who onboarded after it.** `pyproject.toml` was bumped and `src/finops/__init__.py` was not, so a clean install from PyPI reported `nable (finops-mcp) 0.8.210` and, worse, setup offered to write `uvx --python 3.12 finops-mcp==0.8.210` into Claude Desktop and Cursor. `_installed_version()` prefers `__version__` over dist metadata on purpose, because metadata freezes on editable installs, which makes that one constant the version the CLI reports, the version telemetry files every run under, and the version pinned into somebody else's editor config. Found by installing the published package on a clean interpreter and running it, which is the only check that would have found it.
+- **The drift now fails the build.** This exact failure already had two tests, on `plugin.json` and on `server.json`, both written after a release broke silently the same way. The file the CLI actually reads had none. It has two now: one comparing the constant to `pyproject`, and one asserting that the version `_installed_version()` hands to the editor-config writer is the version being released.
+
 ## 0.8.211
 
 - **nable no longer bills you to look at your own bill.** Every scheduled snapshot called Cost Explorer, which AWS charges $0.01 per request against your account, on a timer, with nobody watching. `billing_access.py` has forbidden exactly that in writing since it was written, and the code went around it: the AWS connector called the guard only to trip the kill switch, then built its own client. Measured, not inferred. The guard now runs on that path, every branch of it including assume-role, and the anomaly backfill with it.
