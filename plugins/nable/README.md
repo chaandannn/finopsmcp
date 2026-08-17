@@ -20,7 +20,7 @@ Run them **one at a time**, waiting for the first to finish before the second. P
 /plugin install nable@nable
 ```
 
-That registers the `nable` MCP server (`uvx finops-mcp`). Restart Claude Code if prompted, then ask a cost question.
+That registers the `nable` MCP server (`uvx --python 3.12 finops-mcp`). Restart Claude Code if prompted, then ask a cost question.
 
 ## Guided connect
 
