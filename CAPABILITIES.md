@@ -28,7 +28,7 @@ a third party.
 ## The one command
 
 ```bash
-uvx --python 3.12 nable scan
+uvx nable scan
 ```
 
 Finds recoverable spend on your AWS account in under a minute, from the free
@@ -184,7 +184,7 @@ forecasting, and AI billing blind spots, across OpenAI, Anthropic, Bedrock,
 Modal, and more, in one view.
 
 **Do I need an API key or a credit card?**
-No. `uvx --python 3.12 nable scan` runs with the AWS credentials already on your machine. As an
+No. `uvx nable scan` runs with the AWS credentials already on your machine. As an
 MCP server, it uses your existing Claude or Cursor membership as the model, with
 no Anthropic API key and no per-token cost.
 

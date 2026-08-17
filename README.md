@@ -19,7 +19,7 @@ Everything runs on your machine, read-only, and your billing data never leaves i
 ## Try it
 
 ```bash
-uvx --python 3.12 nable scan
+uvx nable scan
 ```
 
 ```text
@@ -36,13 +36,13 @@ $2,140/mo recoverable
 run `nable scan --spend` for the spend breakdown (uses Cost Explorer, ~$0.02)
 ```
 
-Reads only free cloud APIs, so scanning never adds to your bill. `uvx --python 3.12 nable scan --demo` runs on sample data with no account at all. Add `--json` for CI, or `--spend` for a deeper breakdown.
+Reads only free cloud APIs, so scanning never adds to your bill. `uvx nable scan --demo` runs on sample data with no account at all. Add `--json` for CI, or `--spend` for a deeper breakdown.
 
 ![nable demo: a sample bill in seconds](https://raw.githubusercontent.com/getnable/finopsmcp/main/docs/demo.gif)
 
 ## Use it in your editor
 
-`uvx --python 3.12 nable` runs as a local MCP server inside Claude, Cursor, and VS Code, on your existing Claude or Cursor membership, no API key and no per-token cost. Then ask:
+`uvx nable` runs as a local MCP server inside Claude, Cursor, and VS Code, on your existing Claude or Cursor membership, no API key and no per-token cost. Then ask:
 
 - "Why did our AWS bill jump last month?"
 - "How much are we spending on OpenAI and Anthropic?"
@@ -54,7 +54,7 @@ Reads only free cloud APIs, so scanning never adds to your bill. `uvx --python 3
 Requires Python 3.11+. Need `uv`? `curl -LsSf https://astral.sh/uv/install.sh | sh` (or `brew install uv`).
 
 ```bash
-uvx --python 3.12 nable
+uvx nable
 ```
 
 The setup wizard finds AWS or GCP credentials already on your machine (an SSO login, a CLI profile, or default credentials), connects the one you pick, and configures your editor. Usually you never type a key.

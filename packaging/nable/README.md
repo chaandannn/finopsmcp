@@ -9,7 +9,7 @@ code lives in `finops-mcp`.
 ## Quick start
 
 ```sh
-uvx --python 3.12 nable
+uvx nable
 ```
 
 Run it in a terminal and it walks you through connecting Claude and your first
@@ -18,9 +18,9 @@ Cursor) runs the same command over stdio to start the server. Any subcommand
 routes to the CLI:
 
 ```sh
-uvx --python 3.12 nable setup
-uvx --python 3.12 nable doctor
-uvx --python 3.12 nable welcome --demo
+uvx nable setup
+uvx nable doctor
+uvx nable welcome --demo
 ```
 
 Local-first: your credentials and raw bill never leave your machine. See

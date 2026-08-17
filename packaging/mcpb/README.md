@@ -8,7 +8,7 @@ accepts remote servers only).
 ## Status / what's done
 
 - `manifest.json` (manifest_version 0.3): metadata, `privacy_policies`, and a
-  `server` block that runs `uvx --python 3.12 nable`.
+  `server` block that runs `uvx nable`.
 - Tool annotations: every MCP tool advertises a `title` + `readOnlyHint`
   (or `destructiveHint`), required for directory review. See
   `src/finops/tool_surface.py` (`WRITE_TOOLS` / `tool_annotation`) and
@@ -21,7 +21,7 @@ accepts remote servers only).
 1. **Validate**: `npx @anthropic-ai/mcpb validate packaging/mcpb/manifest.json`
    (or `mcpb validate`). Fix anything it flags. The manifest here follows the
    documented 0.3 schema but has not been run through the validator in CI.
-2. **Decide the run strategy.** The manifest uses `uvx --python 3.12 nable`, which assumes
+2. **Decide the run strategy.** The manifest uses `uvx nable`, which assumes
    `uv` is on the user's machine. If the directory requires a self-contained
    bundle, package the server code under `server/` with a bundled Python per
    the MCPB python-server guide and repoint `mcp_config`.
