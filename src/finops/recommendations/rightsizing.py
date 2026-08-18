@@ -74,6 +74,12 @@ class RightsizingRecommendation:
     avg_mem_pct: float | None   = None   # None = not available
     avg_net_mbps: float | None  = None
 
+    # Carried so the workload classifier can tell production from a sandbox
+    # before anything proposes a change to it. Lives here with the other
+    # defaulted fields because a dataclass will not take a default before a
+    # required one.
+    tags: dict                  = field(default_factory=dict)
+
     recommended_type: str       = ""
     current_monthly_cost: float = 0.0
     recommended_monthly_cost: float = 0.0
@@ -338,6 +344,14 @@ def _list_region_instances(region: str) -> list[dict]:
                     "name": next(
                         (t["Value"] for t in inst.get("Tags", []) if t["Key"] == "Name"), ""
                     ),
+                    # describe_instances already returned every tag and this kept
+                    # only Name. Environment was on the wire and discarded one
+                    # line after it arrived, which left the workload classifier's
+                    # strongest signal permanently empty: it asks for tags, the
+                    # recommendation never carried any, and the guard that is
+                    # supposed to keep pull requests off somebody's sandbox ran
+                    # on the two weakest signals it has.
+                    "tags": {t["Key"]: t["Value"] for t in inst.get("Tags", [])},
                 })
     return out
 
@@ -400,6 +414,7 @@ def _analyze_cloudwatch_fallback(
                 name=inst["name"],
                 region=inst["region"],
                 account_id=account_id,
+                tags=inst.get("tags") or {},
                 resource_type="ec2",
                 source="cloudwatch_fallback",
                 avg_cpu_pct=round(avg_cpu, 1),

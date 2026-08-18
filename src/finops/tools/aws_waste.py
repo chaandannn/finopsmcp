@@ -158,6 +158,10 @@ async def get_rightsizing_recommendations(
                         current_config={
                             "instance_type": rec.instance_type,
                             "monthly_cost_usd": rec.current_monthly_cost,
+                            # Read back by the workload classifier before a pull
+                            # request is opened. Without them its weight-3 signal
+                            # is always empty and the guard runs half-blind.
+                            "tags": getattr(rec, "tags", {}) or {},
                         },
                         recommended_config={
                             "instance_type": rec.recommended_type,

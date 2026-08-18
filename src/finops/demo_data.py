@@ -787,6 +787,24 @@ def dashboard_data(
     # Windowed total (what the range actually spans) and the daily provider series.
     window_total_spend = round(window_total, 2)
     daily = _daily_series(days, provs, end=end)
+
+    # Month TO DATE, not a whole month. This reported `month_total`, the sum of
+    # every provider's full monthly figure, so on the 16th the dashboard showed
+    # month-to-date equal to the 30-day window and a reader could not tell the
+    # two cards apart. Summing the days of the current calendar month out of the
+    # series the chart already draws keeps the number consistent with the chart
+    # instead of being a second opinion about the same month.
+    _m = (end or date.today()).strftime("%Y-%m")
+    mtd_total = round(
+        sum(v for r in daily if str(r.get("date", "")).startswith(_m)
+            for k, v in r.items() if k != "date"),
+        2,
+    )
+    # A window that starts mid-month cannot see the earlier days, so it would
+    # under-report. Fall back to the month figure rather than print something
+    # smaller than the truth.
+    if not mtd_total:
+        mtd_total = month_total
     # Headline sparklines: last ~12 windowed daily totals, smoothed.
     def _spark(scale: float) -> list[float]:
         tail = daily[-12:] if len(daily) >= 12 else daily
@@ -903,7 +921,7 @@ def dashboard_data(
         "ai_efficiency": ai_efficiency,
         "whats_changed": whats_changed,
         "forecast_panel": forecast_panel,
-        "total_spend_mtd": month_total,
+        "total_spend_mtd": mtd_total,
         "total_spend_window": window_total_spend,
         "total_spend_last_month": last_month,
         "projected_month_total": projected,
