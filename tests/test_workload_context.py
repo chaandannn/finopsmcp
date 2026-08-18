@@ -245,3 +245,73 @@ def test_an_untagged_recommendation_still_gets_its_pull_request():
 def test_the_override_reaches_the_decision():
     """A held-back recommendation has to be obtainable, or the note lies."""
     assert _skips(_row(account_id="acme-sandbox"), include_nonprod=True) is False
+
+
+# ── the signals have to carry data, not just exist ──────────────────────────
+
+def test_the_tag_signal_is_actually_populated_by_the_scan():
+    """The classifier's strongest signal was always empty.
+
+    classify() weights an Environment tag above every other signal, and the
+    rightsizing recommendation never carried tags: describe_instances returned
+    them and _list_instances kept only Name, one line after they arrived. So the
+    guard that keeps pull requests off somebody's sandbox ran on the two weakest
+    signals it has, and my own mutation tests passed because they exercised the
+    helper and the call site's structure, never whether the data reaching it was
+    non-empty.
+
+    This asserts the wire, end to end, at the two points where it used to break.
+    """
+    import pathlib as _p
+
+    # Read from disk, not via import: importing finops.tools.aws_waste here
+    # triggers a circular import, and a test that cannot run proves nothing.
+    root = _p.Path(__file__).resolve().parents[1] / "src/finops"
+    src = (root / "recommendations/rightsizing.py").read_text()
+    assert '"tags": {t["Key"]: t["Value"] for t in inst.get("Tags", [])}' in src, (
+        "_list_instances dropped the tags again, so Environment never reaches "
+        "the classifier")
+    assert "tags: dict" in src, "the recommendation cannot carry what it has no field for"
+    assert "tags=inst.get(\"tags\") or {}" in src, (
+        "the recommendation is built without the tags the scan collected")
+
+    recorded = (root / "tools/aws_waste.py").read_text()
+    assert '"tags": getattr(rec, "tags", {}) or {}' in recorded, (
+        "the tags die at the DB boundary, which is where the classifier reads them")
+
+
+def test_the_classifier_reads_the_tags_the_recommendation_stores():
+    """The two halves have to agree on where the tags live.
+
+    A scan that writes current_config["tags"] and a call site that reads
+    current_config["labels"] would both look right in isolation and pass every
+    test either of them owns.
+    """
+    import inspect
+
+    from finops.remediation import rightsizing_pr
+
+    src = inspect.getsource(rightsizing_pr.open_rightsizing_pr)
+    assert '_cfg.get("tags")' in src, (
+        "the call site no longer reads the key the scan writes")
+    assert "account_name=" not in src, (
+        "account_name is back, and there is still no column to populate it from")
+
+
+def test_a_production_tag_survives_the_round_trip():
+    """The shape the wire produces, run through the classifier for real."""
+    import json
+
+    stored = json.dumps({"instance_type": "m5.large",
+                         "tags": {"Environment": "production", "Name": "api-7"}})
+    ctx = classify(tags=json.loads(stored)["tags"])
+    assert ctx.kind == "prod" and not ctx.is_nonprod
+
+
+def test_a_sandbox_tag_survives_the_round_trip():
+    import json
+
+    stored = json.dumps({"instance_type": "m5.large",
+                         "tags": {"Environment": "sandbox"}})
+    ctx = classify(tags=json.loads(stored)["tags"])
+    assert ctx.is_nonprod, "a tagged sandbox still reaches a pull request"

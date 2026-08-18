@@ -260,7 +260,13 @@ def open_rightsizing_pr(
                 _cfg = {}
             ctx = classify(
                 tags=(_cfg.get("tags") if isinstance(_cfg, dict) else None) or {},
-                account_name=getattr(row, "account_id", "") or "",
+                # No account_name. This passed account_id, a twelve-digit
+                # number, so the account signal could never match a word like
+                # "sandbox" and the classifier ran on fewer signals than it
+                # reported. savings_recommendations has no alias column, so there
+                # is nothing honest to pass: omitted rather than handed a blank,
+                # because an argument that can never be populated is the same
+                # advertised-not-wired shape in miniature.
                 resource_name=getattr(row, "resource_name", "") or "",
             )
             if ctx.is_nonprod:

@@ -139,6 +139,83 @@ def test_plugin_pin_matches_package_version():
     assert plugin["version"] == pkg_version
 
 
+def test_the_published_sbom_describes_the_package_being_published():
+    """docs/sbom.json is a public claim about our dependencies, and it lied.
+
+    Found 2026-08-17: it was frozen at 0.8.36, generated on May 31, declaring
+    mcp 1.3.0 while the tree required a version 25 releases newer. It is served
+    from docs/ and is the artifact an enterprise security reviewer asks for, so a
+    stale one is worse than none: it is a specific, checkable, false statement
+    about what we ship, and the reviewer who checks it is exactly the reader we
+    are trying to convince.
+
+    scripts/generate_sbom.py exists and nobody ran it, which is the whole story.
+    A generated artifact with no test is a snapshot of the day someone remembered.
+    """
+    import json
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    pkg_version = re.search(r'^version = "([^"]+)"',
+                            (root / "pyproject.toml").read_text(), re.M).group(1)
+
+    sbom = json.loads((root / "docs/sbom.json").read_text())
+    declared = sbom["metadata"]["component"]["version"]
+
+    assert declared == pkg_version, (
+        f"docs/sbom.json describes {declared} and we are shipping {pkg_version}. "
+        f"Regenerate it: python scripts/generate_sbom.py")
+
+
+def test_the_sbom_agrees_with_the_dependency_floors_it_claims_to_describe():
+    """Version drift is not the only way an SBOM goes false.
+
+    A component whose declared version is below the floor pyproject requires is a
+    claim we are shipping something we cannot be shipping, which is how mcp 1.3.0
+    survived a floor of 1.28. This compares every component the SBOM lists against
+    the requirement it was generated from.
+    """
+    import json
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    pyproject = (root / "pyproject.toml").read_text()
+    sbom = json.loads((root / "docs/sbom.json").read_text())
+
+    # Reuse the generator's own parser rather than a second regex. A test that
+    # re-implements its subject cannot fail against it, and this comparison is
+    # only meaningful if both sides read the requirement the same way. My first
+    # version used its own pattern, missed every dependency, compared nothing,
+    # and passed: the mutation check caught it, which is what mutation checks are
+    # for.
+    import sys
+    sys.path.insert(0, str(root / "scripts"))
+    import generate_sbom
+
+    meta = generate_sbom._parse_toml_simple((root / "pyproject.toml").read_text())
+    floors: dict[str, str] = {}
+    for raw in (meta.get("dependencies") or []):
+        name, version = generate_sbom._parse_dep(raw)
+        if version:
+            floors[name.lower().replace("_", "-")] = version
+
+    assert floors, "parsed no dependency floors, so this test compares nothing"
+
+    def _tup(v: str) -> tuple:
+        return tuple(int(x) for x in re.findall(r"\d+", v)[:3])
+
+    stale = []
+    for c in sbom.get("components", []):
+        name = c["name"].lower().replace("_", "-")
+        if name in floors and _tup(c["version"]) < _tup(floors[name]):
+            stale.append(f"{c['name']} {c['version']} < required {floors[name]}")
+
+    assert not stale, (
+        "the SBOM declares versions we do not ship:\n  " + "\n  ".join(stale))
+
+
 def test_dunder_version_matches_package():
     """The one the CLI actually reads, and the one nobody guarded.
 
