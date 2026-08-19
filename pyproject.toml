@@ -154,6 +154,7 @@ finops-estimate   = "finops.connectors.terraform_estimate:main"
 [project.urls]
 Homepage      = "https://getnable.com"
 Documentation = "https://getnable.com/docs"
+Repository    = "https://github.com/getnable/finopsmcp"
 "Bug Tracker" = "https://github.com/getnable/finopsmcp/issues"
 
 [tool.hatch.build.targets.wheel]
