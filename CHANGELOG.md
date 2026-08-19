@@ -2,6 +2,28 @@
 
 All notable changes to finops-mcp (nable).
 
+## 0.8.213
+
+- Kept somebody else's deprecation notice off the first screen. On a first
+  run through `uvx nable`, pydantic-settings 2.15 warned about FastMCP's
+  `lifespan` field in the middle of "Scanning your account", six lines of
+  red above the first real numbers, telling the reader to call
+  `model_rebuild()` on a model nobody in the room owns. The CLI now filters
+  that one warning class from that one module before it dispatches. Our own
+  DeprecationWarnings and ResourceWarnings still come through.
+
+  It shipped because the development venv had pydantic-settings 2.14.2,
+  which does not warn, while `uvx` resolves 2.15.0, which does. Invisible in
+  every local run, unavoidable for every new user.
+
+- Tagging a release now creates the GitHub Release. PyPI carried 208
+  versions and GitHub carried one, cut by hand a month earlier, so every
+  directory that reads that feed described a project that shipped once and
+  stopped.
+
+- `pyproject.toml` declares a `Repository` URL, so PyPI publishes one and
+  downstream indexes link the source instead of showing no repository.
+
 ## 0.8.212
 
 - **0.8.211 could not reach anyone who onboarded after it.** `pyproject.toml` was bumped and `src/finops/__init__.py` was not, so a clean install from PyPI reported `nable (finops-mcp) 0.8.210` and, worse, setup offered to write `uvx --python 3.12 finops-mcp==0.8.210` into Claude Desktop and Cursor. `_installed_version()` prefers `__version__` over dist metadata on purpose, because metadata freezes on editable installs, which makes that one constant the version the CLI reports, the version telemetry files every run under, and the version pinned into somebody else's editor config. Found by installing the published package on a clean interpreter and running it, which is the only check that would have found it.
