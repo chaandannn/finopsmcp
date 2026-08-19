@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+
 import finops.telemetry as tel
 import finops.welcome as w
 
@@ -17,6 +19,29 @@ import finops.welcome as w
 def _clear_ci(monkeypatch):
     for v in tel._CI_ENV_VARS:
         monkeypatch.delenv(v, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_stored_consent_from_this_machine(monkeypatch, tmp_path):
+    """Answer the consent question from a clean machine, not the developer's.
+
+    These three tests failed for weeks on a maintainer laptop and passed in CI,
+    which is the worst way round: the red was permanent, local, and therefore
+    learned to be ignored, so a real regression here would have looked exactly
+    like the noise.
+
+    The cause is that _is_opted_out() ends by reading a real answer from
+    ~/.config/finops/.telemetry. Anyone who ever said yes has consent on disk,
+    the env-var clearing above does not touch it, and "nothing is configured"
+    was never true on their machine. A fresh CI runner has no such file, so CI
+    was green.
+
+    Pointing the module at tmp_path makes "nothing configured" mean it
+    everywhere. Note that this makes the suite stricter, not laxer: without it,
+    a change that switched telemetry back to on-by-default would still pass on
+    a laptop that had already consented.
+    """
+    monkeypatch.setattr(tel, "_CONSENT_FILE", tmp_path / ".telemetry")
 
 
 def test_is_ci_detects_runners(monkeypatch):
