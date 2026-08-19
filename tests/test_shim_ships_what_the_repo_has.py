@@ -40,7 +40,10 @@ SHIM = pathlib.Path(__file__).resolve().parents[1] / "shim"
 
 # Bump BOTH when nable_shim.py changes, then push a shim-v<version> tag.
 PUBLISHED_UNDER = "0.1.4"
-SOURCE_SHA256 = "85a33fb6f03918f4fd43153d4f64e813faf13b15f09578e89d48d78c9c0e19a9"
+# A digest of a file anyone can read in this repo, not a credential. The secret
+# scanner flags any 64-char hex run as high entropy, which is the right default
+# and wrong here, so the exemption is inline and covers this line only.
+SOURCE_SHA256 = "85a33fb6f03918f4fd43153d4f64e813faf13b15f09578e89d48d78c9c0e19a9"  # pragma: allowlist secret
 
 
 def _declared_version() -> str:
