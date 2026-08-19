@@ -216,6 +216,46 @@ def test_the_sbom_agrees_with_the_dependency_floors_it_claims_to_describe():
         "the SBOM declares versions we do not ship:\n  " + "\n  ".join(stale))
 
 
+def test_every_version_carrier_agrees_with_the_package():
+    """One test over all of them, because they keep being found one at a time.
+
+    plugin.json got a guard after a release broke silently. server.json got one
+    after 0.8.78 and 0.8.79 both failed. __init__.py got one today after shipping
+    an editor pin a release behind. docs/sbom.json got one after being eleven
+    weeks stale. packaging/mcpb/manifest.json was the fifth, found by review, and
+    the pattern is now obvious enough to enumerate rather than rediscover.
+
+    A new carrier added without a line here is the sixth. That is what the
+    docstring is for.
+    """
+    import json
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    pkg = re.search(r'^version = "([^"]+)"',
+                    (root / "pyproject.toml").read_text(), re.M).group(1)
+
+    def _json(rel):
+        return json.loads((root / rel).read_text())
+
+    carriers = {
+        "src/finops/__init__.py": re.search(
+            r'^__version__ = "([^"]+)"',
+            (root / "src/finops/__init__.py").read_text(), re.M).group(1),
+        "server.json": _json("server.json")["version"],
+        "plugins/nable/.claude-plugin/plugin.json":
+            _json("plugins/nable/.claude-plugin/plugin.json")["version"],
+        "docs/sbom.json": _json("docs/sbom.json")["metadata"]["component"]["version"],
+        "packaging/mcpb/manifest.json": _json("packaging/mcpb/manifest.json")["version"],
+    }
+
+    wrong = {k: v for k, v in carriers.items() if v != pkg}
+    assert not wrong, (
+        f"shipping {pkg}, but these say otherwise: "
+        + ", ".join(f"{k}={v}" for k, v in wrong.items()))
+
+
 def test_dunder_version_matches_package():
     """The one the CLI actually reads, and the one nobody guarded.
 

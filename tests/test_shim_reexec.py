@@ -159,3 +159,29 @@ def test_a_modern_interpreter_never_shells_out(monkeypatch):
     # Delegates to finops.entry, which is present in this checkout.
     monkeypatch.setattr("finops.entry.main", lambda: 0)
     assert nable_shim.main([]) == 0
+
+
+def test_ctrl_c_during_the_fetch_is_not_a_traceback(monkeypatch, capsys):
+    """The most common way anybody stops a download.
+
+    KeyboardInterrupt is not an OSError or a SubprocessError, so it raised
+    straight through the handler and printed the stack trace this whole module
+    exists to keep off an old interpreter's screen. Found by adversarial review
+    after I had tested five failure modes and not the one a person performs.
+
+    130 because that is what a shell expects from SIGINT, and returning it rather
+    than re-raising means the parent exits quietly too.
+    """
+    monkeypatch.setattr(nable_shim.sys, "version_info", _ver(3, 10))
+    monkeypatch.setattr(nable_shim.shutil, "which", lambda _: "/usr/bin/uvx")
+
+    def _interrupt(*a, **k):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(nable_shim.subprocess, "run", _interrupt)
+
+    assert nable_shim.main(["scan"]) == 130, (
+        "Ctrl-C during the re-exec did not produce a clean SIGINT exit")
+    err = capsys.readouterr().err
+    assert "Traceback" not in err, "a stack trace is not an answer"
+    assert "Stopped" in err, "silence after Ctrl-C looks like a crash that ate the output"

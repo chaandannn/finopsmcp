@@ -95,6 +95,14 @@ def _reexec_under_managed_python(argv: list[str]) -> int | None:
     env = {**os.environ, _REEXEC: "1"}
     try:
         return subprocess.run(_reexec_argv(uv, argv), env=env).returncode
+    except KeyboardInterrupt:
+        # Ctrl-C is the most common way anybody stops a download, and it raised
+        # straight through to a traceback: the one thing this module exists to
+        # keep off an old interpreter's screen. 130 is what a shell expects from
+        # SIGINT, and returning it rather than re-raising means the parent exits
+        # quietly too.
+        print("\n  Stopped.", file=sys.stderr)
+        return 130
     except (OSError, subprocess.SubprocessError):
         return None                      # fall back to telling them
 
