@@ -355,3 +355,66 @@ def test_upgrade_preserves_other_args(tmp_path, monkeypatch):
     _run_upgrade_with(monkeypatch, cfg, "9.9.9")
     saved = json.loads(cfg.read_text())
     assert saved["mcpServers"]["nable"]["args"] == ["--python", "3.12", "finops-mcp==9.9.9"]
+
+
+def test_the_tag_push_also_cuts_a_github_release():
+    """The sixth version carrier is not a file, it is CI, and it had drifted.
+
+    Measured 2026-08-19: PyPI carried 208 versions of finops-mcp and GitHub
+    carried exactly one published Release, v0.8.181, cut a month earlier by
+    hand. Nothing in any workflow created releases, so thirty tagged releases
+    left no trace. Directories that score project health off the Releases feed,
+    Glama among them, therefore portrayed nable as shipping once a year.
+
+    It is the same defect as the stale SBOM and the stale registry record: a
+    published surface frozen at an old release while nothing 404s, so nothing
+    looks broken. The other five carriers are files a test can read directly.
+    This one only exists if CI makes it, so the assertion has to be about the
+    workflow.
+
+    Read as parsed YAML rather than searched as text. A previous version of
+    this idea in the workload tests asserted that a couple of strings appeared
+    somewhere in a function, and a mutation to `if False:` left both strings
+    sitting there and sailed through. Substring checks pass on dead code.
+    """
+    import pathlib
+
+    import yaml
+
+    wf = pathlib.Path(__file__).resolve().parents[1] / ".github/workflows/publish.yml"
+    jobs = yaml.safe_load(wf.read_text(encoding="utf-8"))["jobs"]
+
+    releasing = {
+        name: job for name, job in jobs.items()
+        if any("gh release create" in str(step.get("run", ""))
+               for step in job.get("steps", []))
+    }
+    assert releasing, (
+        "no job in publish.yml runs `gh release create`, so tagging a version "
+        "publishes to PyPI and leaves the GitHub Releases feed behind. That "
+        "feed is what directories read to decide whether this project is alive")
+
+    name, job = next(iter(releasing.items()))
+
+    assert job.get("permissions", {}).get("contents") == "write", (
+        f"{name} cannot create a release: the workflow token is read-only by "
+        "default and this job does not request contents: write")
+
+    assert "refs/tags/v" in str(job.get("if", "")), (
+        f"{name} is not restricted to tag pushes. publish.yml also runs on "
+        "workflow_dispatch, which has no tag, so the job would fail there")
+
+    assert "build-and-publish" in (job.get("needs") or []), (
+        f"{name} must run after the PyPI upload, or a release can advertise a "
+        "version nobody can install yet")
+
+    steps = job.get("steps", [])
+    checkout = next((s for s in steps if "checkout" in str(s.get("uses", ""))), None)
+    assert checkout and checkout.get("with", {}).get("fetch-depth") == 0, (
+        "--generate-notes diffs against the previous tag and needs the history; "
+        "the default shallow checkout yields empty release notes")
+
+    run = " ".join(str(s.get("run", "")) for s in steps)
+    assert "gh release view" in run, (
+        "re-running a tag's workflow must not fail on a release that already "
+        "exists, the way the PyPI step sets skip-existing")
