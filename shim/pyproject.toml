@@ -35,7 +35,7 @@ build-backend = "hatchling.build"
 # all: the same staleness trap 0.1.1 fixed, one layer up.
 [project]
 name = "nable"
-version = "0.1.3"
+version = "0.1.4"
 description = "Ask Claude about your cloud and AI bill. Brand alias for finops-mcp."
 readme = "README.md"
 requires-python = ">=3.9"
