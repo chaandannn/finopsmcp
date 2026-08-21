@@ -102,6 +102,35 @@ def test_no_artifact_claims_a_different_licence():
           "bundle and the plugin marketplace all read these fields directly.")
 
 
+def test_no_package_carries_a_contradicting_licence_classifier():
+    """The licence field is not the only thing PyPI shows, and it lost.
+
+    Measured after shipping `nable` 0.1.5, which was cut specifically to
+    correct this metadata. The `license` field read `Apache-2.0` and the page
+    still said proprietary, because `classifiers` carried
+    `License :: Other/Proprietary License` and PyPI renders the classifier.
+
+    The lesson is about the previous test, not the packaging. It checked the
+    field that had been wrong and stopped there, so it passed on a package that
+    still published the wrong answer. Fixing the thing you were told about is
+    not the same as fixing the thing.
+    """
+    expected = "License :: OSI Approved :: Apache Software License"
+    wrong = []
+    for rel in TOML_ARTIFACTS:
+        data = tomllib.loads((ROOT / rel).read_text(encoding="utf-8"))
+        lic = [c for c in data.get("project", {}).get("classifiers", [])
+               if c.startswith("License ::")]
+        if lic != [expected]:
+            wrong.append(f"{rel}: {lic}")
+
+    assert not wrong, (
+        "these publish a licence classifier that contradicts the repo:\n  "
+        + "\n  ".join(wrong)
+        + f"\n\nPyPI renders the classifier, not just the license field, so a "
+          f"wrong one here is what people actually read. Expected {expected!r}.")
+
+
 def test_nothing_points_at_the_deleted_enterprise_licence():
     """`LICENSE.enterprise` was removed in 9aa5f04 and never restored.
 
