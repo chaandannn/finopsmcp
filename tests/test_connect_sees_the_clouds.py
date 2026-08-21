@@ -160,7 +160,10 @@ def test_a_probe_failure_does_not_kill_the_rest_of_the_scan(monkeypatch, capsys)
     monkeypatch.setattr(setup_scan, "gcloud_adc_path", lambda *a, **k: None)
     monkeypatch.setattr(setup_scan, "scan_ambient_credentials", lambda *a, **k: [
         {"slug": "openai", "name": "OpenAI", "source": "environment",
-         "env": {"OPENAI_API_KEY": "sk-test"}}])
+         # Not a key and not shaped like one. The scanner reads the variable
+         # name as much as the value, so an inline exemption is needed even for
+         # an obviously fake string.
+         "env": {"OPENAI_API_KEY": "fixture-not-a-key"}}])  # pragma: allowlist secret
     monkeypatch.setattr(setup_scan, "_vault_get", lambda k: None)
     monkeypatch.setattr(setup_scan, "connect_finding", lambda f: True)
     monkeypatch.setattr("builtins.input", lambda *a, **k: "y")
