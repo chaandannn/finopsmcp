@@ -250,6 +250,18 @@ def run_connect_command() -> None:
     print("\n  Scanning this machine for provider credentials…\n")
     findings = scan_ambient_credentials()
 
+    # AWS is not in PROVIDER_ENV: it is profiles and a default chain, not one
+    # env var, so it needs the wizard's STS probe. Leaving it out meant a
+    # machine whose only credential was ~/.aws/credentials was told "No
+    # unconnected credentials found" by the command named connect, while
+    # welcome on the same machine said "Found AWS credentials". Imported here,
+    # not at module scope, because setup_wizard imports this module.
+    try:
+        from .setup_wizard import detect_unconnected_aws
+        aws_candidates = detect_unconnected_aws()
+    except Exception:
+        aws_candidates = []  # a probe failure must not kill the SaaS scan
+
     # GCP is a flag, not a paste: route into the detect-confirm flow.
     gcp_hint = False
     if not _vault_get("GCP_BILLING_ACCOUNT_IDS") and (
@@ -257,10 +269,30 @@ def run_connect_command() -> None:
     ):
         gcp_hint = True
 
-    if not findings and not gcp_hint:
+    if not findings and not gcp_hint and not aws_candidates:
         print("  No unconnected credentials found in the environment or config files.")
         _print_not_found_help(set())
         return
+
+    if aws_candidates:
+        print(f"  Found {len(aws_candidates)} AWS account(s) with working credentials:\n")
+        for c in aws_candidates:
+            extra = f" ({c['alias']})" if c.get("alias") else ""
+            print(f"   \u2022 {c['label']} \u2192 account {c['account_id']}{extra}")
+        print()
+        try:
+            a = input("  Connect them? [Y/n]: ").strip().lower() or "y"
+        except (KeyboardInterrupt, EOFError):
+            print()
+            a = "n"
+        if a in ("y", "yes"):
+            from .setup_wizard import connect_aws_candidate
+            for c in aws_candidates:
+                try:
+                    name = connect_aws_candidate(c)
+                    print(f"  \u2713 AWS {c['account_id']} connected (saved as '{name}')")
+                except Exception:
+                    print(f"  \u2717 AWS {c['account_id']} could not be stored, run: nable aws")
 
     if findings:
         print(f"  Found {len(findings)} unconnected provider(s):\n")
