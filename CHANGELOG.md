@@ -2,6 +2,22 @@
 
 All notable changes to finops-mcp (nable).
 
+## 0.8.215
+
+- `nable connect` can see AWS. On a machine whose only credential was
+  `~/.aws/credentials`, the most common one any developer has, `welcome` said
+  "Found AWS credentials" and `connect` said "No unconnected credentials
+  found", then listed eighteen providers the person had never heard of.
+
+  `connect` scanned only the eighteen API-key providers keyed off a single
+  environment variable each. AWS is named profiles plus a default chain,
+  verified through STS, so it needs the wizard's probe, and `connect` never
+  called it. The capability existed and worked; one of the two paths had it.
+
+  The fix adds no new detection. Both paths now reach the same probe through
+  shared helpers, because a second implementation is what caused this. Consent
+  is unchanged: one prompt, and declining stores nothing.
+
 ## 0.8.214
 
 - Corrected the licence on every artifact that publishes one. Seven of them
