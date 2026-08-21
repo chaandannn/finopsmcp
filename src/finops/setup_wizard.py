@@ -522,6 +522,45 @@ def _detect_aws_candidates() -> list:
     return candidates
 
 
+def detect_unconnected_aws() -> list:
+    """AWS accounts with working credentials here that are not configured yet.
+
+    Exists so `nable connect` and `nable welcome` cannot disagree about the same
+    machine. They did: welcome probed profiles and the default chain, connect
+    scanned only PROVIDER_ENV, and a machine whose sole credential was
+    ~/.aws/credentials got "Found AWS credentials" from one command and "No
+    unconnected credentials found" from the other. The one that was wrong was
+    the one named connect.
+
+    No prompts and no writes, same as _detect_aws_candidates.
+    """
+    from .accounts import list_accounts
+    have = {a.account_id for a in list_accounts() if a.account_id}
+    return [c for c in _detect_aws_candidates() if c["account_id"] not in have]
+
+
+def connect_aws_candidate(candidate: dict) -> str:
+    """Store one detected AWS account. Returns the name it was saved under.
+
+    Shares the naming, the AccountConfig shape and the telemetry with the
+    welcome flow deliberately. Two copies of this is how the divergence above
+    happened, and a second copy would just move the bug.
+    """
+    from .accounts import AccountConfig, add_account, list_accounts
+
+    auth = "profile" if candidate["profile"] else "default_chain"
+    name = _auto_aws_name(candidate, {a.name for a in list_accounts()})
+    add_account(AccountConfig(
+        name=name,
+        account_id=candidate["account_id"],
+        region=candidate["region"],
+        profile=candidate["profile"],
+    ))
+    _emit_step("ambient_confirmed", auth_method=auth)
+    _emit_provider_connected(auth, "aws")
+    return name
+
+
 def _detect_sso_profiles_needing_login() -> list[dict]:
     """AWS Identity Center (SSO) profiles in ~/.aws/config that are configured
     but not currently logged in.
