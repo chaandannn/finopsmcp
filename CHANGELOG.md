@@ -2,6 +2,22 @@
 
 All notable changes to finops-mcp (nable).
 
+## 0.8.214
+
+- Corrected the licence on every artifact that publishes one. Seven of them
+  still said `Elastic-2.0`, a licence this repo dropped in 9aa5f04 when the
+  open-core split landed and the enterprise modules came out. Two source
+  headers also pointed readers at `LICENSE.enterprise`, deleted in the same
+  commit.
+
+  It reached users. PyPI served `nable` tagged `License :: Other/Proprietary
+  License` beside `finops-mcp` correctly marked Apache-2.0, so the metadata
+  said the free local tier was source-available with a no-hosted-service
+  clause. It is Apache-2.0 and always was.
+
+  Found because a Claude connector directory submission bounced on the MCPB
+  bundle's licence.
+
 ## 0.8.213
 
 - Kept somebody else's deprecation notice off the first screen. On a first

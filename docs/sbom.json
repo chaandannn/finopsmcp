@@ -2,13 +2,13 @@
   "bomFormat": "CycloneDX",
   "specVersion": "1.4",
   "version": 1,
-  "serialNumber": "urn:uuid:finops-mcp-sbom-2026-08-19",
+  "serialNumber": "urn:uuid:finops-mcp-sbom-2026-08-20",
   "metadata": {
-    "timestamp": "2026-08-19T19:45:06Z",
+    "timestamp": "2026-08-21T03:41:15Z",
     "component": {
       "type": "application",
       "name": "finops-mcp",
-      "version": "0.8.213"
+      "version": "0.8.214"
     }
   },
   "components": [
