@@ -14,7 +14,7 @@ version = "0.1.0"
 description = "Ask Claude about your cloud and AI bill. Brand alias for finops-mcp."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "Elastic-2.0" }
+license = { text = "Apache-2.0" }
 authors = [{ name = "Chandan Bukkapatnam", email = "chbu0285@colorado.edu" }]
 keywords = ["finops", "mcp", "aws", "azure", "gcp", "cloud cost", "claude", "cursor"]
 classifiers = [

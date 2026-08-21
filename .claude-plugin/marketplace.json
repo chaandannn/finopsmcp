@@ -17,7 +17,7 @@
       },
       "homepage": "https://getnable.com",
       "repository": "https://github.com/getnable/finopsmcp",
-      "license": "Elastic-2.0",
+      "license": "Apache-2.0",
       "keywords": ["finops", "aws", "azure", "gcp", "cost", "kubernetes", "llm", "mcp"],
       "category": "devops"
     }
