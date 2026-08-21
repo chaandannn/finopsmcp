@@ -39,7 +39,7 @@ import re
 SHIM = pathlib.Path(__file__).resolve().parents[1] / "shim"
 
 # Bump BOTH when nable_shim.py changes, then push a shim-v<version> tag.
-PUBLISHED_UNDER = "0.1.5"
+PUBLISHED_UNDER = "0.1.6"
 # A digest of a file anyone can read in this repo, not a credential. The secret
 # scanner flags any 64-char hex run as high entropy, which is the right default
 # and wrong here, so the exemption is inline and covers this line only.
