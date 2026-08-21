@@ -18,7 +18,7 @@
   "homepage": "https://getnable.com",
   "documentation": "https://getnable.com/docs",
   "support": "https://getnable.com/docs",
-  "license": "Elastic-2.0",
+  "license": "Apache-2.0",
   "keywords": [
     "finops",
     "cloud cost",
