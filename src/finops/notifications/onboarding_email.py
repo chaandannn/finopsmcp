@@ -258,7 +258,7 @@ def _send(to_email: str, subject: str, html: str, text: str) -> bool:
     msg["Subject"] = subject
     msg["From"] = f"Chandan from nable <{from_addr}>"
     msg["To"] = to_email
-    msg["Reply-To"] = "chaaandannn@gmail.com"
+    msg["Reply-To"] = "chandan@nable.sh"
     msg.attach(MIMEText(text, "plain"))
     msg.attach(MIMEText(html, "html"))
 

@@ -1025,7 +1025,7 @@ def run_welcome_flow(demo: bool = False) -> None:
     _line(dim("  auto-checks every infra command against your budget policy before it runs."))
     _blank()
     _line(f"  Docs    →  {link('https://getnable.com/docs')}")
-    _line(f"  Support →  {cyan('chaaandannn@gmail.com')}")
+    _line(f"  Support →  {cyan('chandan@nable.sh')}")
     _blank()
     # Staleness self-check, capped at 2s and silent on any failure. Resolver
     # skew once served users a five-week-old build with nothing telling them.
