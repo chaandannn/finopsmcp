@@ -58,19 +58,28 @@ def test_tag_key_matching_is_case_insensitive_value_preserved(rules_file):
     assert mapper.tags_to_attribution({"TEAM": "Platform"})["team"] == "Platform"
 
 
-def test_priority_application_order_is_preserved(rules_file):
-    # Preserved-as-is behavior: rules are applied in ascending priority order and a
-    # later application overwrites, so on a field collision the HIGHER priority
-    # number wins. (The docstring intent of "lower = higher priority" and this
-    # overwrite order disagree; flagged to the founder, left unchanged in a perf-only
-    # refactor to avoid silently shifting anyone's attribution.)
+def test_the_lowest_priority_number_wins(rules_file):
+    # This test used to assert the opposite, deliberately: an earlier perf-only
+    # refactor found that "lower = higher priority" in the docs disagreed with the
+    # code, flagged it, and pinned the existing behaviour rather than change
+    # attribution numbers in a PR about caching. That was the right call there and
+    # the wrong thing to leave standing, because the code was overwriting an
+    # explicit team tag with a cost centre code and calling it attribution.
+    #
+    # Now corrected to the documented contract: rules sort lowest-number-first and
+    # the first match for a field wins. Note this DOES shift attribution for anyone
+    # whose rules had a field collision, which is the point, and is why it belongs
+    # in a release note rather than a footnote.
     rules_file("""
         rules:
           - {tag_key: costcenter, maps_to_field: team, priority: 50}
           - {tag_key: team, maps_to_field: team, priority: 10}
     """)
     out = mapper.tags_to_attribution({"costcenter": "cc-1", "team": "other"})
-    assert out["team"] == "cc-1"
+    assert out["team"] == "other", "the higher-priority team tag lost to a fallback"
+
+    # And the fallback still works when the better tag is absent.
+    assert mapper.tags_to_attribution({"costcenter": "cc-1"})["team"] == "cc-1"
 
 
 def test_value_pattern_filters(rules_file):
