@@ -33,11 +33,26 @@ PUBLISHED = [
     "src/finops/notifications/onboarding_email.py",
 ]
 
+#: Metadata files whose email is rendered on a listing page: pypi.org shows the
+#: first two under the package name, and the last two are what a user sees
+#: before installing the plugin.
+PACKAGE_METADATA = [
+    "pyproject.toml",
+    "shim/pyproject.toml",
+    "packaging/nable/pyproject.toml",
+    "plugins/nable/.claude-plugin/plugin.json",
+    ".claude-plugin/marketplace.json",
+]
+
 CONTACT = "chandan@nable.sh"
 _FREEMAIL = re.compile(
     r"[\w.+-]+@(gmail|googlemail|yahoo|hotmail|outlook|icloud|protonmail|aol)\.com",
     re.I,
 )
+#: A personal mailbox is not only a freemail one. `chbu0285@colorado.edu` was
+#: the author on pypi.org for every release up to 0.8.215, which is a student
+#: address printed under the package name an enterprise is deciding to install.
+_PERSONAL = re.compile(r"[\w.+-]+@([\w-]+\.)*(edu|ac\.uk|students?\.[\w.-]+)\b", re.I)
 
 
 @pytest.mark.parametrize("rel", PUBLISHED)
@@ -49,6 +64,27 @@ def test_no_personal_mailbox_in_a_published_file(rel: str) -> None:
         f"{rel} publishes a personal mailbox. Use {CONTACT}: this file is read "
         f"by people deciding whether to trust the project."
     )
+
+
+@pytest.mark.parametrize("rel", PACKAGE_METADATA)
+def test_package_metadata_names_the_company_mailbox(rel: str) -> None:
+    """What pypi.org prints under the package name.
+
+    finops-mcp shipped every release up to 0.8.215 with a `.edu` address as
+    author and maintainer. That is more visible than anything inside the repo:
+    it is on the listing page, above the README, for a package enterprises are
+    deciding whether to install.
+    """
+    path = ROOT / rel
+    assert path.exists(), f"{rel} moved; this list is now checking nothing"
+    text = path.read_text(encoding="utf-8")
+    for pattern, what in ((_FREEMAIL, "a personal mailbox"),
+                          (_PERSONAL, "an academic address")):
+        assert not pattern.search(text), (
+            f"{rel} publishes {what}. Use {CONTACT}: this is rendered on a "
+            f"listing page a stranger reads before installing."
+        )
+    assert CONTACT in text, f"{rel} does not name {CONTACT}"
 
 
 def test_the_security_contact_is_the_one_we_actually_read() -> None:
