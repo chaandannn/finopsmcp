@@ -15,7 +15,7 @@ description = "Ask Claude about your cloud and AI bill. Brand alias for finops-m
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
-authors = [{ name = "Chandan Bukkapatnam", email = "chbu0285@colorado.edu" }]
+authors = [{ name = "Chandan Bukkapatnam", email = "chandan@nable.sh" }]
 keywords = ["finops", "mcp", "aws", "azure", "gcp", "cloud cost", "claude", "cursor"]
 classifiers = [
   "License :: OSI Approved :: Apache Software License",
