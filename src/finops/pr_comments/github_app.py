@@ -41,7 +41,35 @@ GITHUB_API_BASE = "https://api.github.com"
 # GitHub only permits these characters in an owner or repo name. Validating before
 # interpolating a user-supplied owner/repo into an api.github.com path rejects
 # nothing real and neutralizes path injection (CodeQL py/partial-ssrf).
-_GH_SEGMENT = re.compile(r"^[A-Za-z0-9._-]+$")
+#
+# Bounded at 100 because that is GitHub's own maximum for a repository name, and
+# an unbounded segment from a webhook body is a URL of whatever length the sender
+# feels like.
+_GH_SEGMENT = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
+
+
+def _valid_segment(value: str) -> bool:
+    """True when `value` is safe to interpolate into an api.github.com path.
+
+    The character class alone is not enough, and this is the gap it left: "."
+    and ".." are made entirely of permitted characters, so `owner=".."` passed
+    validation and produced
+
+        https://api.github.com/repos/../{repo}/pulls/{n}/files
+
+    which any URL normaliser resolves upwards into a different endpoint than the
+    one this code believes it is calling. The host cannot move (GITHUB_API_BASE
+    is a constant, and everything interpolated lands after it), and the
+    installation token bounds what the resulting call is allowed to do, so this
+    was never a route to someone else's data. It is still a request going
+    somewhere nobody chose.
+
+    GitHub permits neither "." nor ".." as an owner or a repository name, so
+    refusing every all-dots segment rejects nothing real.
+    """
+    if not _GH_SEGMENT.match(value or ""):
+        return False
+    return value.strip(".") != ""
 
 
 # ── Auth helpers ───────────────────────────────────────────────────────────────
@@ -357,7 +385,7 @@ def handle_pull_request_event(payload: dict, installation_id: int | None = None)
     repo_name = repo["name"]
     # Validate path segments at the trust boundary, before any value reaches an
     # api.github.com URL, and cast ids to int so they can't carry path text.
-    if not (_GH_SEGMENT.match(owner or "") and _GH_SEGMENT.match(repo_name or "")):
+    if not (_valid_segment(owner) and _valid_segment(repo_name)):
         return {"status": "rejected", "reason": "invalid owner/repo"}
     try:
         pr_number = int(pr["number"])

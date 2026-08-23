@@ -38,6 +38,43 @@ def test_path_segment_regexes_reject_traversal_and_newlines():
     assert not wh._GH_REPO.match("acme")          # must be owner/repo
 
 
+def test_a_dot_segment_is_rejected_even_though_its_characters_are_legal():
+    """The gap the character class left open.
+
+    "." and ".." are built entirely from permitted characters, so they passed
+    the regex, and `owner=".."` produced
+
+        https://api.github.com/repos/../{repo}/pulls/{n}/files
+
+    which a URL normaliser resolves upwards into a different endpoint than the
+    caller intended. GitHub allows neither name, so refusing them costs nothing.
+    """
+    assert ga._valid_segment("acme-corp_1.2")
+    assert ga._valid_segment("docs.github.com")   # a real repo name, still fine
+    for bad in (".", "..", "...", "", None):
+        assert not ga._valid_segment(bad), f"{bad!r} was accepted as a path segment"
+
+
+def test_an_unbounded_segment_cannot_be_used_to_build_an_enormous_url():
+    assert ga._valid_segment("a" * 100)
+    assert not ga._valid_segment("a" * 101)
+
+
+def test_handle_event_rejects_a_dot_owner_before_any_http(monkeypatch):
+    """The wiring, not the helper. Deleting the guard from handle_pull_request_event
+    must fail something, or the validator above is decoration."""
+    called = []
+    monkeypatch.setattr(ga, "_headers", lambda *a, **k: called.append(1) or {})
+    out = ga.handle_pull_request_event({
+        "action": "opened",
+        "pull_request": {"number": 1, "head": {"sha": "abc"}},
+        "repository": {"owner": {"login": ".."}, "name": "infra"},
+        "installation": {"id": 5},
+    })
+    assert out["status"] == "rejected"
+    assert called == [], "built auth headers before validating the path segments"
+
+
 def test_webhook_rejects_bad_repo_before_any_http(monkeypatch):
     calls = []
     monkeypatch.setattr(wh, "_get_pr_files", lambda *a, **k: calls.append(1) or [])
