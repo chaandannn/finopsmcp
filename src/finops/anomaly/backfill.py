@@ -47,11 +47,49 @@ def needs_backfill() -> bool:
         return False
 
 
-def backfill_from_cost_explorer(days: int = _TARGET_DAYS) -> dict:
-    """Pull daily per-service AWS spend for the last ``days`` and store it as
-    snapshots. Returns {backfilled_days, rows} or {skipped: reason}."""
+def backfill_from_cost_explorer(days: int = _TARGET_DAYS, *,
+                                explicit: bool = False) -> dict:
+    """Fill in missing daily history, from the free source unless told otherwise.
+
+    Two sources cover the same days and they are not equivalent to the customer.
+    The CUR is an export that already exists in their bucket, so reading it costs
+    them nothing. Cost Explorer bills per request, and this function paginates,
+    so a ninety-day backfill is a charge on their account that nobody asked for.
+
+    So: CUR whenever it is configured, and Cost Explorer only when a person has
+    explicitly asked for it. ``explicit=False`` reports that the option exists
+    rather than taking it, which is what lets the caller offer it as a choice.
+
+    Returns {source, backfilled_days, rows}, or {skipped: reason} with
+    ``available`` set when the only remaining route is one that costs money.
+    """
     if not needs_backfill():
         return {"skipped": "history already sufficient"}
+
+    # The free source first, always. Reached through the seam, so it is simply
+    # absent on an open install and this falls through.
+    try:
+        from ..connectors import cur_s3
+
+        if cur_s3.is_configured():
+            end = date.today()
+            out = cur_s3.ingest_range(end - timedelta(days=days), end)
+            rows = out.get("rows", 0) if isinstance(out, dict) else 0
+            log.info("backfill: %s rows from the CUR, no Cost Explorer requests", rows)
+            return {"source": "cur", "rows": rows, "backfilled_days": days}
+    except ImportError:
+        pass
+    except Exception as exc:  # noqa: BLE001 - fall through to the decision below
+        log.warning("backfill: the CUR read failed (%s); not falling back to a "
+                    "billed source on its own", exc)
+
+    if not explicit:
+        # Deliberately does nothing. Cost Explorer is the customer's money, and
+        # spending it silently on history they have not asked to see is the kind
+        # of charge that turns up on a bill with no explanation attached.
+        return {"skipped": "backfilling from Cost Explorer bills the account, "
+                           "so it waits to be asked",
+                "available": True, "source": "cost_explorer", "days": days}
 
     try:
         import boto3
