@@ -113,6 +113,25 @@ async def list_connected_providers() -> dict:
                       else "not connected: call connect_aws, or run 'uvx nable'",
         }
 
+    # This function is the only place that has already asked every connector
+    # whether it holds credentials, so it is the only place that can fill in the
+    # connected count for free. Doing it anywhere else means resolving
+    # credentials on purpose, and AWS's is_configured() goes through botocore,
+    # which can sit on the EC2 metadata endpoint for a minute on exactly the
+    # machines that would answer "nothing connected".
+    #
+    # Until 0.8.216 the count reported was len(_ALL_CONNECTORS), the size of the
+    # build's connector registry, so the documented connected-account query
+    # matched 641 of 642 installs and told us nothing.
+    try:
+        from .. import telemetry as _telemetry
+        _telemetry.set_provider_count(
+            sum(1 for k, v in result.items()
+                if not k.startswith("_") and v.get("configured"))
+        )
+    except Exception:
+        pass  # telemetry is never worth failing a tool call over
+
     # Surface plan status so Claude can proactively mention upgrade when relevant
     status = _srv.get_status()
     if status.mode == "trial":
