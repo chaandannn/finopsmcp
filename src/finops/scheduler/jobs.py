@@ -141,6 +141,7 @@ async def _snapshot_all() -> dict:
             # stays True, so AWS is skipped below rather than billed.
             log.warning("CUR ingest failed; AWS history will be short this run: %s", exc)
 
+    from ..billing_access import BillingAccessError
     for name, connector in connectors.items():
         if name == "aws" and cur_configured:
             continue
@@ -166,6 +167,19 @@ async def _snapshot_all() -> dict:
                     )
             results[name] = f"ok — {len(summary.entries)} entries"
             log.info("Snapshot: %s — %d entries, $%.2f", name, len(summary.entries), summary.total_usd)
+        except BillingAccessError as exc:
+            # A hosted/unattended box with a read-only role but no billing export
+            # cannot reach Cost Explorer: billing_access refuses BEFORE any billed
+            # call. That is an expected "no data source yet" state, not a failure,
+            # so log a WARNING (not log.exception/ERROR) or the hosted cron marks
+            # the nightly job red every night, and record an honest message telling
+            # the operator to connect a Cost and Usage Report.
+            results[name] = ("no billing export connected: enable an AWS Cost and "
+                             "Usage Report so nable can read this account without "
+                             "billed API calls")
+            log.warning("Snapshot: %s has no CUR and Cost Explorer is not permitted "
+                        "here; skipping until a billing export is connected (%s)",
+                        name, exc)
         except Exception as exc:
             results[name] = f"error: {exc}"
             log.exception("Snapshot failed for %s", name)

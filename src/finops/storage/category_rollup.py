@@ -113,3 +113,32 @@ def categories_available(start, end, provider="all") -> bool:
     q = select(cost_snapshots.c.id).where(and_(*clauses)).limit(1)
     with get_engine().connect() as conn:
         return conn.execute(q).first() is not None
+
+
+def _has_row(clauses) -> bool:
+    q = select(cost_snapshots.c.id).where(and_(*clauses)).limit(1)
+    with get_engine().connect() as conn:
+        return conn.execute(q).first() is not None
+
+
+def window_fully_categorized(start, end, provider="all") -> bool:
+    """True only when the window has spend AND every row in it carries a category.
+
+    categorization runs at AWS-CUR ingest, so a GCP or Azure or SaaS snapshot row
+    lands with no category. On a mixed account those rows fold into "other" and an
+    AI figure summed over only the categorized rows but divided by the whole
+    account total is an undercount presented as measured. This gate is the honest
+    signal: when any row in the scope is uncategorized it returns False, and the
+    caller shows the "not categorized yet" state instead of a wrong number. A
+    single-cloud account whose rows are all categorized returns True and reads
+    exactly as before.
+    """
+    base = [
+        cost_snapshots.c.snapshot_date >= _iso(start),
+        cost_snapshots.c.snapshot_date <= _iso(end),
+    ]
+    if provider and provider != "all":
+        base.append(cost_snapshots.c.provider == provider)
+    if not _has_row(base):
+        return False
+    return not _has_row(base + [cost_snapshots.c.category.is_(None)])

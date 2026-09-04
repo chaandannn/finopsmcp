@@ -38,7 +38,7 @@ async def get_anomalies(
     if is_demo():
         return get_demo_response("get_anomalies") or {}
 
-    from ..anomaly.detector import get_active_anomalies
+    from ..anomaly.detector import get_active_anomalies, has_enough_history
 
     # Resolve account_id filter when a named account is requested
     account_id_filter: str | None = None
@@ -52,9 +52,21 @@ async def get_anomalies(
     if account_id_filter and rows:
         rows = [r for r in rows if r.get("account_id") == account_id_filter]
     if not rows:
+        # An empty result means one of two very different things. With enough
+        # days of snapshots behind us it is a real all-clear. On a fresh account
+        # it just means we cannot judge yet, and saying "all clear" there is a
+        # false reassurance. Check the actual history before we pick the message.
+        if has_enough_history(provider):
+            message = "No active anomalies."
+        else:
+            message = (
+                "Not enough history yet to detect anomalies. Anomaly detection "
+                "needs about 7 days of daily snapshots to build a baseline. Run "
+                "daily snapshots or wait for the daily job to accumulate data."
+            )
         return {
             "anomalies": [],
-            "message": "No active anomalies." if rows is not None else "No snapshot history yet. Run daily snapshots first.",
+            "message": message,
         }
 
     formatted = []

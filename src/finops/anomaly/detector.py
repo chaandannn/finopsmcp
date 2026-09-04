@@ -6,10 +6,10 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import and_, select
+from sqlalchemy import and_, distinct, func, select
 from sqlalchemy.exc import IntegrityError
 
-from ..storage.db import anomalies, get_engine
+from ..storage.db import anomalies, cost_snapshots, get_engine
 from ..storage.snapshots import get_history
 
 log = logging.getLogger(__name__)
@@ -326,6 +326,26 @@ def persist_anomaly(result: AnomalyResult) -> tuple[int, bool]:
         f"for {result.provider}/{result.service}/{result.account_id} "
         f"{result.snapshot_date.isoformat()} {result.direction}"
     )
+
+
+def snapshot_history_days(provider: str | None = None) -> int:
+    """Count how many distinct days of cost snapshots we have on hand.
+
+    This is the honest measure of whether we can detect anomalies at all. The
+    detector needs a baseline, so a fresh account with a day or two of data
+    cannot produce a real all-clear, only "not enough history yet".
+    """
+    engine = get_engine()
+    query = select(func.count(distinct(cost_snapshots.c.snapshot_date)))
+    if provider:
+        query = query.where(cost_snapshots.c.provider == provider)
+    with engine.connect() as conn:
+        return int(conn.execute(query).scalar() or 0)
+
+
+def has_enough_history(provider: str | None = None) -> bool:
+    """True once there are enough days of snapshots to trust a detection result."""
+    return snapshot_history_days(provider) >= _MIN_HISTORY_DAYS
 
 
 def get_active_anomalies(
