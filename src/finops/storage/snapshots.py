@@ -20,6 +20,7 @@ def store_snapshot(
     snapshot_date: date,
     amount_usd: float,
     granularity: str = "DAILY",
+    category: str | None = None,
 ) -> None:
     engine = get_engine()
     with engine.begin() as conn:
@@ -44,6 +45,7 @@ def store_snapshot(
             amount_usd=amount_usd,
             granularity=granularity,
             captured_at=_now(),
+            category=category,
         ))
 
 
@@ -83,6 +85,7 @@ def replace_provider_day(provider: str, day: date, rows: list[dict]) -> int:
                 "amount_usd": float(r.get("amount_usd") or 0.0),
                 "granularity": r.get("granularity") or "DAILY",
                 "captured_at": now,
+                "category": r.get("category"),
             }
             for r in rows
         ])

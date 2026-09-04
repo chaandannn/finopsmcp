@@ -48,6 +48,10 @@ cost_snapshots = Table(
     Column("amount_usd", Float, nullable=False, default=0.0),
     Column("granularity", String(16), nullable=False, default="DAILY"),
     Column("captured_at", DateTime, nullable=False),
+    # One of finops.categories.CATEGORY_KEYS, or NULL for rows written before
+    # categorization shipped. Nullable on purpose: a pre-migration row reads as
+    # "not categorized", never as a fabricated bucket.
+    Column("category", String(32), nullable=True),
 )
 
 cost_snapshots_archive = Table(
@@ -61,6 +65,7 @@ cost_snapshots_archive = Table(
     Column("amount_usd", Float, nullable=False, default=0.0),
     Column("granularity", String(16), nullable=False, default="DAILY"),
     Column("captured_at", DateTime, nullable=False),
+    Column("category", String(32), nullable=True),
 )
 
 anomalies = Table(
@@ -803,6 +808,12 @@ def _run_sqlite_migrations(engine: Engine) -> None:
     migrations: list[tuple[str, str]] = [
         # (table, column) — the DDL is derived from the model by _add_column_ddl.
         ("anomalies", "metadata"),
+        # Spend categorization: nullable category on the cost store and its
+        # archive. A live Postgres box created before this shipped gets the
+        # column here (create_all never ALTERs an existing table), so writes of
+        # category do not fail; pre-migration rows read back as NULL.
+        ("cost_snapshots", "category"),
+        ("cost_snapshots_archive", "category"),
         ("budgets", "critical_at_pct"),
         ("budgets", "alert_at_pct"),
         # Runway inputs (Phase 1 business-context layer)
@@ -913,6 +924,7 @@ def archive_old_snapshots(days_to_keep: int = 365) -> int:
                 cost_snapshots.c.amount_usd,
                 cost_snapshots.c.granularity,
                 cost_snapshots.c.captured_at,
+                cost_snapshots.c.category,
             ).where(cost_snapshots.c.snapshot_date < cutoff)
         ).fetchall()
 
@@ -932,6 +944,7 @@ def archive_old_snapshots(days_to_keep: int = 365) -> int:
                     "amount_usd": r.amount_usd,
                     "granularity": r.granularity,
                     "captured_at": r.captured_at,
+                    "category": r.category,
                 }
                 for r in old_rows
             ],
