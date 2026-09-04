@@ -8,8 +8,8 @@ version = "0.8.215"
 description = "Ask Claude about your AWS, Azure, GCP, and SaaS costs. MCP server with anomaly detection, rightsizing, and Jira ticketing."
 readme = "README.md"
 license = { text = "Apache-2.0" }
-authors = [{ name = "Chandan Bukkapatnam", email = "chbu0285@colorado.edu" }]
-maintainers = [{ name = "Chandan Bukkapatnam", email = "chbu0285@colorado.edu" }]
+authors = [{ name = "Chandan Bukkapatnam", email = "chandan@nable.sh" }]
+maintainers = [{ name = "Chandan Bukkapatnam", email = "chandan@nable.sh" }]
 keywords = [
     "mcp", "finops", "claude", "aws", "azure", "gcp", "cloud-cost",
     "cost-optimization", "ai", "llm", "claude-desktop", "cursor",

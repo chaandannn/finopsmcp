@@ -8,7 +8,7 @@
   "long_description": "nable reads your AWS, Azure, GCP, Kubernetes, SaaS, and AI/LLM (OpenAI, Anthropic, Bedrock) spend read-only and answers cost questions right in your editor: why spend moved, where the waste is, and what to cut. It judges which savings are real against your negotiated rates and drafts the fix as a pull request you approve. Read-only and propose-only: nable never changes your cloud on its own, and credentials and cost data stay on your machine, with no vendor backend in the path.",
   "author": {
     "name": "Chandan Bukkapatnam",
-    "email": "chaaandannn@gmail.com",
+    "email": "chandan@nable.sh",
     "url": "https://getnable.com"
   },
   "repository": {

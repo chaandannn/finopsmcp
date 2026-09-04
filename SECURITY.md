@@ -15,7 +15,7 @@ identifiers) is on by default and turns off with `NABLE_NO_TELEMETRY=1` or
 
 ## Reporting a vulnerability
 
-Email **chaaandannn@gmail.com** with the details. Please include steps to
+Email **chandan@nable.sh** with the details. Please include steps to
 reproduce and the version (`finops --version`).
 
 - You will get an acknowledgment within 48 hours.
