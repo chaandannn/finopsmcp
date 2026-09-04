@@ -57,6 +57,20 @@ _BEDROCK_PRICING: dict[str, dict[str, float]] = {
 
 def get_bedrock_costs(start_date: date, end_date: date) -> dict[str, Any]:
     """Fetch Bedrock costs from Cost Explorer, broken down by model."""
+    # Cost Explorer bills PER REQUEST against the customer's own account, and
+    # this function makes two. job_ai_monitor runs it nightly at 05:00 with
+    # nobody watching, so an unguarded path here charges every customer every
+    # night for a report they did not ask for. The guard is the same one the
+    # rest of the codebase uses; this module simply never consulted it.
+    #
+    # Returning empty rather than raising: the AI monitor also covers OpenAI and
+    # Anthropic, which cost nothing to read, and a Bedrock gap should not take
+    # the whole job down. The reason string says which gap it is.
+    from ..billing_access import cost_explorer_allowed
+
+    if not cost_explorer_allowed():
+        return _empty("cost_explorer_not_allowed_unattended")
+
     try:
         import boto3
     except ImportError:

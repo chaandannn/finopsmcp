@@ -159,17 +159,16 @@ def _run_editor_startup(monkeypatch) -> None:
 
 
 
-def test_the_snapshot_job_first_act_is_a_billed_cost_explorer_call(monkeypatch):
-    """PASSES TODAY. This is the money link that makes the tests above matter.
+def test_the_scheduled_snapshot_never_bills_cost_explorer_on_its_own(monkeypatch):
+    """The invariant stated the safe way round.
 
-    job_snapshot -> _snapshot_all -> backfill_from_cost_explorer -> the CE
-    GetCostAndUsage that AWS charges for. tests/conftest.py's session guard
-    calls the same API "billed per request" and hard-blocks it. Faked at the
-    boto3 boundary here, so no request leaves the machine and none is billed.
-
-    If this goes red because the backfill moved, re-read the tests above: they
-    assume the armed cron spends money, and that has to stay true or be
-    re-established somewhere else.
+    The old version asserted the snapshot's first act WAS a billed
+    GetCostAndUsage, which documented the bug rather than the rule: the backfill
+    used to spend the customer's money on history nobody asked for. It requires
+    explicit=True now, and the scheduled path never passes it. So the guarantee
+    inverts: the default unattended call makes no Cost Explorer request at all.
+    Faked at the boto3 boundary, so a regression that reached CE shows up as a
+    recorded call rather than a real charge.
     """
     calls: list[str] = []
 
@@ -192,14 +191,16 @@ def test_the_snapshot_job_first_act_is_a_billed_cost_explorer_call(monkeypatch):
         "a fresh install has no history, so the backfill must want to run; "
         "otherwise this test proves nothing"
     )
-    backfill_from_cost_explorer()
-    assert calls == ["ce:GetCostAndUsage"], (
-        f"expected exactly one billed Cost Explorer request, got {calls}"
+    out = backfill_from_cost_explorer()  # scheduled path: explicit defaults False
+    assert calls == [], (
+        f"the unattended backfill reached Cost Explorer, which bills the "
+        f"customer per request: {calls}"
     )
+    assert out.get("skipped"), out
     import inspect
     assert "backfill_from_cost_explorer" in inspect.getsource(jobs._snapshot_all), (
-        "the nightly snapshot job no longer calls the backfill, so the chain "
-        "this test documents is broken"
+        "the nightly snapshot no longer references the backfill, so the "
+        "safe-by-default guarantee above guards a path nothing reaches"
     )
 
 

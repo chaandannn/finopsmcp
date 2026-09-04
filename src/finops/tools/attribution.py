@@ -49,6 +49,7 @@ async def get_costs_by_team(
                 "No attributed cost data found. "
                 "Ensure tag_rules.yaml is configured and run 'take_snapshot_now' to populate data."
             ),
+            "diagnostic": _attribution_diagnostic(),
         }
 
     by_team: dict[str, float] = {}
@@ -63,12 +64,33 @@ async def get_costs_by_team(
         key=lambda x: -x["total_usd"],
     )
 
-    return {
+    out = {
         "period": {"start": sd.isoformat(), "end": ed.isoformat()},
         "grand_total_usd": round(grand, 4),
         "grand_total_formatted": _srv._fmt_usd(grand),
         "by_team": ranked,
     }
+
+    # Everything in one bucket named "unattributed" is not a report, it is a
+    # symptom, and the most common cause is a tag key that was never activated
+    # for cost allocation. Say so here rather than letting the user conclude
+    # their tagging is broken when it is not.
+    if len(by_team) == 1 and "unattributed" in by_team:
+        note = _attribution_diagnostic()
+        if note:
+            out["diagnostic"] = note
+    return out
+
+
+def _attribution_diagnostic() -> str | None:
+    """Best-effort explanation for empty attribution. Never raises, never guesses."""
+    try:
+        from ..attribution.activation import explain_empty_attribution
+        from ..attribution.mapper import configured_tag_keys
+
+        return explain_empty_attribution(configured_tag_keys())
+    except Exception:  # noqa: BLE001 - a diagnostic must never break the answer
+        return None
 
 
 @_srv.mcp.tool()

@@ -668,6 +668,56 @@ _DEMO_REGIONS = [
 ]
 
 
+def _demo_category_payload(active_services: list[dict[str, Any]], window_total: float):
+    """Category totals + AI split for the demo, classified the SAME way live is.
+
+    Demo and live share one render path: this runs the real classify_category over
+    the demo's service inventory, so the six-bucket segments and the AI card get
+    exactly the shape a connected box produces.
+    """
+    from .categories import CATEGORY_KEYS, ai_kind, ai_label, classify_category
+    totals = {k: 0.0 for k in CATEGORY_KEYS}
+    ai_rows: list[dict[str, Any]] = []
+    ai_delta_num = 0.0
+    for s in active_services:
+        cat = classify_category(s["provider"], s["service"])
+        totals[cat] += s["amount"]
+        if cat != "ai":
+            continue
+        ai_rows.append({
+            "key": f"{s['provider']}:{s['service']}",
+            "label": ai_label(s["provider"], s["service"]),
+            "amount": round(s["amount"], 2),
+            "kind": ai_kind(s["provider"], s["service"]),
+        })
+        ai_delta_num += s["amount"] * s.get("delta_pct", 0.0)
+    ai_spend = round(totals["ai"], 2)
+    ai_rows.sort(key=lambda r: -r["amount"])
+    for r in ai_rows:
+        r["pct"] = round(r["amount"] / ai_spend * 100, 1) if ai_spend else 0.0
+    ai_pct = round(ai_spend / window_total * 100, 1) if window_total else None
+    ai_delta = round(ai_delta_num / ai_spend, 1) if ai_spend else None
+    return {k: round(v, 2) for k, v in totals.items()}, ai_spend, ai_pct, ai_delta, ai_rows
+
+
+def _attach_daily_categories(daily: list[dict[str, Any]], category_totals: dict[str, float],
+                             window_total: float) -> None:
+    """Split each day's total into the six buckets by the window's category share.
+    The per-day series drifts (a 1-day window lands ~115% of window_total), so the
+    raw day totals do not sum to window_total. Normalize each day's split back to
+    the window first, or the daily category series would not reconcile with
+    category_totals."""
+    from .categories import CATEGORY_KEYS
+    shares = {k: (category_totals.get(k, 0.0) / window_total if window_total else 0.0)
+              for k in CATEGORY_KEYS}
+    day_totals = [sum(v for k, v in row.items() if k != "date") for row in daily]
+    series_sum = sum(day_totals)
+    scale = (window_total / series_sum) if series_sum else 0.0
+    for row, day_total in zip(daily, day_totals):
+        scaled = day_total * scale
+        row["categories"] = {k: round(scaled * shares[k], 2) for k in CATEGORY_KEYS}
+
+
 def _daily_series(days: int, provs: list[str], end: date | None = None) -> list[dict[str, Any]]:
     """A believable per-provider daily spend series over the window. Deterministic
     (seeded by day index) so it does not jump on every refresh, with a gentle
@@ -787,6 +837,12 @@ def dashboard_data(
     # Windowed total (what the range actually spans) and the daily provider series.
     window_total_spend = round(window_total, 2)
     daily = _daily_series(days, provs, end=end)
+
+    # AI and GPU as a real number: classify the demo inventory the same way live
+    # does and split the six buckets. The per-day category slice is attached at
+    # the very end, after every plain sum over the daily rows has run.
+    (category_totals, ai_spend_window, ai_spend_pct,
+     ai_delta_pct, ai_breakdown_rows) = _demo_category_payload(active_services, window_total_spend)
 
     # Month TO DATE, not a whole month. This reported `month_total`, the sum of
     # every provider's full monthly figure, so on the 16th the dashboard showed
@@ -913,6 +969,17 @@ def dashboard_data(
                 f"the {_money(budget)} budget.",
     }
 
+    # Compute the headline sparklines BEFORE attaching category slices: they sum
+    # each daily row's provider values, which only works while a row is date +
+    # provider numbers and nothing else.
+    sparklines = {
+        "spend": _spark(1.0), "mtd": _spark(0.62),
+        "forecast": _spark(1.09), "savings": _spark(0.065),
+    }
+    # Now every numeric sum over `daily` (mtd, sparklines, forecast history) has
+    # run, so the per-day category slice is safe to attach.
+    _attach_daily_categories(daily, category_totals, window_total_spend)
+
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "account_id": _ACCOUNT_ID,
@@ -929,14 +996,18 @@ def dashboard_data(
         "delta_pct": delta_pct,
         "finops_grade": grade,
         "finops_score": score,
-        "sparklines": {
-            "spend": _spark(1.0), "mtd": _spark(0.62),
-            "forecast": _spark(1.09), "savings": _spark(0.065),
-        },
+        "sparklines": sparklines,
         "top_services": top_services,
         "active_services": active_services,
         "daily_series": daily,
         "series_providers": provs,
+        # AI and GPU category payload (matches the live /api/data shape).
+        "categories_available": True,
+        "category_totals": category_totals,
+        "ai_spend_window": ai_spend_window,
+        "ai_spend_pct": ai_spend_pct,
+        "ai_delta_pct": ai_delta_pct,
+        "ai_breakdown": ai_breakdown_rows,
         "top_accounts": top_accounts,
         "spend_by_region": spend_by_region,
         "recommendations_table": recommendations,

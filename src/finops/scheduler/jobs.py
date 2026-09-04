@@ -102,6 +102,7 @@ async def _snapshot_all() -> dict:
     # on an open install. Skipping the connector on success is the whole saving:
     # running both would read the bill twice and pay for one of them anyway.
     cur_ok = False
+    cur_configured = False
     try:
         from ..connectors import cur_s3  # type: ignore[attr-defined]
     except ImportError:
@@ -109,6 +110,14 @@ async def _snapshot_all() -> dict:
     if cur_s3 is not None:
         try:
             if cur_s3.is_configured():
+                # AWS is the billing export's job now, so it must never fall to
+                # the Cost Explorer connector below. Mark that BEFORE the read:
+                # the flag holds whether the read wrote fresh rows, found the
+                # export unchanged since last time (data already ingested), or
+                # failed outright. Gating the skip on rows-written instead let an
+                # unchanged export drop through to Cost Explorer, and the tick
+                # went red on a billed call it must never make.
+                cur_configured = True
                 out = cur_s3.ingest_recent(days=3)
                 cur_ok = out["rows_written"] > 0 or out["files_read"] > 0
                 if cur_ok:
@@ -118,15 +127,23 @@ async def _snapshot_all() -> dict:
                     log.info("Snapshot: aws via CUR, %d rows over %d day(s), $%.6f",
                              out["rows_written"], out["days_written"],
                              out["cost"]["usd"])
+                else:
+                    # Export unchanged since the last read: the data is already
+                    # ingested and current, so there is nothing to write and no
+                    # reason to reach Cost Explorer.
+                    results["aws"] = "ok: billing export unchanged, data already current"
+                    log.info("Snapshot: aws via CUR, export unchanged since last read")
         except Exception as exc:
             # Never fatal, and deliberately NOT a reason to fall back to the
             # billed path: a reader that is installed but failing is a broken
             # deployment, and quietly charging the customer to paper over it is
-            # exactly the behaviour this whole change removed.
+            # exactly the behaviour this whole change removed. cur_configured
+            # stays True, so AWS is skipped below rather than billed.
             log.warning("CUR ingest failed; AWS history will be short this run: %s", exc)
 
+    from ..billing_access import BillingAccessError
     for name, connector in connectors.items():
-        if name == "aws" and cur_ok:
+        if name == "aws" and cur_configured:
             continue
         if not await connector.is_configured():
             continue
@@ -150,6 +167,19 @@ async def _snapshot_all() -> dict:
                     )
             results[name] = f"ok — {len(summary.entries)} entries"
             log.info("Snapshot: %s — %d entries, $%.2f", name, len(summary.entries), summary.total_usd)
+        except BillingAccessError as exc:
+            # A hosted/unattended box with a read-only role but no billing export
+            # cannot reach Cost Explorer: billing_access refuses BEFORE any billed
+            # call. That is an expected "no data source yet" state, not a failure,
+            # so log a WARNING (not log.exception/ERROR) or the hosted cron marks
+            # the nightly job red every night, and record an honest message telling
+            # the operator to connect a Cost and Usage Report.
+            results[name] = ("no billing export connected: enable an AWS Cost and "
+                             "Usage Report so nable can read this account without "
+                             "billed API calls")
+            log.warning("Snapshot: %s has no CUR and Cost Explorer is not permitted "
+                        "here; skipping until a billing export is connected (%s)",
+                        name, exc)
         except Exception as exc:
             results[name] = f"error: {exc}"
             log.exception("Snapshot failed for %s", name)

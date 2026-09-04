@@ -272,6 +272,31 @@ class InvoiceMailbox:
             self._conn.store(uid, "+FLAGS", "\\Seen")
 
 
+def _store_invoice(inv: ParsedInvoice, account_id: str) -> dict[str, Any]:
+    """Persist one parsed invoice as a daily cost snapshot and return its summary.
+
+    store_snapshot takes the snapshot columns by name, not a cost-entry object.
+    Mapping the fields explicitly here is what turns a parsed email into a row
+    the rest of nable can query.
+    """
+    from ...storage.snapshots import store_snapshot
+
+    store_snapshot(
+        provider=f"invoice/{inv.vendor}",
+        service="invoice",
+        account_id=account_id,
+        region="",
+        snapshot_date=inv.invoice_date,
+        amount_usd=inv.amount_usd,
+    )
+    return {
+        "vendor": inv.vendor,
+        "amount_usd": inv.amount_usd,
+        "invoice_date": inv.invoice_date.isoformat(),
+        "invoice_number": inv.invoice_number,
+    }
+
+
 def fetch_and_store_invoices() -> list[dict[str, Any]]:
     """
     Called by the scheduler. Fetches invoice emails, parses them, stores as
@@ -286,38 +311,22 @@ def fetch_and_store_invoices() -> list[dict[str, Any]]:
     folder = os.environ.get("FINOPS_INVOICE_FOLDER", "INBOX")
     search = os.environ.get("FINOPS_INVOICE_SEARCH", "UNSEEN SUBJECT invoice")
 
-    from ...storage.snapshots import store_snapshot
-    from ...connectors.base import CostEntry
-
     mailbox = InvoiceMailbox(host=host, user=user, password=password, folder=folder)
     stored: list[dict[str, Any]] = []
     try:
-        mailbox.connect()
-        invoices = mailbox.fetch_invoices(search)
+        # A mailbox that is down or misconfigured is an expected, recoverable
+        # miss: log it and move on. A failure while writing a snapshot is a real
+        # defect, so it is deliberately NOT caught here and surfaces to the
+        # caller instead of being logged away as "fetch failed".
+        try:
+            mailbox.connect()
+            invoices = mailbox.fetch_invoices(search)
+        except (imaplib.IMAP4.error, OSError) as e:
+            log.error("Invoice fetch failed: %s", e)
+            return stored
+
         for inv in invoices:
-            entry = CostEntry(
-                provider=f"invoice/{inv.vendor}",
-                service="invoice",
-                account_id=user,
-                amount_usd=inv.amount_usd,
-                currency=inv.currency,
-                period_start=inv.invoice_date.isoformat(),
-                period_end=inv.invoice_date.isoformat(),
-                metadata={
-                    "invoice_number": inv.invoice_number,
-                    "source": "email_parser",
-                    "raw_excerpt": inv.raw_text,
-                },
-            )
-            store_snapshot(entry)
-            stored.append({
-                "vendor": inv.vendor,
-                "amount_usd": inv.amount_usd,
-                "invoice_date": inv.invoice_date.isoformat(),
-                "invoice_number": inv.invoice_number,
-            })
-    except Exception as e:
-        log.error("Invoice fetch failed: %s", e)
+            stored.append(_store_invoice(inv, user))
     finally:
         mailbox.disconnect()
 

@@ -115,7 +115,25 @@ def tags_to_attribution(tags: dict[str, str]) -> dict[str, str]:
 
     lower_tags = {k.lower(): v for k, v in tags.items()}
 
+    # First matching rule wins, per field.
+    #
+    # Rules are sorted lowest-priority-number first, and the documented contract
+    # is "lower number = higher priority", so the first rule that matches a field
+    # is the most specific one the user wrote for it. Everything after it is a
+    # fallback and must not overwrite.
+    #
+    # This used to let every matching rule assign, so the LAST rule won and the
+    # priority number meant the exact opposite of what it says. Both examples in
+    # the file write_example_rules() generates were wrong as a result: an explicit
+    # "team" tag was overwritten by a "costcenter" code, and value normalisation
+    # rules ("infra*" -> platform) never survived the plain rule beneath them.
+    # Attribution feeds chargeback, so the symptom was a team disputing its bill
+    # months later, not an error anyone could see.
+    decided: set[str] = set()
+
     for tag_key, tag_value_pattern, maps_to_field, maps_to_value in compiled.rules:
+        if maps_to_field in decided:
+            continue  # a higher-priority rule already answered for this field
         if tag_key not in lower_tags:
             continue
         actual_value = lower_tags[tag_key]
@@ -130,8 +148,26 @@ def tags_to_attribution(tags: dict[str, str]) -> dict[str, str]:
             result["service"] = resolved
         elif maps_to_field == "environment":
             result["environment"] = resolved
+        else:
+            continue  # unknown target field, not a decision
+
+        decided.add(maps_to_field)
 
     return result
+
+
+def configured_tag_keys() -> list[str]:
+    """The tag keys the rules actually reference, de-duplicated in first-seen order.
+
+    What to ask AWS about when attribution comes back empty: checking every tag
+    in the account would be noise, and these are the only ones that could have
+    produced a team.
+    """
+    seen: list[str] = []
+    for tag_key, _pattern, _field, _value in _compiled().rules:
+        if tag_key and tag_key not in seen:
+            seen.append(tag_key)
+    return seen
 
 
 def write_example_rules(path: Path | None = None) -> Path:
@@ -142,6 +178,11 @@ def write_example_rules(path: Path | None = None) -> Path:
     content = """\
 # FinOps tag attribution rules
 # Map resource tags to team / service / environment
+#
+# The FIRST rule that matches a field wins. Rules are ordered by "priority",
+# lowest number first, so put your most specific rules at the lowest numbers and
+# your fallbacks at the highest. A rule for a field that has already been decided
+# is skipped, which is what makes the fallbacks below safe to leave in place.
 
 rules:
   # Map the "team" tag directly

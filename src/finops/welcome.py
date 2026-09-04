@@ -385,9 +385,15 @@ def _value_moment_body(demo: bool = False) -> bool:
     if not isinstance(summary, dict) or summary.get("error"):
         return False
 
-    # Day-one anomalies: seed baselines from CE history in the background so
-    # "any cost spikes?" works today, not after 7 days of snapshots. Daemon
-    # thread + best-effort: the welcome flow never waits on it or fails from it.
+    # Day-one anomalies: seed baselines from history so "any cost spikes?" works
+    # today rather than after a week of snapshots. Daemon thread + best-effort:
+    # the welcome flow never waits on it or fails from it.
+    #
+    # backfill_from_cost_explorer reads the CUR when it is configured, which is
+    # free, and otherwise declines and reports that the option exists. It is
+    # called without explicit=True on purpose: this runs unattended seconds after
+    # someone connects, and a ninety-day Cost Explorer pull is a charge on their
+    # account arriving before they have seen a single number.
     if not demo:
         try:
             import threading
