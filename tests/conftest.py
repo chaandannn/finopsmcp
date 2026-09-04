@@ -11,10 +11,65 @@ Every test gets an in-memory keyring stub. Tests that assert keyring behavior
 (test_keychain_prompts.py, test_keyring_cache.py) install their own counting
 stubs on top via monkeypatch, which override this one for their duration.
 """
+import os
 import sys
 import types
+from pathlib import Path
 
 import pytest
+
+# Set this to run the suite against a finops installed somewhere else on
+# purpose, e.g. testing a built wheel rather than the working tree.
+_ALLOW_FOREIGN = "FINOPS_TESTS_ALLOW_FOREIGN_SOURCE"
+
+
+def pytest_configure(config):
+    """Refuse to run this tree's tests against a different tree's source.
+
+    finops is installed editable, pointing at ONE checkout. A git worktree gets
+    its own tests/ and its own src/, but `import finops` still resolves to
+    whichever checkout the install points at, so running pytest from a worktree
+    silently pairs that worktree's test files with the main checkout's code.
+
+    Nothing errors. You get a normal-looking run whose result means nothing, and
+    the failures it invents look exactly like real ones. On 2026-08-22 that cost
+    two wrong conclusions in a row about the same test: first "this fails on
+    main" (it did not; the source was a feature branch), then "this branch broke
+    it" (it had not; the test had been renamed on that branch, so the old name
+    was being run against new code). Both readings were confidently reported
+    before anyone noticed the trees were crossed.
+
+    The fix a person needs is one environment variable, so the message says it
+    rather than describing the problem and leaving them to it. Failing here in
+    pytest_configure stops the run with a single line, instead of thousands of
+    confusing test failures further down.
+    """
+    if os.environ.get(_ALLOW_FOREIGN, "").strip().lower() in ("1", "true", "yes"):
+        return
+    try:
+        import finops
+    except Exception:                      # pragma: no cover - collection handles it
+        return
+
+    tests_tree = Path(__file__).resolve().parent.parent
+    expected = (tests_tree / "src" / "finops").resolve()
+    actual = Path(finops.__file__).resolve().parent
+    if actual == expected:
+        return
+
+    pytest.exit(
+        "\n"
+        "  These tests and the finops they import are from different trees.\n\n"
+        f"    tests come from : {tests_tree}\n"
+        f"    finops imports  : {actual}\n"
+        f"    expected        : {expected}\n\n"
+        "  finops is installed editable against one checkout, so a worktree's\n"
+        "  tests run against the main checkout's source unless you say otherwise.\n"
+        "  Whatever this run reported would have been about neither tree.\n\n"
+        f"    PYTHONPATH={tests_tree / 'src'} pytest ...\n\n"
+        f"  Deliberately testing an installed build? Set {_ALLOW_FOREIGN}=1.\n",
+        returncode=4,
+    )
 
 
 @pytest.fixture(autouse=True)
