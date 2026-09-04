@@ -40,6 +40,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import threading
 import uuid
 from datetime import date
@@ -285,9 +286,42 @@ def is_ci() -> bool:
 _session: dict = {
     "tools_used": set(),
     "provider_count": 0,
+    "connectors_available": 0,
     "plan": "free",
 }
 _lock = threading.Lock()
+
+# Every plan tier this product has. Anything else is not a plan, it is a value
+# that got into the field from somewhere it should not have.
+_KNOWN_PLANS = frozenset({"free", "trial", "pro", "team", "enterprise", "unknown"})
+
+# Tool names are Python identifiers. A tool name that is not one did not come
+# from the tool registry.
+_TOOL_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+
+
+def _clean_plan(value) -> str:
+    """A plan tier, or "unknown". Never the caller's string verbatim.
+
+    Between 2026-08-03 and 08-17, 21 install ids reported plan="/tmp/pp-fuzz"
+    and another 21 reported plan="test", because this field forwarded whatever
+    it was handed. Fuzzed values are indistinguishable from real ones once they
+    are in the dataset, and they inflate every count computed from it.
+    """
+    v = str(value or "").strip().lower()
+    return v if v in _KNOWN_PLANS else "unknown"
+
+
+def _clean_tool(value) -> str | None:
+    """A tool name, or None to drop the event.
+
+    Dropping beats recording "invalid": a per-tool table is read as a list of
+    real tools, and one row of junk with 21 installs behind it looks like a
+    feature nobody has heard of rather than like noise. The same fuzz run put
+    "/tmp/pp-fuzz", "test" and "0" in here.
+    """
+    v = str(value or "").strip()
+    return v if _TOOL_RE.match(v) else None
 
 
 def record_tool_call(tool_name: str) -> None:
@@ -298,17 +332,20 @@ def record_tool_call(tool_name: str) -> None:
     """
     if _is_opted_out():
         return
+    clean = _clean_tool(tool_name)
+    if clean is None:
+        return
     with _lock:
-        _session["tools_used"].add(tool_name)
+        _session["tools_used"].add(clean)
         # Track call counts for frequency analysis
         counts = _session.setdefault("tool_counts", {})
-        counts[tool_name] = counts.get(tool_name, 0) + 1
+        counts[clean] = counts.get(clean, 0) + 1
 
     # Fire a lightweight per-tool event (does not block caller)
     install_id = _get_install_id()
     props = {
-        "tool": tool_name,
-        "plan": _session.get("plan", "free"),
+        "tool": clean,
+        "plan": _clean_plan(_session.get("plan")),
         "date": date.today().isoformat(),
     }
     t = threading.Thread(
@@ -322,12 +359,46 @@ def record_tool_call(tool_name: str) -> None:
 def set_plan(plan: str) -> None:
     """Call with 'free', 'trial', or 'pro' after license check."""
     with _lock:
-        _session["plan"] = plan
+        _session["plan"] = _clean_plan(plan)
 
 
 def set_provider_count(count: int) -> None:
+    """How many providers this install has actually CONNECTED.
+
+    This is the number the module docstring promises ("Number of connected
+    providers"), and until 0.8.216 nothing set it to that. server.py passed
+    len(_ALL_CONNECTORS), the number of connectors compiled into the build, so
+    it reported 12, 14 or 15 depending on version and the documented
+    connected-account query returned 641 of 642 installs. Every install looked
+    connected; almost none were.
+
+    Call this from a path that has already resolved credentials, never from one
+    that would resolve them just to fill the field in: AWS's is_configured()
+    goes through botocore and can sit on the EC2 metadata endpoint for a minute
+    when there are no local credentials, which is the exact profile of install
+    that would be answering "no".
+    """
+    try:
+        n = max(0, int(count))
+    except (TypeError, ValueError):
+        return
     with _lock:
-        _session["provider_count"] = count
+        _session["provider_count"] = n
+
+
+def set_connectors_available(count: int) -> None:
+    """How many connectors this BUILD ships. Not a measure of the user.
+
+    Kept because it is genuinely useful (it dates a build, and it is how the
+    12/14/15 split in the old data can be read back), but under a name that
+    cannot be mistaken for the connected count again.
+    """
+    try:
+        n = max(0, int(count))
+    except (TypeError, ValueError):
+        return
+    with _lock:
+        _session["connectors_available"] = n
 
 
 # ─── Heartbeat ────────────────────────────────────────────────────────────────
@@ -516,8 +587,9 @@ def ping(extra: Optional[dict] = None) -> None:
 
     with _lock:
         properties = {
-            "plan": _session["plan"],
+            "plan": _clean_plan(_session["plan"]),
             "provider_count": _session["provider_count"],
+            "connectors_available": _session["connectors_available"],
             "tool_count": len(_session["tools_used"]),
             # Hash tool names so we know which features are popular,
             # but the list itself stays local
@@ -555,7 +627,12 @@ def ping_startup(provider_count: int = 0, plan: str = "free") -> None:
     the fixes differ (in-client discoverability vs finishing the wizard's
     handoff), so we need to see the split.
     """
-    set_provider_count(provider_count)
+    # NOT set_provider_count: the caller passes the size of the connector
+    # registry, which is a property of the build. The connected count is filled
+    # in later by a path that has already resolved credentials (see
+    # tools/meta.list_connected_providers), so the startup heartbeat carries 0
+    # and later events in the same session carry the truth.
+    set_connectors_available(provider_count)
     set_plan(plan)
     # Version on the heartbeat makes build freshness directly queryable (the
     # funnel read had to infer it from the surface tag's absence before).
